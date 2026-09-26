@@ -1,1 +1,332 @@
-# Salary-Manager
+# CashFlow OS
+
+A personal money manager that works with no account, no network and no build step.
+Open the page and it runs.
+
+---
+
+## What it does
+
+Track where your money is, what came in, what went out, and who owes whom.
+
+| Tab | What it is for |
+|---|---|
+| **Home** | Total balance, per-account boxes, and the add-transaction form |
+| **Accounts** | Cash, NayaPay, Easypaisa and anything you add. Opening balances, rename, archive |
+| **Records** | Every transaction, searchable, editable |
+| **Budget** | Monthly spending limits per category, with an optional income offset |
+| **Udhaar** | Money lent and borrowed, with settle tracking |
+| **Amanat** | Money held for someone else — deliberately kept out of your balance |
+| **Reports** | Donut and bar charts over any date range |
+| **List** | Shopping list; tick items, then save them as one expense |
+| **Categories** | Add or remove spending categories |
+| **Backup** | Cloud sync, month archiving, and JSON export/import |
+
+---
+
+## Design decisions worth knowing
+
+### Money never sits in only one place
+
+Your balance is **always the sum of the account boxes** shown on the Home screen.
+The headline figure is computed from those boxes rather than separately, so the
+two can never drift apart.
+
+Moving money between your own accounts — Cash to NayaPay, say — is recorded as a
+**transfer**, which is deliberately excluded from income, from expenses, and from
+category budgets. Treating a transfer as income would inflate your income figure
+and burn your Food budget for no reason. This is the single easiest mistake in
+this kind of app, so it is excluded in the calculation and covered by tests.
+
+### Amanat is not yours
+
+Money you gave a relative to keep, or that someone left with you, is tracked in
+its own collection and **never touches the balance**. It cannot inflate your
+total even by accident, because the balance calculation only ever reads
+transactions. Partial returns are supported, because that is how it happens in
+real life.
+
+### Budgets belong to a month, not to the app
+
+Each month keeps its own limits. Looking back at last month shows *last* month's
+limit, not whatever it happens to be today. Closing a month is non-destructive —
+its budgets and reports stay readable and new entries flow to the new month.
+
+### Local first, cloud second
+
+Every edit is written to `localStorage` immediately. The app never waits on the
+network, so it behaves identically with the aeroplane mode on. The cloud copy is
+a background nicety, and signing in is entirely optional.
+
+### Storage key, not display name
+
+The app was renamed from *Salary Manager* to *CashFlow OS*. The `localStorage` key
+is **deliberately still** `salaryManager:state` — renaming it would orphan every
+existing user's records. Nothing user-facing depends on the key, and there is a
+test asserting it stays put. Backups written under either name are accepted on
+import.
+
+---
+
+## Technology
+
+Deliberately minimal. There is no framework, no bundler, and no `node_modules`.
+
+| Layer | What it is | Why |
+|---|---|---|
+| Markup | Plain HTML5 | No build step; the page is the artifact |
+| Logic | Vanilla ES2020, ~2,900 lines in `script.js` | Readable end to end, no toolchain to learn |
+| Styling | Plain CSS with custom properties | Same reason |
+| Charts | Hand-rolled SVG in `script.js` | No 200 KB chart library, stays offline-capable |
+| Database | Supabase (Postgres) over plain REST via `fetch` | No 120 KB SDK, so the service worker precache stays small |
+| Auth | Supabase Auth, email + PIN | Recovery by email, quick entry by PIN |
+| Offline | Service worker + web app manifest | Installs as an app, opens with no network |
+| PWA | `manifest.json`, maskable icons | Add to home screen |
+
+**No `supabase-js`.** Supabase is reached with `fetch` against its REST and GoTrue
+endpoints. That was a real decision: the SDK would have been roughly 120 KB that
+the service worker then had to cache, in an app whose entire character is being
+small and dependency-free. 
+
+### A stale cache must never half-update the page
+
+This one cost a real bug report, so it is worth writing down.
+
+The service worker originally served app files **cache-first**
+(stale-while-revalidate), which is the right default for assets. It is the wrong
+default for `index.html`, `script.js` and `style.css` when they are *not*
+content-hashed, and a deploy produced this: a fresh `index.html` next to an old
+`script.js`. Both files were individually valid. Together they produced a page
+with **no Amanat tab** and an **account dropdown that stayed empty** — because
+the new markup expects a script that fills it, and the old script did not know
+the field existed. Nothing in the app was wrong; the page was simply half
+updated, with no clue why.
+
+Two changes prevent it:
+
+1. **The app's own files are network-first.** Fresh when online, cached copy
+   only when offline. Other assets keep stale-while-revalidate, which really is
+   instant for things like icons.
+2. **A self-healing guard on every boot.** The HTML declares its build number
+   and its tab list; the script declares the same. If they disagree, or if a tab
+   has no panel, the app knows it is running against mismatched files. It then
+   clears the caches, unregisters the service worker, shows *"Updating the app…
+   this will reload once"*, and reloads. If the files still disagree after that
+   — meaning the service worker was never the cause — it stops trying and runs
+   anyway, rather than looping on a blank page.
+
+**When you deploy, bump all three:** `appBuild` in `config.js`, the
+`app-build` meta tag in `index.html`, and `CACHE_VERSION` in
+`service-worker.js`. A test asserts the first two match, so they cannot drift.
+
+### No innerHTML, anywhere
+
+All DOM is built with `h()` and `hs()` (the SVG variant), which set `textContent`
+and attributes — never markup. A category named `<img src=x onerror=...>` is
+rendered as literal text. There is a test that injects hostile strings into a
+category, a comment, a person name and a list item, then asserts zero elements
+were created.
+
+### Prototype-pollution guards
+
+User-controlled map keys — category names, budget keys, account names — go into
+null-prototype objects (`Object.create(null)`) and `Map`s. A category named
+`__proto__` or `toString` is a real, harmless key and can never reach
+`Object.prototype`.
+
+---
+
+## Data model
+
+Everything lives under one `localStorage` key as a single JSON document, written
+atomically. A single key means a write can never be observed half-finished.
+
+```
+version          4
+transactions[]   id, type, amount, category, comment, date, accountId, toAccountId, source, updatedAt
+debts[]          id, type, person, amount, note, date, settled, settledAt, ledger
+custody[]        id, person, direction, amount, returned, note, date, returnedDate
+accounts[]       id, name, kind, openingBalance, archived
+shopping[]       id, name, qty, note, checked, createdAt, checkedAt, boughtTxId, cost
+budgets          { "2026-09": { Food: 10000 } }      per month
+categories[]     user-editable strings
+settings         { budgetOffset: { Food: true }, lastAccountId }
+closedPeriods[]  archived "YYYY-MM" months
+```
+
+### Schema history
+
+| Version | Change | Migration |
+|---|---|---|
+| 1 | Four separate `localStorage` keys | Migrated into the single key |
+| 2 | Added shopping list, per-category budget offset, month close | Read as flat `budgets`, re-filed into the current month |
+| 3 | Dates changed from UTC ISO to local wall-clock stamps; budgets keyed by month | Rewritten as `YYYY-MM-DDTHH:mm`, preserving the exact instant |
+| 4 | Accounts, transfers, Amanat | Old transactions had no `accountId`; they are filed under **Cash** and you are told |
+
+`did you know the user is told` — a corrupted or repaired file produces a plain
+toast naming what was changed, and the clean version is written straight back.
+
+### Why dates are stored as text
+
+Transactions store `"2026-09-26T14:35"` — the local wall-clock time the user
+typed, with no timezone. A `timestamptz` would reinterpret it in the server's
+zone and shift the value, which would put a 23:50 entry on the wrong day. Text
+guarantees an exact round-trip. All date maths is done client-side.
+
+---
+
+## Cloud sync
+
+Optional. Sign in under **Backup → Sync Across Devices** and your data starts
+reaching the cloud. Sign out and everything keeps working locally.
+
+### How it works
+
+```
+edit  →  localStorage  →  [background]  →  Supabase
+         (instant)        (debounced)
+```
+
+- **Offline-first.** Nothing waits on the network.
+- **Outbox.** A record is dirty when its `updatedAt` is newer than the last thing
+  successfully pushed. After a successful push the cursor advances to the newest
+  stamp actually sent — not to "now" — so an edit made *during* the request still
+  looks dirty and goes out next round instead of being silently dropped.
+- **Pull before push.** A local edit made against a stale view is never
+  overwritten by a version it never saw.
+- **Last-write-wins per record.** Each record carries a client-assigned
+  `updatedAt`; the newer one wins. For one person across two or three devices
+  this is the right trade. CRDTs would be a lot of machinery for a problem this
+  app does not have.
+- **Tombstones.** Deleting a record pushes `deleted = true` rather than removing
+  the row, so a delete on one device cannot come back on another.
+- **Monotonic clock.** If the device clock jumps backwards, an edit could land
+  before the sync cursor and never be sent. Every stamp is therefore forced
+  strictly greater than the previous one, so that cannot happen.
+- **Change detection in one place.** `reconcile()` diffs the live state against a
+  shadow of the last seen state. It is called from `save()`, the single point
+  every mutation already passes through — so a new feature cannot forget to sync.
+- **Pull first on a new device** fetches the full history, then merges.
+
+### Honest limitation
+
+If a device is offline, an edit **cannot** reach the server yet. It is queued and
+retried, and the status line says so. No design makes an offline write arrive
+immediately; anything that claims otherwise is not telling you the truth.
+
+### Auth: email + PIN
+
+The PIN is used as the password. Supabase stores only a hash, and the
+connection is TLS, so the plain PIN is not written down anywhere we control.
+
+**The PIN must be at least 8 characters.** Rate limiting helps, but it is not a
+substitute for length — a 4-digit PIN is 10,000 guesses. Use a longer one, and a
+real email so the account can be recovered.
+
+Email is not decoration: it identifies the account, and it is what Row Level
+Security keys off. Several people can use one Supabase project; each sees only
+their own rows.
+
+### Security
+
+- The **publishable** key (`sb_publishable_…`) is in `config.js` and is *designed*
+  to be public. What protects the data is Row Level Security, not the key's
+  secrecy.
+- The **service_role / secret** key is never in the repository and must never be.
+  It would grant full read/write on every row.
+- Every table has RLS on, with policies of the form
+  `using (auth.uid() = user_id) with check (auth.uid() = user_id)`. A test and a
+  SQL verification query both confirm this.
+- `anon` is granted no privileges at all, so an unauthenticated request cannot
+  reach the tables.
+
+---
+
+## Security posture
+
+| Concern | How it is handled |
+|---|---|
+| XSS | No `innerHTML`; DOM built with `textContent`; hostile input tested |
+| CSRF | Not applicable — no cookies, token held in `localStorage` |
+| Injection | No SQL is built by hand; all queries go through PostgREST parameters |
+| Another user reading your data | RLS on every table, `auth.uid()` scoped |
+| Secret key leaking | Never written to any file; a test asserts `config.js` has none |
+| Storage quota | `QuotaExceededError` is reported, not swallowed; the write is declared failed |
+| Corrupt data | Every load goes through `sanitizeState()`, which never throws |
+| Prototype pollution | Null-prototype objects and `Map`s for user-controlled keys |
+
+---
+
+## Files
+
+```
+index.html            the app: markup for every tab
+style.css             all styling
+script.js             application logic, SVG charts, rendering, stale-asset guard
+sync.js               auth, outbox, pull/push, last-write-wins merge
+config.js             Supabase URL, publishable key, and the build number
+service-worker.js     offline cache
+manifest.json         PWA metadata
+db/schema.sql         tables, indexes, RLS policies, grants
+README.md             this file
+```
+
+`config.js` and `db/schema.sql` are the two files worth reading first if you are
+picking this up.
+
+---
+
+## Setup
+
+The app runs by opening `index.html`. For cloud sync:
+
+1. Create a Supabase project.
+2. In **SQL Editor → New query**, run `db/schema.sql` once. The last statement
+   prints a verification table; every row must show `rls_enabled = true`.
+3. In **Authentication → Sign In / Providers**, turn **Confirm email** off.
+4. Put your project URL and publishable key in `config.js`.
+5. Sign in from **Backup → Sync Across Devices**.
+
+---
+
+## Testing
+
+743 assertions across six suites, all of which run without a browser or a
+network.
+
+| Suite | Covers |
+|---|---|
+| `test.js` | Schema migration, balance arithmetic, transfer invariants, custody rules, chart maths, prototype-pollution guards |
+| `markup-test.js` | Every referenced id exists, every `data-act` has a handler, accessibility attributes, the rename did not touch the storage key |
+| `integration-test.mjs` | The real page in a real DOM: clicks, typing, form submits, and assertions on what a user would actually see — including corruption recovery and XSS |
+| `sync-test.mjs` | Auth, token refresh, outbox, tombstones, last-write-wins merge, offline retry, backwards clock |
+| `app-sync-test.mjs` | The seam between app and sync: two windows against a fake Supabase, checking that a sign-in uploads history, a second device receives it, an edit travels back, and a delete propagates |
+| `stale-test.mjs` | The mismatched-file guard, replaying the reported bug in both directions and asserting no reload loop |
+
+Run them with `node <suite>` from the project root (the `.mjs` suites need
+`npm i jsdom`).
+
+These tests are not decoration. They caught real bugs during development, among
+them: a month picker that never fired, a settled udhaar leaving a phantom
+transaction behind, budgets silently resetting to zero after a corrupt file,
+records shuffling order between renders, a debounced push calling a function
+that no longer existed, a device that received data but never wrote it to disk,
+and — most usefully — the stale-cache mismatch above, which is now replayed as
+a test so it cannot come back.
+
+---
+
+## Not built yet
+
+Stated plainly so nothing here is mistaken for finished:
+
+- **Automatic bank transactions from email.** NayaPay emails are the intended
+  source, but a web page cannot read email — it needs a forwarding address, a
+  webhook, and a per-bank parser. Parsed transactions must land in a
+  *pending* queue for the user to approve, never straight into the ledger: a
+  silently wrong regex would corrupt a budget, which is worse than no automation.
+  Easypaisa is deliberately out of scope for now.
+- **Real-time push.** Sync is on a one-minute timer plus on-focus. Live updates
+  would need Supabase Realtime, which is more machinery than this needs yet.
+- **Cloud backup history.** The database is the live copy; a corrupt row is not
+  protected by a point-in-time snapshot. Export a JSON file for that.

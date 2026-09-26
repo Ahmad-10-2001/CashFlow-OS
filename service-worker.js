@@ -1,5 +1,5 @@
 /* ============================================================
-   Salary Manager — service worker
+   CashFlow OS — service worker
 
    Caching strategy
    • Navigations ......... network-first, cached app shell as the offline
@@ -15,16 +15,22 @@
    delete-old-caches step pick up the new build in one go.
    ============================================================ */
 
-const CACHE_VERSION = 'v8';
-const CACHE_PREFIX = 'salary-manager-';
+const CACHE_VERSION = 'v10';
+const CACHE_PREFIX = 'cashflow-os-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
 const SHELL_URL = './index.html';
+
+/* Files that must never be served from cache while online: a stale copy of any
+   of these mixed with a fresh index.html produces a page that is half-updated. */
+const APP_FILES = ['/index.html', '/script.js', '/style.css', '/sync.js', '/config.js', '/manifest.json'];
 
 const PRECACHE = [
   './',
   './index.html',
   './style.css',
   './script.js',
+  './sync.js',
+  './config.js',
   './manifest.json',
   './icon-180.png',
   './icon-192.png',
@@ -100,7 +106,34 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // ── assets: serve from cache now, refresh in the background ──
+  // ── the app's own files ──
+  // This is the one case where a stale copy is actively harmful: an old
+  // script.js served next to a new index.html leaves the markup and the logic
+  // disagreeing — a tab that never appears, a dropdown that stays empty. Both
+  // files are individually valid, which is what makes it so confusing. So these
+  // go network-first, exactly like navigations.
+  const isAppFile = APP_FILES.some((f) => url.pathname.endsWith(f));
+
+  if (isAppFile) {
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE_NAME);
+      try {
+        const response = await fetch(request);
+        if (response && response.ok && response.type === 'basic') {
+          cache.put(request, response.clone());
+        }
+        return response;
+      } catch (err) {
+        // Offline: the cached copy is the only one there is.
+        const cached = await cache.match(request);
+        if (cached) return cached;
+        throw err;
+      }
+    })());
+    return;
+  }
+
+  // ── other same-origin assets: serve from cache now, refresh in background ──
   event.respondWith((async () => {
     const cache = await caches.open(CACHE_NAME);
     const cached = await cache.match(request);
