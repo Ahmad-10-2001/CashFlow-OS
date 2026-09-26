@@ -2,26 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Salary Manager">
   <meta name="theme-color" content="#111111">
+  <meta name="description" content="Track income, expenses, budgets and udhaar offline.">
   <title>Salary Manager</title>
   <link rel="manifest" href="manifest.json">
-  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="icon" href="icon-192.png" sizes="192x192">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
 <div class="container">
 
-  <!-- Header -->
   <h1 class="app-title">💰 Salary Manager</h1>
 
-  <!-- Balance Card -->
-  <div class="card balance-card">
-    <div class="balance-label">Current Balance</div>
+  <p class="storage-warning" id="storageWarning" role="alert" hidden>
+    This browser is blocking local storage, so nothing you enter will be saved.
+  </p>
+
+  <!-- ═══ Balance ═══ -->
+  <section class="card balance-card" aria-labelledby="balanceHeading">
+    <h2 class="balance-label" id="balanceHeading">Current Balance</h2>
     <div class="balance-amount" id="balanceDisplay">₨ 0</div>
     <div class="balance-row">
       <div class="balance-sub income-bg">
@@ -33,159 +40,198 @@
         <span id="totalExpense">₨ 0</span>
       </div>
     </div>
-  </div>
+    <div id="udhaarLine"></div>
+  </section>
 
-  <!-- Add Transaction -->
-  <div class="card">
-    <h3 class="card-title">Add Transaction</h3>
+  <!-- ═══ Add transaction ═══ -->
+  <form class="card" id="txForm" novalidate>
+    <h2 class="card-title">Add Transaction</h2>
     <div class="form-group">
-      <select id="txType">
-        <option value="income">+ Income / Salary</option>
-        <option value="expense">- Expense</option>
+      <label class="sr-only" for="txType">Type</label>
+      <select id="txType" name="type">
+        <option value="expense" selected>− Expense</option>
+        <option value="income">+ Income</option>
       </select>
     </div>
     <div class="form-group">
-      <input id="txAmount" type="number" inputmode="numeric" placeholder="Amount (e.g. 5000)">
+      <label class="sr-only" for="txAmount">Amount</label>
+      <input id="txAmount" name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount (e.g. 5000)" autocomplete="off">
     </div>
     <div class="form-group">
-      <select id="txCategory"></select>
+      <label class="sr-only" for="txCategory">Category</label>
+      <select id="txCategory" name="category"></select>
     </div>
     <div class="form-group">
-      <input id="txComment" type="text" placeholder="Comment (optional)">
+      <label class="sr-only" for="txComment">Comment</label>
+      <input id="txComment" name="comment" type="text" placeholder="Comment (optional)" maxlength="300" autocomplete="off">
     </div>
-    <button class="btn btn-primary" onclick="addTransaction()">Save Transaction</button>
-  </div>
+    <button class="btn btn-primary" type="submit">Save Transaction</button>
+  </form>
 
-  <!-- Budgets -->
-  <div class="card">
-    <h3 class="card-title">Budgets</h3>
-    <p class="card-subtitle">Monthly spending limits per category</p>
+  <!-- ═══ Budgets ═══ -->
+  <section class="card" aria-labelledby="budgetHeading">
+    <h2 class="card-title" id="budgetHeading">Budgets</h2>
+    <p class="card-subtitle">Monthly spending limits per category, reset on the 1st</p>
     <div id="budgetList"></div>
-    <div class="budget-edit-section">
+    <form class="budget-edit-section" id="budgetForm" novalidate>
       <div class="form-group">
-      <select id="budgetCategory"></select>
+        <label class="sr-only" for="budgetCategory">Budget category</label>
+        <select id="budgetCategory"></select>
       </div>
       <div class="form-group">
-        <input id="budgetAmount" type="number" inputmode="numeric" placeholder="Budget limit">
+        <label class="sr-only" for="budgetAmount">Budget limit</label>
+        <input id="budgetAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Budget limit" autocomplete="off">
       </div>
-      <button class="btn btn-dark" onclick="setBudget()">Set Budget</button>
-    </div>
-  </div>
+      <button class="btn btn-dark" type="submit">Set Budget</button>
+    </form>
+  </section>
 
-  <!-- Udhaar (Debts) -->
-  <div class="card">
-    <h3 class="card-title">Udhaar (Owes)</h3>
+  <!-- ═══ Udhaar ═══ -->
+  <form class="card" id="debtForm" novalidate>
+    <h2 class="card-title">Udhaar (Owes)</h2>
     <div class="form-group">
+      <label class="sr-only" for="debtType">Direction</label>
       <select id="debtType">
         <option value="receive">Person owes me</option>
         <option value="pay">I owe person</option>
       </select>
     </div>
     <div class="form-group">
-      <input id="debtPerson" type="text" placeholder="Person name">
+      <label class="sr-only" for="debtPerson">Person name</label>
+      <input id="debtPerson" type="text" placeholder="Person name" maxlength="40" autocomplete="off">
     </div>
     <div class="form-group">
-      <input id="debtAmount" type="number" inputmode="numeric" placeholder="Amount">
+      <label class="sr-only" for="debtAmount">Amount</label>
+      <input id="debtAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
     </div>
     <div class="form-group">
-      <input id="debtNote" type="text" placeholder="Reason (optional)">
+      <label class="sr-only" for="debtNote">Reason</label>
+      <input id="debtNote" type="text" placeholder="Reason (optional)" maxlength="300" autocomplete="off">
     </div>
-    <button class="btn btn-dark" onclick="addDebt()">Add Udhaar</button>
+    <label class="check">
+      <input id="debtLedger" type="checkbox" checked>
+      <span>When settled, record it in my balance</span>
+    </label>
+    <button class="btn btn-dark" type="submit">Add Udhaar</button>
     <div id="debtList"></div>
-  </div>
+  </form>
 
-  <!-- Reports -->
-  <div class="card">
-    <h3 class="card-title">Reports</h3>
-    <button class="btn btn-dark" onclick="showReport('week')">Weekly Report</button>
-    <button class="btn btn-dark" onclick="showReport('month')">Monthly Report</button>
-    <button class="btn btn-dark" onclick="showReport('all')">All Time Report</button>
-    <div id="reportOutput"></div>
-  </div>
+  <!-- ═══ Reports ═══ -->
+  <section class="card" aria-labelledby="reportHeading">
+    <h2 class="card-title" id="reportHeading">Reports</h2>
+    <div class="btn-row">
+      <button class="btn btn-dark" type="button" data-act="report" data-arg="week">7 Days</button>
+      <button class="btn btn-dark" type="button" data-act="report" data-arg="month">This Month</button>
+      <button class="btn btn-dark" type="button" data-act="report" data-arg="all">All Time</button>
+    </div>
+    <div id="reportOutput" aria-live="polite"></div>
+  </section>
 
-  <!-- Manage Categories -->
-  <div class="card">
-    <h3 class="card-title">Manage Categories</h3>
+  <!-- ═══ Categories ═══ -->
+  <section class="card" aria-labelledby="catHeading">
+    <h2 class="card-title" id="catHeading">Manage Categories</h2>
     <p class="card-subtitle">Add or remove spending categories</p>
     <div id="categoryList"></div>
-    <div class="category-add-section">
+    <form class="category-add-section" id="categoryForm" novalidate>
       <div class="form-group">
-        <input id="newCategoryName" type="text" placeholder="New category name">
+        <label class="sr-only" for="newCategoryName">New category name</label>
+        <input id="newCategoryName" type="text" placeholder="New category name" maxlength="40" autocomplete="off">
       </div>
-      <button class="btn btn-dark" onclick="addCategory()">Add Category</button>
-    </div>
-  </div>
+      <button class="btn btn-dark" type="submit">Add Category</button>
+    </form>
+  </section>
 
-  <!-- Backup -->
-  <div class="card">
-    <h3 class="card-title">Backup</h3>
-    <button class="btn btn-dark" onclick="exportBackup()">Export Backup</button>
-    <div class="form-group" style="margin-top:10px">
-      <input type="file" id="importFile" accept=".json">
+  <!-- ═══ Backup ═══ -->
+  <section class="card" aria-labelledby="backupHeading">
+    <h2 class="card-title" id="backupHeading">Backup</h2>
+    <p class="card-subtitle">Your data lives only in this browser. Export regularly.</p>
+    <button class="btn btn-dark" type="button" data-act="export">Export Backup</button>
+    <div class="form-group backup-import">
+      <label class="file-label" for="importFile">Choose a backup file</label>
+      <input type="file" id="importFile" accept=".json,application/json">
     </div>
-    <button class="btn btn-dark" onclick="importBackup()">Import Backup</button>
-  </div>
+    <button class="btn btn-dark" type="button" data-act="import">Import Backup</button>
+    <button class="btn btn-danger" type="button" data-act="reset">Delete all local data</button>
+  </section>
 
-  <!-- Transactions -->
-  <div class="card">
-    <h3 class="card-title">Transactions</h3>
+  <!-- ═══ Transactions ═══ -->
+  <section class="card" aria-labelledby="txListHeading">
+    <h2 class="card-title" id="txListHeading">Transactions</h2>
     <div class="form-group">
-      <input id="txSearch" type="text" placeholder="Search transactions..." oninput="renderTransactions()">
+      <label class="sr-only" for="txSearch">Search transactions</label>
+      <input id="txSearch" type="search" placeholder="Search by category, comment or amount" autocomplete="off">
     </div>
     <div id="txList"></div>
-  </div>
+  </section>
 
 </div>
 
-<!-- Edit Transaction Modal -->
-<div class="modal-overlay" id="editModal">
-  <div class="modal">
-    <h3 class="card-title">Edit Transaction</h3>
+<!-- ═══ Edit transaction modal ═══ -->
+<div class="modal-overlay" id="editModal" role="dialog" aria-modal="true" aria-labelledby="editModalTitle" aria-hidden="true" tabindex="-1">
+  <form class="modal" id="editForm" novalidate>
+    <h2 class="card-title" id="editModalTitle">Edit Transaction</h2>
     <input type="hidden" id="editId">
     <div class="form-group">
+      <label class="field-label" for="editType">Type</label>
       <select id="editType">
-        <option value="income">+ Income / Salary</option>
-        <option value="expense">- Expense</option>
+        <option value="expense">− Expense</option>
+        <option value="income">+ Income</option>
       </select>
     </div>
     <div class="form-group">
-      <input id="editAmount" type="number" inputmode="numeric" placeholder="Amount">
+      <label class="field-label" for="editAmount">Amount</label>
+      <input id="editAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
     </div>
     <div class="form-group">
+      <label class="field-label" for="editCategory">Category</label>
       <select id="editCategory"></select>
+      <p class="field-hint">A category marked “(removed)” is kept so saving won’t re-file this record.</p>
     </div>
     <div class="form-group">
-      <input id="editComment" type="text" placeholder="Comment">
+      <label class="field-label" for="editComment">Comment</label>
+      <input id="editComment" type="text" placeholder="Comment" maxlength="300" autocomplete="off">
     </div>
-    <button class="btn btn-primary" onclick="saveEdit()">Update</button>
-    <button class="btn btn-cancel" onclick="closeEditModal()">Cancel</button>
-  </div>
+    <button class="btn btn-primary" type="submit">Update</button>
+    <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="editModal">Cancel</button>
+  </form>
 </div>
 
-<!-- Edit Debt Modal -->
-<div class="modal-overlay" id="editDebtModal">
-  <div class="modal">
-    <h3 class="card-title">Edit Udhaar</h3>
-    <input type="hidden" id="editDebtIdx">
+<!-- ═══ Edit udhaar modal ═══ -->
+<div class="modal-overlay" id="editDebtModal" role="dialog" aria-modal="true" aria-labelledby="editDebtTitle" aria-hidden="true" tabindex="-1">
+  <form class="modal" id="editDebtForm" novalidate>
+    <h2 class="card-title" id="editDebtTitle">Edit Udhaar</h2>
+    <input type="hidden" id="editDebtId">
     <div class="form-group">
+      <label class="field-label" for="editDebtType">Direction</label>
       <select id="editDebtType">
         <option value="receive">Person owes me</option>
         <option value="pay">I owe person</option>
       </select>
     </div>
     <div class="form-group">
-      <input id="editDebtPerson" type="text" placeholder="Person name">
+      <label class="field-label" for="editDebtPerson">Person name</label>
+      <input id="editDebtPerson" type="text" maxlength="40" autocomplete="off">
     </div>
     <div class="form-group">
-      <input id="editDebtAmount" type="number" inputmode="numeric" placeholder="Amount">
+      <label class="field-label" for="editDebtAmount">Amount</label>
+      <input id="editDebtAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
     </div>
     <div class="form-group">
-      <input id="editDebtNote" type="text" placeholder="Reason">
+      <label class="field-label" for="editDebtNote">Reason</label>
+      <input id="editDebtNote" type="text" maxlength="300" autocomplete="off">
     </div>
-    <button class="btn btn-primary" onclick="saveDebtEdit()">Update</button>
-    <button class="btn btn-cancel" onclick="closeDebtEditModal()">Cancel</button>
-  </div>
+    <label class="check">
+      <input id="editDebtLedger" type="checkbox">
+      <span>When settled, record it in my balance</span>
+    </label>
+    <button class="btn btn-primary" type="submit">Update</button>
+    <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="editDebtModal">Cancel</button>
+  </form>
 </div>
+
+<noscript>
+  <p class="storage-warning">This app needs JavaScript to store and show your data.</p>
+</noscript>
 
 <script src="script.js"></script>
 </body>
