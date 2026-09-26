@@ -45,6 +45,7 @@
           <span id="totalExpense">₨ 0</span>
         </div>
       </div>
+      <div class="acct-boxes" id="accountBoxes"></div>
       <div id="udhaarLine"></div>
     </section>
 
@@ -55,13 +56,23 @@
         <select id="txType" name="type">
           <option value="expense" selected>− Expense</option>
           <option value="income">+ Income</option>
+          <option value="transfer">⇄ Move between accounts</option>
         </select>
       </div>
       <div class="form-group">
         <label class="sr-only" for="txAmount">Amount</label>
         <input id="txAmount" name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount (e.g. 5000)" autocomplete="off">
       </div>
-      <div class="form-group">
+      <div class="form-group" id="txAccountGroup">
+        <label class="field-label" id="txAccountLabel" for="txAccount">Account</label>
+        <select id="txAccount" name="account"></select>
+      </div>
+      <div class="form-group" id="txToAccountGroup" hidden>
+        <label class="field-label" for="txToAccount">To account</label>
+        <select id="txToAccount" name="toAccount"></select>
+      </div>
+      <p class="field-hint" id="txTransferNote" hidden>Moving money between your own accounts is not income or spending — your total stays the same.</p>
+      <div class="form-group" id="txCategoryGroup">
         <label class="sr-only" for="txCategory">Category</label>
         <select id="txCategory" name="category"></select>
       </div>
@@ -77,6 +88,39 @@
       <button class="btn btn-primary" type="submit">Save Transaction</button>
     </form>
 
+  </div>
+
+  <!-- ══════════════ ACCOUNTS ══════════════ -->
+  <div id="panel-accounts" data-panel="accounts" role="tabpanel" aria-labelledby="accountsHeading" hidden>
+    <section class="card" aria-labelledby="accountsHeading">
+      <h2 class="card-title" id="accountsHeading">Accounts</h2>
+      <p class="card-subtitle">Cash, NayaPay, Easypaisa — and any account you add later.</p>
+      <div class="report-total strong" id="accountTotal"></div>
+      <div id="accountList"></div>
+    </section>
+
+    <form class="card" id="accountForm" novalidate>
+      <h2 class="card-title">Add an Account</h2>
+      <div class="form-group">
+        <label class="field-label" for="accountName">Name</label>
+        <input id="accountName" type="text" placeholder="e.g. NayaPay, Meezan, JazzCash" maxlength="40" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="accountKind">Kind</label>
+        <select id="accountKind">
+          <option value="ewallet" selected>Mobile wallet / e-wallet</option>
+          <option value="bank">Bank account</option>
+          <option value="cash">Cash</option>
+        </select>
+      </div>
+      <button class="btn btn-primary" type="submit">Add account</button>
+    </form>
+
+    <section class="card" aria-labelledby="transfersHeading">
+      <h2 class="card-title" id="transfersHeading">Transfers</h2>
+      <p class="card-subtitle">Money you moved between your own accounts. These never count as income or spending.</p>
+      <div id="transferList"></div>
+    </section>
   </div>
 
   <!-- ══════════════ TRANSACTIONS ══════════════ -->
@@ -147,6 +191,47 @@
     </form>
   </div>
 
+  <!-- ══════════════ CUSTODY / AMANAT ══════════════ -->
+  <div id="panel-custody" data-panel="custody" role="tabpanel" aria-labelledby="custodyHeading" hidden>
+    <form class="card" id="custodyForm" novalidate>
+      <h2 class="card-title" id="custodyHeading">Amanat (Held for Others)</h2>
+      <p class="card-subtitle">
+        Money that is not yours — you gave it to someone to keep, or someone gave it to you to keep.
+        <strong>This never touches your balance.</strong>
+      </p>
+      <div class="form-group">
+        <label class="sr-only" for="custodyDirection">Direction</label>
+        <select id="custodyDirection">
+          <option value="given">I gave this — it is theirs now</option>
+          <option value="held">They gave this — I am keeping it</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="field-label" for="custodyPerson">Person</label>
+        <input id="custodyPerson" type="text" placeholder="Who is it for?" maxlength="40" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="custodyAmount">Amount</label>
+        <input id="custodyAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="field-label" for="custodyDate">Date given</label>
+        <input id="custodyDate" type="datetime-local">
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="custodyNote">Note</label>
+        <input id="custodyNote" type="text" placeholder="Note (optional)" maxlength="300" autocomplete="off">
+      </div>
+      <button class="btn btn-dark" type="submit">Save to amanat</button>
+    </form>
+
+    <section class="card" aria-label="Amanat entries">
+      <h2 class="card-title">Kept apart from your balance</h2>
+      <div class="custody-summary" id="custodySummary"></div>
+      <div id="custodyList"></div>
+    </section>
+  </div>
+
   <!-- ══════════════ REPORTS ══════════════ -->
   <div id="panel-reports" data-panel="reports" role="tabpanel" aria-labelledby="reportHeading" hidden>
     <section class="card" aria-labelledby="reportHeading">
@@ -196,6 +281,10 @@
       <form class="buy-form" id="buyForm" novalidate>
         <h3 class="card-title">Save as expense</h3>
         <p class="card-subtitle">Tick what you bought, then enter the total and save it as one expense.</p>
+        <div class="form-group">
+          <label class="field-label" for="itemAccount">Paid from</label>
+          <select id="itemAccount"></select>
+        </div>
         <div class="form-group">
           <label class="field-label" for="itemCost">Total amount paid</label>
           <input id="itemCost" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount (e.g. 1200)" autocomplete="off">
@@ -255,13 +344,22 @@
       <select id="editType">
         <option value="expense">− Expense</option>
         <option value="income">+ Income</option>
+        <option value="transfer">⇄ Move between accounts</option>
       </select>
     </div>
     <div class="form-group">
       <label class="field-label" for="editAmount">Amount</label>
       <input id="editAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
     </div>
-    <div class="form-group">
+    <div class="form-group" id="editAccountGroup">
+      <label class="field-label" id="editAccountLabel" for="editAccount">Account</label>
+      <select id="editAccount"></select>
+    </div>
+    <div class="form-group" id="editToAccountGroup" hidden>
+      <label class="field-label" for="editToAccount">To account</label>
+      <select id="editToAccount"></select>
+    </div>
+    <div class="form-group" id="editCategoryGroup">
       <label class="field-label" for="editCategory">Category</label>
       <select id="editCategory"></select>
       <p class="field-hint">A category marked “(removed)” is kept so saving won’t re-file this record.</p>
