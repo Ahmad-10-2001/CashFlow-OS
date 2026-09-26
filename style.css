@@ -1,9 +1,3 @@
-/* ============================================================
-   Salary Manager — styles
-   Colour pairs below were chosen by computing WCAG contrast
-   ratios; see the comment next to each token.
-   ============================================================ */
-
 :root {
   /* Every token below is checked against each background it is actually used
      on (white card, #f9f9fb report panel, and both tint colours). */
@@ -156,6 +150,69 @@ body.modal-open { overflow: hidden; }
   font-variant-numeric: tabular-nums;
 }
 .udhaar-line.muted { color: #b6b6bd; }
+
+/* Outstanding-udhaar badges: green = owed to you, red = you owe.
+   Both carry a text label, so colour is never the only signal. */
+.u-badges { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.u-badge {
+  flex: 1 1 140px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+.u-badge-amount { font-size: 15px; font-weight: 700; white-space: nowrap; }
+.u-badge-label { font-size: 11px; }
+.u-badge-in { background: rgba(74, 222, 128, 0.18); color: var(--pos-dark); }
+.u-badge-out { background: rgba(255, 163, 155, 0.18); color: var(--neg-dark); }
+
+/* ===== TAB BAR ===== */
+.tab-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding-bottom: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.tab-bar::-webkit-scrollbar { display: none; }
+
+.tab {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 62px;
+  min-height: 56px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+.tab-glyph { font-size: 17px; line-height: 1; }
+.tab.is-active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+.tab:active { opacity: 0.75; }
 
 /* ===== FORM ELEMENTS ===== */
 .form-group { margin-bottom: 10px; }
@@ -379,6 +436,29 @@ select {
 .progress-fill.over { background: #c0271d; }
 .budget-left, .budget-over { font-size: 12.5px; margin-top: 5px; color: var(--muted); }
 .budget-over { color: #8f1d16; font-weight: 600; }
+.budget-breakdown {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted-2);
+  font-variant-numeric: tabular-nums;
+}
+.budget-toggle {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  align-items: center;
+}
+.budget-period-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.pill {
+  display: inline-block;
+  padding: 5px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.pill-name { background: var(--ink); color: #fff; }
+.pill-closed { background: var(--neg-tint); color: var(--neg-tint-ink); }
+.pill-now { background: var(--pos-tint); color: var(--pos-tint-ink); }
 .budget-remove {
   display: block;
   margin-top: 6px;
@@ -428,6 +508,111 @@ select {
 .report-total.strong { font-weight: 700; }
 .pos { color: var(--pos); }
 .neg { color: var(--neg); }
+
+/* ===== CHART BLOCKS ===== */
+.chart-block { margin: 14px 0 18px; }
+.chart-donut-wrap { display: flex; justify-content: center; margin-bottom: 12px; }
+.chart-donut { max-width: 100%; height: auto; }
+.chart-trend { display: block; width: 100%; height: 132px; }
+.chart-title { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+
+.chart-legend { list-style: none; }
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid #e8e8ec;
+  font-size: 14px;
+}
+.chart-legend li:last-child { border-bottom: none; }
+.legend-dot { flex-shrink: 0; width: 11px; height: 11px; border-radius: 3px; }
+.legend-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.legend-value { flex-shrink: 0; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+.chart-legend-inline { display: flex; gap: 16px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.chart-legend-inline > span { display: flex; align-items: center; gap: 6px; }
+
+.range-form { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
+.btn.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ===== SHOPPING LIST ===== */
+.list-summary { display: flex; gap: 10px; margin-bottom: 12px; }
+.list-count {
+  flex: 1;
+  padding: 9px 10px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: #fff;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+}
+.list-count.muted { background: var(--field-bg); color: var(--muted); }
+
+.list-section-head {
+  margin: 16px 0 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.list-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.list-item:last-child { border-bottom: none; }
+.list-item.is-done .list-name { text-decoration: line-through; color: var(--muted); }
+.list-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.list-name { font-size: 15.5px; font-weight: 600; overflow-wrap: anywhere; }
+.list-meta { font-size: 12.5px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+
+/* Tick box: same 24px minimum target as the rest of the app. */
+.tick {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 2px solid #8a8a8f;
+  border-radius: 7px;
+  background: #fff;
+  color: #fff;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-content: center;
+  transition: background 0.12s, border-color 0.12s;
+}
+.tick.is-ticked { background: var(--pos); border-color: var(--pos); }
+.tick:active { opacity: 0.7; }
+
+.buy-form { margin-top: 4px; padding: 14px 0 4px; border-top: 1px solid var(--line-soft); }
+
+/* ===== MONTHS ===== */
+.month-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.month-item:last-child { border-bottom: none; }
+.month-info { min-width: 0; display: flex; flex-direction: column; }
+.month-name { font-size: 15.5px; font-weight: 600; }
+.month-meta { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.month-item.is-current .month-name { color: var(--pos); }
+.month-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.month-actions .btn-mini { flex: 0 0 auto; padding: 8px 10px; font-size: 13px; }
 
 /* ===== MODAL ===== */
 .modal-overlay {

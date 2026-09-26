@@ -23,146 +23,225 @@
   <h1 class="app-title">💰 Salary Manager</h1>
 
   <p class="storage-warning" id="storageWarning" role="alert" hidden>
-    This browser is blocking local storage, so nothing you enter will be saved.
+    This browser is blocking local storage, so nothing you enter can be saved.
   </p>
 
-  <!-- ═══ Balance ═══ -->
-  <section class="card balance-card" aria-labelledby="balanceHeading">
-    <h2 class="balance-label" id="balanceHeading">Current Balance</h2>
-    <div class="balance-amount" id="balanceDisplay">₨ 0</div>
-    <div class="balance-row">
-      <div class="balance-sub income-bg">
-        <span class="balance-sub-label">Income</span>
-        <span id="totalIncome">₨ 0</span>
-      </div>
-      <div class="balance-sub expense-bg">
-        <span class="balance-sub-label">Expense</span>
-        <span id="totalExpense">₨ 0</span>
-      </div>
-    </div>
-    <div id="udhaarLine"></div>
-  </section>
+  <!-- ═══ TAB BAR (built from TABS in script.js) ═══ -->
+  <nav class="tab-bar" id="tabBar" role="tablist" aria-label="Sections"></nav>
 
-  <!-- ═══ Add transaction ═══ -->
-  <form class="card" id="txForm" novalidate>
-    <h2 class="card-title">Add Transaction</h2>
-    <div class="form-group">
-      <label class="sr-only" for="txType">Type</label>
-      <select id="txType" name="type">
-        <option value="expense" selected>− Expense</option>
-        <option value="income">+ Income</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label class="sr-only" for="txAmount">Amount</label>
-      <input id="txAmount" name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount (e.g. 5000)" autocomplete="off">
-    </div>
-    <div class="form-group">
-      <label class="sr-only" for="txCategory">Category</label>
-      <select id="txCategory" name="category"></select>
-    </div>
-    <div class="form-group">
-      <label class="sr-only" for="txComment">Comment</label>
-      <input id="txComment" name="comment" type="text" placeholder="Comment (optional)" maxlength="300" autocomplete="off">
-    </div>
-    <button class="btn btn-primary" type="submit">Save Transaction</button>
-  </form>
+  <!-- ══════════════ HOME ══════════════ -->
+  <div id="panel-home" data-panel="home" role="tabpanel" aria-labelledby="tab-home">
 
-  <!-- ═══ Budgets ═══ -->
-  <section class="card" aria-labelledby="budgetHeading">
-    <h2 class="card-title" id="budgetHeading">Budgets</h2>
-    <p class="card-subtitle">Monthly spending limits per category, reset on the 1st</p>
-    <div id="budgetList"></div>
-    <form class="budget-edit-section" id="budgetForm" novalidate>
+    <section class="card balance-card" aria-labelledby="balanceHeading">
+      <h2 class="balance-label" id="balanceHeading">Total Current Balance</h2>
+      <div class="balance-amount" id="balanceDisplay">₨ 0</div>
+      <div class="balance-row">
+        <div class="balance-sub income-bg">
+          <span class="balance-sub-label">Income</span>
+          <span id="totalIncome">₨ 0</span>
+        </div>
+        <div class="balance-sub expense-bg">
+          <span class="balance-sub-label">Expense</span>
+          <span id="totalExpense">₨ 0</span>
+        </div>
+      </div>
+      <div id="udhaarLine"></div>
+    </section>
+
+    <form class="card" id="txForm" novalidate>
+      <h2 class="card-title">Add Transaction</h2>
       <div class="form-group">
-        <label class="sr-only" for="budgetCategory">Budget category</label>
-        <select id="budgetCategory"></select>
+        <label class="sr-only" for="txType">Type</label>
+        <select id="txType" name="type">
+          <option value="expense" selected>− Expense</option>
+          <option value="income">+ Income</option>
+        </select>
       </div>
       <div class="form-group">
-        <label class="sr-only" for="budgetAmount">Budget limit</label>
-        <input id="budgetAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Budget limit" autocomplete="off">
+        <label class="sr-only" for="txAmount">Amount</label>
+        <input id="txAmount" name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount (e.g. 5000)" autocomplete="off">
       </div>
-      <button class="btn btn-dark" type="submit">Set Budget</button>
+      <div class="form-group">
+        <label class="sr-only" for="txCategory">Category</label>
+        <select id="txCategory" name="category"></select>
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="txComment">Comment</label>
+        <input id="txComment" name="comment" type="text" placeholder="Comment (optional)" maxlength="300" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="field-label" for="txDate">Date &amp; time</label>
+        <input id="txDate" name="date" type="datetime-local">
+        <p class="field-hint">Change this to file the entry under a different day.</p>
+      </div>
+      <button class="btn btn-primary" type="submit">Save Transaction</button>
     </form>
-  </section>
 
-  <!-- ═══ Udhaar ═══ -->
-  <form class="card" id="debtForm" novalidate>
-    <h2 class="card-title">Udhaar (Owes)</h2>
-    <div class="form-group">
-      <label class="sr-only" for="debtType">Direction</label>
-      <select id="debtType">
-        <option value="receive">Person owes me</option>
-        <option value="pay">I owe person</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label class="sr-only" for="debtPerson">Person name</label>
-      <input id="debtPerson" type="text" placeholder="Person name" maxlength="40" autocomplete="off">
-    </div>
-    <div class="form-group">
-      <label class="sr-only" for="debtAmount">Amount</label>
-      <input id="debtAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
-    </div>
-    <div class="form-group">
-      <label class="sr-only" for="debtNote">Reason</label>
-      <input id="debtNote" type="text" placeholder="Reason (optional)" maxlength="300" autocomplete="off">
-    </div>
-    <label class="check">
-      <input id="debtLedger" type="checkbox" checked>
-      <span>When settled, record it in my balance</span>
-    </label>
-    <button class="btn btn-dark" type="submit">Add Udhaar</button>
-    <div id="debtList"></div>
-  </form>
+  </div>
 
-  <!-- ═══ Reports ═══ -->
-  <section class="card" aria-labelledby="reportHeading">
-    <h2 class="card-title" id="reportHeading">Reports</h2>
-    <div class="btn-row">
-      <button class="btn btn-dark" type="button" data-act="report" data-arg="week">7 Days</button>
-      <button class="btn btn-dark" type="button" data-act="report" data-arg="month">This Month</button>
-      <button class="btn btn-dark" type="button" data-act="report" data-arg="all">All Time</button>
-    </div>
-    <div id="reportOutput" aria-live="polite"></div>
-  </section>
-
-  <!-- ═══ Categories ═══ -->
-  <section class="card" aria-labelledby="catHeading">
-    <h2 class="card-title" id="catHeading">Manage Categories</h2>
-    <p class="card-subtitle">Add or remove spending categories</p>
-    <div id="categoryList"></div>
-    <form class="category-add-section" id="categoryForm" novalidate>
+  <!-- ══════════════ TRANSACTIONS ══════════════ -->
+  <div id="panel-transactions" data-panel="transactions" role="tabpanel" aria-labelledby="tab-transactions" hidden>
+    <section class="card" aria-labelledby="txListHeading">
+      <h2 class="card-title" id="txListHeading">Transactions</h2>
       <div class="form-group">
-        <label class="sr-only" for="newCategoryName">New category name</label>
-        <input id="newCategoryName" type="text" placeholder="New category name" maxlength="40" autocomplete="off">
+        <label class="sr-only" for="txSearch">Search transactions</label>
+        <input id="txSearch" type="search" placeholder="Search by category, comment or amount" autocomplete="off">
       </div>
-      <button class="btn btn-dark" type="submit">Add Category</button>
+      <div id="txList"></div>
+    </section>
+  </div>
+
+  <!-- ══════════════ BUDGET ══════════════ -->
+  <div id="panel-budget" data-panel="budget" role="tabpanel" aria-labelledby="budgetHeading" hidden>
+    <section class="card" aria-labelledby="budgetHeading">
+      <h2 class="card-title" id="budgetHeading">Budgets</h2>
+      <p class="card-subtitle">Monthly spending limits per category. Each month keeps its own limits.</p>
+      <div class="form-group">
+        <label class="field-label" for="budgetPeriod">Month</label>
+        <select id="budgetPeriod"></select>
+      </div>
+      <div id="budgetList"></div>
+      <form class="budget-edit-section" id="budgetForm" novalidate>
+        <div class="form-group">
+          <label class="sr-only" for="budgetCategory">Budget category</label>
+          <select id="budgetCategory"></select>
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="budgetAmount">Budget limit</label>
+          <input id="budgetAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Budget limit" autocomplete="off">
+        </div>
+        <button class="btn btn-dark" type="submit">Set Budget</button>
+      </form>
+    </section>
+  </div>
+
+  <!-- ══════════════ UDHAAR ══════════════ -->
+  <div id="panel-udhaar" data-panel="udhaar" role="tabpanel" aria-labelledby="debtHeading" hidden>
+    <form class="card" id="debtForm" novalidate>
+      <h2 class="card-title" id="debtHeading">Udhaar (Owes)</h2>
+      <div class="form-group">
+        <label class="sr-only" for="debtType">Direction</label>
+        <select id="debtType">
+          <option value="receive">Person owes me</option>
+          <option value="pay">I owe person</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="debtPerson">Person name</label>
+        <input id="debtPerson" type="text" placeholder="Person name" maxlength="40" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="debtAmount">Amount</label>
+        <input id="debtAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="debtNote">Reason</label>
+        <input id="debtNote" type="text" placeholder="Reason (optional)" maxlength="300" autocomplete="off">
+      </div>
+      <label class="check">
+        <input id="debtLedger" type="checkbox" checked>
+        <span>When settled, record it in my balance</span>
+      </label>
+      <button class="btn btn-dark" type="submit">Add Udhaar</button>
+      <div id="debtList"></div>
     </form>
-  </section>
+  </div>
 
-  <!-- ═══ Backup ═══ -->
-  <section class="card" aria-labelledby="backupHeading">
-    <h2 class="card-title" id="backupHeading">Backup</h2>
-    <p class="card-subtitle">Your data lives only in this browser. Export regularly.</p>
-    <button class="btn btn-dark" type="button" data-act="export">Export Backup</button>
-    <div class="form-group backup-import">
-      <label class="file-label" for="importFile">Choose a backup file</label>
-      <input type="file" id="importFile" accept=".json,application/json">
-    </div>
-    <button class="btn btn-dark" type="button" data-act="import">Import Backup</button>
-    <button class="btn btn-danger" type="button" data-act="reset">Delete all local data</button>
-  </section>
+  <!-- ══════════════ REPORTS ══════════════ -->
+  <div id="panel-reports" data-panel="reports" role="tabpanel" aria-labelledby="reportHeading" hidden>
+    <section class="card" aria-labelledby="reportHeading">
+      <h2 class="card-title" id="reportHeading">Reports</h2>
+      <div class="btn-row">
+        <button class="btn btn-dark" type="button" data-act="report" data-arg="week">7 Days</button>
+        <button class="btn btn-dark" type="button" data-act="report" data-arg="month">This Month</button>
+        <button class="btn btn-dark" type="button" data-act="report" data-arg="prevMonth">Last Month</button>
+        <button class="btn btn-dark" type="button" data-act="report" data-arg="all">All</button>
+      </div>
+      <form class="range-form" id="rangeForm" novalidate>
+        <div class="form-group">
+          <label class="field-label" for="reportFrom">From</label>
+          <input id="reportFrom" type="date">
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="reportTo">To</label>
+          <input id="reportTo" type="date">
+        </div>
+        <button class="btn btn-dark" type="submit" data-act="report-custom">Show range</button>
+      </form>
+      <div id="reportOutput" aria-live="polite"></div>
+    </section>
+  </div>
 
-  <!-- ═══ Transactions ═══ -->
-  <section class="card" aria-labelledby="txListHeading">
-    <h2 class="card-title" id="txListHeading">Transactions</h2>
-    <div class="form-group">
-      <label class="sr-only" for="txSearch">Search transactions</label>
-      <input id="txSearch" type="search" placeholder="Search by category, comment or amount" autocomplete="off">
-    </div>
-    <div id="txList"></div>
-  </section>
+  <!-- ══════════════ SHOPPING LIST ══════════════ -->
+  <div id="panel-list" data-panel="list" role="tabpanel" aria-labelledby="listHeading" hidden>
+    <form class="card" id="itemForm" novalidate>
+      <h2 class="card-title" id="listHeading">Shopping List</h2>
+      <p class="card-subtitle">Tick what you bought, then save it as an expense.</p>
+      <div class="form-group">
+        <label class="sr-only" for="itemName">Item</label>
+        <input id="itemName" type="text" placeholder="What do you need? (e.g. Milk)" maxlength="80" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="itemQty">Quantity</label>
+        <input id="itemQty" type="text" placeholder="Quantity (optional, e.g. 2 litre)" maxlength="24" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="itemNote">Note</label>
+        <input id="itemNote" type="text" placeholder="Note (optional)" maxlength="300" autocomplete="off">
+      </div>
+      <button class="btn btn-primary" type="submit">Add to list</button>
+    </form>
+    <section class="card" aria-label="List items">
+      <div id="itemList"></div>
+      <form class="buy-form" id="buyForm" novalidate>
+        <h3 class="card-title">Save as expense</h3>
+        <p class="card-subtitle">Tick what you bought, then enter the total and save it as one expense.</p>
+        <div class="form-group">
+          <label class="field-label" for="itemCost">Total amount paid</label>
+          <input id="itemCost" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount (e.g. 1200)" autocomplete="off">
+        </div>
+        <button class="btn btn-primary" type="submit">Save as expense</button>
+      </form>
+    </section>
+  </div>
+
+  <!-- ══════════════ CATEGORIES ══════════════ -->
+  <div id="panel-categories" data-panel="categories" role="tabpanel" aria-labelledby="catHeading" hidden>
+    <section class="card" aria-labelledby="catHeading">
+      <h2 class="card-title" id="catHeading">Manage Categories</h2>
+      <p class="card-subtitle">Add or remove spending categories</p>
+      <div id="categoryList"></div>
+      <form class="category-add-section" id="categoryForm" novalidate>
+        <div class="form-group">
+          <label class="sr-only" for="newCategoryName">New category name</label>
+          <input id="newCategoryName" type="text" placeholder="New category name" maxlength="40" autocomplete="off">
+        </div>
+        <button class="btn btn-dark" type="submit">Add Category</button>
+      </form>
+    </section>
+  </div>
+
+  <!-- ══════════════ BACKUP / SETTINGS ══════════════ -->
+  <div id="panel-settings" data-panel="settings" role="tabpanel" aria-labelledby="backupHeading" hidden>
+    <section class="card" aria-labelledby="monthHeading">
+      <h2 class="card-title" id="monthHeading">Start a New Month</h2>
+      <p class="card-subtitle">Close the current month to keep its budgets and reports separate. Nothing is deleted.</p>
+      <div id="monthList"></div>
+      <button class="btn btn-dark mt-10" type="button" data-act="month-close">Close this month</button>
+    </section>
+
+    <section class="card" aria-labelledby="backupHeading">
+      <h2 class="card-title" id="backupHeading">Backup</h2>
+      <p class="card-subtitle">Your data lives only in this browser. Export regularly.</p>
+      <button class="btn btn-dark" type="button" data-act="export">Export Backup</button>
+      <div class="form-group backup-import">
+        <label class="file-label" for="importFile">Choose a backup file</label>
+        <input type="file" id="importFile" accept=".json,application/json">
+      </div>
+      <button class="btn btn-dark" type="button" data-act="import">Import Backup</button>
+      <button class="btn btn-danger" type="button" data-act="reset">Delete all local data</button>
+    </section>
+  </div>
 
 </div>
 
@@ -190,6 +269,10 @@
     <div class="form-group">
       <label class="field-label" for="editComment">Comment</label>
       <input id="editComment" type="text" placeholder="Comment" maxlength="300" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="field-label" for="editDate">Date &amp; time</label>
+      <input id="editDate" type="datetime-local">
     </div>
     <button class="btn btn-primary" type="submit">Update</button>
     <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="editModal">Cancel</button>
