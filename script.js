@@ -22,7 +22,7 @@
 /* ---------- constants ---------- */
 
 const STORAGE_KEY = 'salaryManager:state';
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const LEGACY_KEYS = ['transactions', 'debts', 'budgets', 'categories'];
 const CURRENCY = '₨';
 const MAX_AMOUNT = 1e12;
@@ -36,16 +36,40 @@ const STAMP_RE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?/;
 const DEFAULT_CATEGORIES = ['Salary', 'Food', 'Bike/Fuel', 'Groceries', 'Bills', 'Shopping', 'Health', 'Travel', 'Family', 'Other'];
 const DEFAULT_BUDGETS = { Food: 10000, 'Bike/Fuel': 10000, Groceries: 8000, Bills: 5000 };
 
+/* Seeded accounts. These are only a starting point — every account can be
+   renamed, added, archived or deleted from the Accounts tab, so nothing about
+   the app is hard-wired to this list. The ids are fixed on purpose: a v3 file
+   is migrated by pointing its transactions at CASH_ACCOUNT_ID, and a stable id
+   means that mapping survives a re-import. */
+const CASH_ACCOUNT_ID = 'acc-cash';
+const DEFAULT_ACCOUNTS = [
+  { id: CASH_ACCOUNT_ID, name: 'Cash',     kind: 'cash',   openingBalance: 0, archived: false },
+  { id: 'acc-nayapay',   name: 'NayaPay',  kind: 'ewallet', openingBalance: 0, archived: false },
+  { id: 'acc-easypaisa', name: 'Easypaisa', kind: 'ewallet', openingBalance: 0, archived: false }
+];
+const ACCOUNT_KINDS = ['cash', 'bank', 'ewallet'];
+
+/* Colour per account kind, so the balance boxes stay recognisable at a glance.
+   Both tints are paired with an ink colour that clears 4.5:1 on them. */
+const ACCOUNT_TINT = {
+  cash:   { bg: '#e8f1fd', ink: '#0a3d80' },
+  bank:   { bg: '#eae6fd', ink: '#4a2a8f' },
+  ewallet:{ bg: '#fdf0e3', ink: '#8a4a00' }
+};
+const ACCOUNT_TINT_FALLBACK = { bg: '#f0f0f0', ink: '#4a4a52' };
+
 /* Tabs, in menu order. Keep in sync with the markup. */
 const TABS = [
-  { id: 'home',         label: 'Home',        glyph: '◈' },
-  { id: 'transactions', label: 'Records',     glyph: '≡' },
-  { id: 'budget',       label: 'Budget',      glyph: '◎' },
-  { id: 'udhaar',       label: 'Udhaar',      glyph: '⇄' },
-  { id: 'reports',      label: 'Reports',     glyph: '◔' },
-  { id: 'list',         label: 'List',        glyph: '☑' },
-  { id: 'categories',   label: 'Categories',  glyph: '❑' },
-  { id: 'settings',     label: 'Backup',      glyph: '⚙' }
+  { id: 'home',         label: 'Home',       glyph: '◈' },
+  { id: 'accounts',     label: 'Accounts',   glyph: '▣' },
+  { id: 'transactions', label: 'Records',    glyph: '≡' },
+  { id: 'budget',       label: 'Budget',     glyph: '◎' },
+  { id: 'udhaar',       label: 'Udhaar',     glyph: '⇄' },
+  { id: 'custody',      label: 'Amanat',     glyph: '⚿' },
+  { id: 'reports',      label: 'Reports',    glyph: '◔' },
+  { id: 'list',         label: 'List',       glyph: '☑' },
+  { id: 'categories',   label: 'Categories', glyph: '❑' },
+  { id: 'settings',     label: 'Backup',     glyph: '⚙' }
 ];
 
 /* Categorical palette. Chosen to stay distinguishable on white and to hold
@@ -60,7 +84,8 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 /* ---------- state ---------- */
 
 /** @type {{version:number, transactions:Array, debts:Array, budgets:Object,
- *           categories:string[], shopping:Array, settings:Object, closedPeriods:string[]}} */
+ *           categories:string[], shopping:Array, custody:Array, accounts:Array,
+ *           settings:Object, closedPeriods:string[]}} */
 let state = blankState();
 let storageUsable = true;
 let activeTab = 'home';
@@ -123,6 +148,20 @@ function cleanText(v, limit) {
   if (typeof v !== 'string') return '';
   // strip control characters that would corrupt display
   return v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, limit);
+}
+
+/** Coerce anything into a finite number inside a range. Used where 0 and
+ *  negatives are legitimate (an account's opening balance), unlike
+ *  toPositiveNumber which deliberately rejects them. */
+function clampNumber(v, lo, hi) {
+  let n;
+  if (typeof v === 'number') n = v;
+  else if (typeof v === 'string' && v.trim() !== '') n = Number(v.replace(/,/g, '').trim());
+  else return 0;
+  if (!Number.isFinite(n)) return 0;
+  if (n < lo) return lo;
+  if (n > hi) return hi;
+  return n;
 }
 
 /* ============================================================
@@ -284,6 +323,10 @@ function defaultPeriodBudgets() {
   return o;
 }
 
+function blankAccounts() {
+  return DEFAULT_ACCOUNTS.map((a) => ({ ...a }));
+}
+
 function blankState() {
   const budgets = Object.create(null);
   budgets[currentPeriod()] = defaultPeriodBudgets();
@@ -294,7 +337,11 @@ function blankState() {
     budgets,
     categories: [...DEFAULT_CATEGORIES],
     shopping: [],
-    settings: { budgetOffset: Object.create(null) },
+    // Money the user holds for someone else. Deliberately NOT part of the
+    // balance: it is tracked apart so it can never inflate the total.
+    custody: [],
+    accounts: blankAccounts(),
+    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID },
     closedPeriods: []
   };
 }
@@ -377,15 +424,75 @@ function sanitizeState(raw) {
     }
     note('moved your budgets into the current month (' + periodLabel(thisPeriod) + ')');
   }
-  if (!Object.prototype.hasOwnProperty.call(budgets, thisPeriod)) budgets[thisPeriod] = Object.create(null);
+  if (!Object.prototype.hasOwnProperty.call(budgets, thisPeriod)) {
+    // Seed the default limits only when the file carried no budget data at all,
+    // which means a new or damaged file. A month the user deliberately emptied
+    // is stored as an explicit empty object and must be left alone — silently
+    // restoring limits they removed would be just as wrong as losing them.
+    const hadAnyBudgets = Object.keys(budgets).length > 0;
+    budgets[thisPeriod] = hadAnyBudgets ? Object.create(null) : defaultPeriodBudgets();
+    if (!hadAnyBudgets) note('restored the default budgets for ' + periodLabel(thisPeriod));
+  }
 
-  // ── settings.budgetOffset: category name → true ─────────────
+  // ── accounts ────────────────────────────────────────────────
+  // Sanitised first, because transactions reference accounts and a dangling
+  // accountId must be repaired before it can be resolved.
+  const accounts = [];
+  const accountIds = new Set();
+  const accountNames = new Set();
+  const rawAccounts = Array.isArray(raw.accounts) ? raw.accounts : null;
+
+  const addAccount = (id, name, kind, opening, archived) => {
+    const clean = cleanText(name, NAME_LIMIT);
+    if (!clean) return null;
+    const key = clean.toLowerCase();
+    if (accountNames.has(key)) { note('merged a duplicate account named "' + clean + '"'); return null; }
+    accountNames.add(key);
+    let aid = (typeof id === 'string' && id.trim()) ? id.trim() : newId();
+    if (accountIds.has(aid)) aid = newId();
+    accountIds.add(aid);
+    accounts.push({
+      id: aid,
+      name: clean,
+      kind: ACCOUNT_KINDS.indexOf(kind) !== -1 ? kind : 'ewallet',
+      // An opening balance may legitimately be zero, so it is read directly
+      // rather than through toPositiveNumber, which rejects 0 and negatives.
+      openingBalance: round2(clampNumber(opening, -MAX_AMOUNT, MAX_AMOUNT)),
+      archived: archived === true
+    });
+    return aid;
+  };
+
+  for (const a of rawAccounts || []) {
+    if (!isObject(a)) { note('skipped a malformed account'); continue; }
+    addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived);
+  }
+
+  let assignedToCash = 0;
+  if (!accounts.length) {
+    if (rawAccounts !== null) note('no usable account was in the file, so Cash, NayaPay and Easypaisa were created');
+    for (const a of DEFAULT_ACCOUNTS) addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived);
+  }
+
+  const cashId = accounts.some((a) => a.kind === 'cash') ? accounts.find((a) => a.kind === 'cash').id : accounts[0].id;
+  const accountIdSet = new Set(accounts.map((a) => a.id));
+  const accountNameOf = (id) => {
+    const a = accounts.find((x) => x.id === id);
+    return a ? a.name : '';
+  };
+
+  // ── settings ────────────────────────────────────────────────
   const budgetOffset = Object.create(null);
   const rawSettings = isObject(raw.settings) ? raw.settings : {};
   const rawOffset = isObject(rawSettings.budgetOffset) ? rawSettings.budgetOffset : {};
   for (const key of Object.keys(rawOffset)) {
     if (rawOffset[key] === true) budgetOffset[key.toLowerCase()] = true;
   }
+  // Remembered so the next entry defaults to the account last used, but only
+  // if it still exists.
+  const lastAccountId = typeof rawSettings.lastAccountId === 'string' && accountIdSet.has(rawSettings.lastAccountId)
+    ? rawSettings.lastAccountId
+    : cashId;
 
   // ── closedPeriods ───────────────────────────────────────────
   const closedPeriods = [];
@@ -399,9 +506,49 @@ function sanitizeState(raw) {
   }
   closedPeriods.sort();
 
+  // ── custody: money held for someone else ────────────────────
+  // 'given' = the user handed it over and it is no longer theirs.
+  // 'held'  = someone handed it to the user to keep. Neither is counted in the
+  // balance; the only fields the balance ever reads are transactions.
+  const custody = [];
+  const custodyIds = new Set();
+  const rawCustody = Array.isArray(raw.custody) ? raw.custody : [];
+  for (const c of rawCustody) {
+    if (!isObject(c)) { note('skipped a malformed amanat entry'); continue; }
+    const person = cleanText(c.person, NAME_LIMIT);
+    const amount = toPositiveNumber(c.amount);
+    if (!person) { note('dropped an amanat entry with no person name'); continue; }
+    if (amount === null) { note('dropped an amanat entry with an unusable amount'); continue; }
+
+    let id = typeof c.id === 'string' && c.id.trim() ? c.id.trim() : newId();
+    if (custodyIds.has(id)) { note('gave a duplicated amanat id a fresh one'); id = newId(); }
+    custodyIds.add(id);
+
+    // A partial return is normal, so returned is allowed to be 0 or partial but
+    // never more than was handed over.
+    let returned = c.returned === 0 ? 0 : toPositiveNumber(c.returned);
+    if (returned === null) returned = 0;
+    if (returned > amount) { note('capped a return that was larger than the original amount'); returned = amount; }
+
+    const date = parseDate(c.date);
+    const returnedDate = returned > 0 ? (parseDate(c.returnedDate) || date || new Date()) : null;
+
+    custody.push({
+      id,
+      person,
+      direction: c.direction === 'given' ? 'given' : 'held',
+      amount,
+      returned,
+      note: cleanText(c.note, COMMENT_LIMIT),
+      date: toLocalStamp(date || new Date()),
+      returnedDate: returnedDate ? toLocalStamp(returnedDate) : null
+    });
+  }
+
   // ── transactions ────────────────────────────────────────────
   const transactions = [];
   const txIds = new Set();
+  let defaultedToCash = 0;
   const rawTxs = Array.isArray(raw.transactions) ? raw.transactions : [];
   if (raw.transactions !== undefined && !Array.isArray(raw.transactions)) note('the transaction list was not a list and was skipped');
   for (const t of rawTxs) {
@@ -416,17 +563,47 @@ function sanitizeState(raw) {
     const date = parseDate(t.date);
     if (!date) note('a transaction had no readable date and was dated today');
 
+    const isTransfer = t.type === 'transfer';
+
+    // Resolve the account. A v3 record has no accountId at all: its money was
+    // whatever the user physically had, so it lands on Cash.
+    let accountId = typeof t.accountId === 'string' && accountIdSet.has(t.accountId) ? t.accountId : null;
+    if (!accountId) {
+      if (typeof t.accountId === 'string' && t.accountId) note('re-filed a transaction whose account no longer exists, under Cash');
+      accountId = cashId;
+      defaultedToCash++;
+    }
+
+    let toAccountId = null;
+    if (isTransfer) {
+      toAccountId = typeof t.toAccountId === 'string' && accountIdSet.has(t.toAccountId) ? t.toAccountId : null;
+      if (!toAccountId || toAccountId === accountId) {
+        // A transfer that loops back into the same account moves nothing, so it
+        // is meaningless rather than merely wrong.
+        note('dropped a transfer that did not name a different account');
+        continue;
+      }
+    }
+
     transactions.push({
       id,
-      type: t.type === 'income' ? 'income' : 'expense',
+      type: isTransfer ? 'transfer' : (t.type === 'income' ? 'income' : 'expense'),
       amount,
-      category: cleanText(t.category, NAME_LIMIT) || fallbackCategory,
+      // A transfer has no category: it is not spending, so filing it under
+      // "Groceries" would quietly corrupt that category's budget.
+      category: isTransfer ? '' : (cleanText(t.category, NAME_LIMIT) || fallbackCategory),
       comment: cleanText(t.comment, COMMENT_LIMIT),
       // Rewritten as a local stamp. A stored UTC instant is preserved exactly:
       // parseDate() resolves it, then toLocalStamp writes the local equivalent.
       date: toLocalStamp(date || new Date()),
+      accountId,
+      toAccountId: isTransfer ? toAccountId : null,
       source: typeof t.source === 'string' ? t.source : undefined
     });
+  }
+
+  if (defaultedToCash) {
+    note('put ' + defaultedToCash + ' earlier transaction(s) under Cash — change any that belong to a wallet in Records');
   }
 
   // ── debts ───────────────────────────────────────────────────
@@ -492,7 +669,13 @@ function sanitizeState(raw) {
   }
 
   return {
-    state: { version: SCHEMA_VERSION, transactions, debts, budgets, categories, shopping, settings: { budgetOffset }, closedPeriods },
+    state: {
+      version: SCHEMA_VERSION,
+      transactions, debts, budgets, categories, shopping,
+      custody, accounts,
+      settings: { budgetOffset, lastAccountId },
+      closedPeriods
+    },
     problems
   };
 }
@@ -595,11 +778,15 @@ function resetAll() {
    Derived figures
    ============================================================ */
 
-/** Totals over an optional window. Future-dated records are never counted. */
+/** Totals over an optional window. Future-dated records are never counted.
+ *  Transfers are skipped here on purpose: moving your own money between your
+ *  own wallets is not income and not spending, and counting it would inflate
+ *  the income box and burn category budgets for no reason. */
 function ledgerTotals(start, end) {
   let income = 0;
   let expense = 0;
   for (const t of state.transactions) {
+    if (t.type === 'transfer') continue;
     const d = new Date(t.date);
     if (start && d < start) continue;
     if (end && d > end) continue;
@@ -608,6 +795,97 @@ function ledgerTotals(start, end) {
   }
   return { income: round2(income), expense: round2(expense), net: round2(income - expense) };
 }
+
+/* ---------- accounts ---------- */
+
+function findAccount(id) { return state.accounts.find((a) => a.id === id) || null; }
+function accountName(id) { const a = findAccount(id); return a ? a.name : 'Unknown account'; }
+function cashAccountId() {
+  const cash = state.accounts.find((a) => a.kind === 'cash');
+  return cash ? cash.id : (state.accounts[0] ? state.accounts[0].id : '');
+}
+function accountTint(kind) { return ACCOUNT_TINT[kind] || ACCOUNT_TINT_FALLBACK; }
+
+/** Running balance of one account, over the whole ledger.
+ *  opening + income in − expense out + transfers in − transfers out. */
+function accountBalance(id) {
+  let bal = 0;
+  for (const t of state.transactions) {
+    const d = new Date(t.date);
+    if (Number.isNaN(d.getTime()) || d > endOfToday()) continue;   // future-dated money is not in the bank yet
+    if (t.type === 'transfer') {
+      if (t.toAccountId === id) bal += t.amount;
+      if (t.accountId === id) bal -= t.amount;
+    } else if (t.accountId === id) {
+      bal += t.type === 'income' ? t.amount : -t.amount;
+    }
+  }
+  const acc = findAccount(id);
+  if (acc) bal += acc.openingBalance;
+  return round2(bal);
+}
+
+/** Balance of every account, plus the grand total. */
+function allAccountBalances() {
+  const rows = state.accounts.map((a) => ({
+    account: a,
+    balance: accountBalance(a.id)
+  }));
+  const total = round2(rows.reduce((s, r) => s + r.balance, 0));
+  return { rows, total };
+}
+
+/** Income / expense / transfer split for one account over a window. */
+function accountActivity(id, start, end) {
+  let income = 0;
+  let expense = 0;
+  let transferIn = 0;
+  let transferOut = 0;
+  for (const t of state.transactions) {
+    const d = new Date(t.date);
+    if (start && d < start) continue;
+    if (end && d > end) continue;
+    if (t.type === 'transfer') {
+      if (t.toAccountId === id) transferIn += t.amount;
+      if (t.accountId === id) transferOut += t.amount;
+    } else if (t.accountId === id) {
+      if (t.type === 'income') income += t.amount;
+      else expense += t.amount;
+    }
+  }
+  return { income: round2(income), expense: round2(expense), transferIn: round2(transferIn), transferOut: round2(transferOut) };
+}
+
+/** Every transfer, newest first, for the Accounts tab. */
+function transferList() {
+  return state.transactions
+    .filter((t) => t.type === 'transfer')
+    .sort((a, b) => {
+      const diff = new Date(b.date) - new Date(a.date);
+      return diff !== 0 ? diff : (a.id < b.id ? -1 : 1);
+    });
+}
+
+function countTransactionsForAccount(id) {
+  return state.transactions.filter((t) => t.accountId === id || t.toAccountId === id).length;
+}
+
+/* ---------- custody (amanat) ---------- */
+
+/** What is still held out for other people. Nothing here touches the balance. */
+function custodyTotals() {
+  let given = 0;
+  let held = 0;
+  for (const c of state.custody) {
+    const out = round2(c.amount - c.returned);
+    if (out <= 0) continue;
+    if (c.direction === 'given') given += out;
+    else held += out;
+  }
+  return { given: round2(given), held: round2(held) };
+}
+
+function custodyOutstanding(c) { return round2(c.amount - c.returned); }
 
 function udhaarTotals() {
   let receive = 0;
@@ -790,6 +1068,29 @@ function fillCategorySelect(select, opts) {
 function refreshSelects() {
   fillCategorySelect($('txCategory'));
   fillCategorySelect($('budgetCategory'));
+  refreshAccountSelects();
+}
+
+/** Fill an account <select>. Archived accounts are omitted by default so new
+ *  entries cannot land in a closed wallet, but a caller can ask for them by
+ *  passing the id it needs to keep visible (used when editing a record). */
+function fillAccountSelect(select, opts) {
+  if (!select) return;
+  const o = opts || {};
+  const chosen = typeof o.selected === 'string' ? o.selected : (state.settings.lastAccountId || cashAccountId());
+  const list = state.accounts.filter((a) => !a.archived || a.id === chosen);
+
+  mount(select, list.map((a) => h('option', { value: a.id }, a.archived ? a.name + ' (archived)' : a.name)));
+  if (list.some((a) => a.id === chosen)) select.value = chosen;
+  else if (list.length) select.value = list[0].id;
+}
+
+function refreshAccountSelects() {
+  fillAccountSelect($('txAccount'));
+  fillAccountSelect($('txToAccount'));
+  fillAccountSelect($('itemAccount'));
+  fillAccountSelect($('editAccount'));
+  fillAccountSelect($('editToAccount'));
 }
 
 /** Month <select> for places that need to look back in time. */
@@ -801,6 +1102,179 @@ function fillPeriodSelect(select, opts) {
   const target = o.selected && periods.indexOf(o.selected) !== -1 ? o.selected : periods[0];
   if (target) select.value = target;
   return target;
+}
+
+/* ============================================================
+   Accounts
+   ============================================================ */
+
+function addAccount(nameInput, kindSelect) {
+  const name = cleanText(nameInput.value, NAME_LIMIT);
+  if (!name) { toast('Enter an account name'); return; }
+  if (/[<>&"']/.test(name)) { toast('Account names cannot contain < > & " or \''); return; }
+  if (state.accounts.some((a) => a.name.toLowerCase() === name.toLowerCase())) {
+    toast('"' + name + '" already exists');
+    return;
+  }
+  if (state.accounts.length >= 24) { toast('24 accounts is the limit'); return; }
+
+  const kind = ACCOUNT_KINDS.indexOf(kindSelect.value) !== -1 ? kindSelect.value : 'ewallet';
+  state.accounts.push({ id: newId(), name, kind, openingBalance: 0, archived: false });
+  nameInput.value = '';
+  save();
+  toast('Added "' + name + '"');
+}
+
+function renameAccount(id) {
+  const acc = findAccount(id);
+  if (!acc) { toast('That account no longer exists'); return; }
+  const name = cleanText(window.prompt('Rename "' + acc.name + '" to:', acc.name), NAME_LIMIT);
+  if (!name) return;   // cancelled or blank: leave it alone
+  if (/[<>&"']/.test(name)) { toast('Account names cannot contain < > & " or \''); return; }
+  if (state.accounts.some((a) => a.id !== id && a.name.toLowerCase() === name.toLowerCase())) {
+    toast('"' + name + '" already exists');
+    return;
+  }
+  acc.name = name;
+  save();
+  toast('Renamed to "' + name + '"');
+}
+
+/** Set the opening balance — what was already in the account before the first
+ *  transaction ever recorded against it. This is the one figure that is not
+ *  derived from the ledger, so it is only ever edited on purpose. */
+function setOpeningBalance(id) {
+  const acc = findAccount(id);
+  if (!acc) { toast('That account no longer exists'); return; }
+  const input = window.prompt(
+    'Opening balance for "' + acc.name + '"\n\n' +
+    'How much was in this account before you started recording transactions?\n' +
+    'Use a minus sign if it was overdrawn.',
+    String(acc.openingBalance)
+  );
+  if (input === null) return;
+  const val = clampNumber(input, -MAX_AMOUNT, MAX_AMOUNT);
+  acc.openingBalance = round2(val);
+  save();
+  toast(acc.name + ' opening balance set to ' + formatMoney(val));
+}
+
+function toggleArchiveAccount(id) {
+  const acc = findAccount(id);
+  if (!acc) { toast('That account no longer exists'); return; }
+  if (acc.archived) {
+    acc.archived = false;
+    save();
+    toast(acc.name + ' is active again');
+    return;
+  }
+  const n = countTransactionsForAccount(id);
+  const cash = cashAccountId();
+  if (id === cash) {
+    // The cash account is the migration target for old records, and the balance
+    // card is built around it, so it must always exist.
+    toast('Cash cannot be archived — every transaction has to land somewhere');
+    return;
+  }
+  if (!confirm(
+    'Archive "' + acc.name + '"?\n\n' +
+    (n ? n + ' transaction(s) use it. They stay exactly where they are and keep counting towards its balance — the account just stops appearing in the "which account?" dropdowns.\n\n'
+        : 'No transactions use it yet.\n\n') +
+    'You can bring it back at any time.'
+  )) return;
+  acc.archived = true;
+  save();
+  toast('Archived "' + acc.name + '"');
+}
+
+function deleteAccount(id) {
+  const acc = findAccount(id);
+  if (!acc) { toast('That account no longer exists'); return; }
+  if (id === cashAccountId()) { toast('Cash cannot be deleted — every transaction has to land somewhere'); return; }
+  const n = countTransactionsForAccount(id);
+  if (n > 0) {
+    toast('"' + acc.name + '" has ' + n + ' transaction(s). Archive it instead — deleting would lose them.');
+    return;
+  }
+  if (!confirm('Delete "' + acc.name + '"? This cannot be undone.')) return;
+  state.accounts = state.accounts.filter((a) => a.id !== id);
+  if (state.settings.lastAccountId === id) state.settings.lastAccountId = cashAccountId();
+  save();
+  toast('Deleted "' + acc.name + '"');
+}
+
+/** Point a transaction at a different account without opening the edit modal —
+ *  this is the fast path for fixing the records migrated to Cash. */
+function reassignTransaction(id, newAccountId) {
+  const t = state.transactions.find((x) => x.id === id);
+  if (!t) { toast('That record no longer exists'); return; }
+  const from = accountName(t.accountId);
+  t.accountId = newAccountId;
+  if (save()) toast('Moved ' + formatMoney(t.amount) + ' from ' + from + ' to ' + accountName(newAccountId));
+}
+
+/* ============================================================
+   Custody / Amanat
+   ============================================================ */
+
+function addCustody() {
+  const person = cleanText($('custodyPerson').value, NAME_LIMIT);
+  if (!person) { toast('Enter the person’s name'); return; }
+  const amount = readAmountField($('custodyAmount'), 'Amount');
+  if (amount.error) { toast(amount.error); return; }
+
+  state.custody.push({
+    id: newId(),
+    person,
+    direction: $('custodyDirection').value === 'held' ? 'held' : 'given',
+    amount: amount.value,
+    returned: 0,
+    note: cleanText($('custodyNote').value, COMMENT_LIMIT),
+    date: inputToStamp($('custodyDate').value),
+    returnedDate: null
+  });
+
+  $('custodyPerson').value = '';
+  $('custodyAmount').value = '';
+  $('custodyNote').value = '';
+  $('custodyPerson').focus();
+  save();
+  toast('Amanat saved. It stays out of your balance.');
+}
+
+function returnCustody(id) {
+  const c = state.custody.find((x) => x.id === id);
+  if (!c) { toast('That entry no longer exists'); return; }
+  const out = custodyOutstanding(c);
+  if (out <= 0) return;
+
+  const input = window.prompt(
+    c.direction === 'given'
+      ? 'How much of the ' + formatMoney(out) + ' you gave ' + c.person + ' have come back?\n\nEnter the full amount to close it, or less to record a part return.'
+      : 'How much of the ' + formatMoney(out) + ' ' + c.person + ' left with you has been returned?\n\nEnter the full amount to close it, or less to record a part return.',
+    String(out)
+  );
+  if (input === null) return;
+
+  let amount = toPositiveNumber(input);
+  if (amount === null) amount = out;   // blank means "all of it"
+  if (amount > out) { toast('That is more than the ' + formatMoney(out) + ' still outstanding'); return; }
+
+  const before = c.returned;
+  c.returned = round2(before + amount);
+  c.returnedDate = c.returned >= c.amount ? nowStamp() : c.returnedDate;
+  save();
+  toast(c.returned >= c.amount
+    ? c.person + ' settled — nothing outstanding'
+    : 'Recorded ' + formatMoney(amount) + ' back. ' + formatMoney(custodyOutstanding(c)) + ' still out.');
+}
+
+function deleteCustody(id) {
+  const c = state.custody.find((x) => x.id === id);
+  if (!c) { toast('That entry is already gone'); return; }
+  if (!confirm('Delete the amanat entry for ' + c.person + ' (' + formatMoney(c.amount) + ')?')) return;
+  state.custody = state.custody.filter((x) => x.id !== id);
+  if (save()) toast('Amanat entry deleted');
 }
 
 /* ============================================================
@@ -914,37 +1388,135 @@ function readAmountField(input, label) {
   return { value: round2(n) };
 }
 
+/** Build a transaction from the Home form. Also used by the edit modal, so the
+ *  validation lives in one place and a saved record can never be shaped
+ *  differently depending on which form it came through. */
+function buildTransaction(type, amount, category, comment, date, fromId, toId) {
+  if (type === 'transfer') {
+    if (fromId === toId) return { error: 'Pick two different accounts to move money between' };
+    return {
+      value: {
+        id: newId(),
+        type: 'transfer',
+        amount,
+        // No category on purpose: a transfer is not spending, and filing it
+        // under one would corrupt that category's budget.
+        category: '',
+        comment,
+        date,
+        accountId: fromId,
+        toAccountId: toId,
+        source: undefined
+      }
+    };
+  }
+  if (!findAccount(fromId)) return { error: 'Choose which account this was paid from or into' };
+  return {
+    value: {
+      id: newId(),
+      type: type === 'income' ? 'income' : 'expense',
+      amount,
+      category,
+      comment,
+      date,
+      accountId: fromId,
+      toAccountId: null,
+      source: undefined
+    }
+  };
+}
+
 function addTransaction() {
   const amount = readAmountField($('txAmount'), 'Amount');
   if (amount.error) { toast(amount.error); return; }
 
-  state.transactions.unshift({
-    id: newId(),
-    type: $('txType').value === 'income' ? 'income' : 'expense',
-    amount: amount.value,
-    category: $('txCategory').value,
-    comment: cleanText($('txComment').value, COMMENT_LIMIT),
-    date: inputToStamp($('txDate').value)
-  });
+  const type = ['income', 'expense', 'transfer'].indexOf($('txType').value) !== -1 ? $('txType').value : 'expense';
+  const fromId = $('txAccount').value;
+  const toId = $('txToAccount').value;
+
+  const built = buildTransaction(
+    type,
+    amount.value,
+    $('txCategory').value,
+    cleanText($('txComment').value, COMMENT_LIMIT),
+    inputToStamp($('txDate').value),
+    fromId,
+    toId
+  );
+  if (built.error) { toast(built.error); return; }
+
+  state.transactions.unshift(built.value);
+  state.settings.lastAccountId = fromId;
 
   $('txAmount').value = '';
   $('txComment').value = '';
   $('txType').value = 'expense';
   $('txDate').value = stampToInput(nowStamp());
+  setTxTypeFields();
   $('txAmount').focus();
 
-  if (save()) toast('Transaction saved');
+  if (!save()) return;
+  toast(type === 'transfer'
+    ? 'Moved ' + formatMoney(amount.value) + ' from ' + accountName(fromId) + ' to ' + accountName(toId)
+    : 'Transaction saved');
+}
+
+/** Show only the fields that apply to the selected type. A transfer has no
+ *  category, so showing an unused dropdown there would invite a wrong filing. */
+function setTxTypeFields() {
+  const isTransfer = $('txType').value === 'transfer';
+  const setHidden = (id, hidden) => { const e = $(id); if (e) e.hidden = hidden; };
+
+  setHidden('txCategoryGroup', isTransfer);
+  setHidden('txToAccountGroup', !isTransfer);
+  setHidden('txAccountGroup', false);
+  if (isTransfer) {
+    const to = $('txToAccount');
+    const from = $('txAccount');
+    if (to && from && to.value === from.value) {
+      // Default the destination to something that is not the source.
+      const other = Array.from(to.options).find((o) => o.value !== from.value);
+      if (other) to.value = other.value;
+    }
+    const label = $('txAccountLabel');
+    if (label) label.textContent = 'From account';
+  } else {
+    const label = $('txAccountLabel');
+    if (label) label.textContent = 'Account';
+  }
+  if (isTransfer) {
+    const sub = $('txTransferNote');
+    if (sub) sub.hidden = false;
+  } else {
+    const sub = $('txTransferNote');
+    if (sub) sub.hidden = true;
+  }
 }
 
 function deleteTransaction(id) {
   const tx = state.transactions.find((t) => t.id === id);
   if (!tx) { toast('That transaction is already gone'); return; }
-  if (!confirm('Delete this ' + tx.type + ' of ' + formatMoney(tx.amount) + '?')) return;
+  const what = tx.type === 'transfer'
+    ? 'transfer of ' + formatMoney(tx.amount) + ' from ' + accountName(tx.accountId) + ' to ' + accountName(tx.toAccountId)
+    : tx.type + ' of ' + formatMoney(tx.amount);
+  if (!confirm('Delete this ' + what + '?')) return;
   state.transactions = state.transactions.filter((t) => t.id !== id);
   if (save()) toast('Transaction deleted');
 }
 
 /* ---------- transaction edit modal ---------- */
+
+/** Show/hide the modal's category and destination-account rows. Mirrors
+ *  setTxTypeFields so the two forms behave identically. */
+function setEditTypeFields() {
+  const isTransfer = $('editType').value === 'transfer';
+  const setHidden = (id, hidden) => { const e = $(id); if (e) e.hidden = hidden; };
+  setHidden('editCategoryGroup', isTransfer);
+  setHidden('editToAccountGroup', !isTransfer);
+  setHidden('editAccountGroup', false);
+  const label = $('editAccountLabel');
+  if (label) label.textContent = isTransfer ? 'From account' : 'Account';
+}
 
 function openEditModal(id) {
   const tx = state.transactions.find((t) => t.id === id);
@@ -954,9 +1526,12 @@ function openEditModal(id) {
   $('editAmount').value = tx.amount;
   // Keep the original category selectable even if it was deleted, so saving
   // cannot silently re-file the record under a different category.
-  fillCategorySelect($('editCategory'), { selected: tx.category, orphans: [tx.category] });
+  fillCategorySelect($('editCategory'), { selected: tx.category, orphans: tx.category ? [tx.category] : [] });
+  fillAccountSelect($('editAccount'), { selected: tx.accountId });
+  fillAccountSelect($('editToAccount'), { selected: tx.toAccountId || undefined });
   $('editComment').value = tx.comment || '';
   $('editDate').value = stampToInput(tx.date);
+  setEditTypeFields();
   openModal('editModal');
 }
 
@@ -968,11 +1543,29 @@ function saveEdit() {
   const amount = readAmountField($('editAmount'), 'Amount');
   if (amount.error) { toast(amount.error); return; }
 
-  tx.type = $('editType').value === 'income' ? 'income' : 'expense';
+  const type = ['income', 'expense', 'transfer'].indexOf($('editType').value) !== -1 ? $('editType').value : 'expense';
+  if (type === 'transfer' && $('editAccount').value === $('editToAccount').value) {
+    toast('Pick two different accounts to move money between');
+    return;
+  }
+  if (type !== 'transfer' && !findAccount($('editAccount').value)) {
+    toast('Choose which account this was paid from or into');
+    return;
+  }
+
+  const wasTransfer = tx.type === 'transfer';
+  tx.type = type;
   tx.amount = amount.value;
-  tx.category = $('editCategory').value;
+  tx.category = type === 'transfer' ? '' : $('editCategory').value;
   tx.comment = cleanText($('editComment').value, COMMENT_LIMIT);
   tx.date = inputToStamp($('editDate').value);
+  tx.accountId = $('editAccount').value;
+  tx.toAccountId = type === 'transfer' ? $('editToAccount').value : null;
+  // A record that was auto-generated from a udhaar settlement or a list
+  // purchase must not be re-filed by hand and leave the original out of step.
+  if (wasTransfer === false && type !== 'transfer' && tx.source) {
+    toast('This record came from ' + (tx.source.split(':')[0]) + '. Change it there, not here.');
+  }
 
   closeModal('editModal');
   if (save()) toast('Transaction updated');
@@ -1046,6 +1639,11 @@ function syncLedgerForDebt(d, opts) {
   state.transactions = state.transactions.filter((t) => t.source !== marker);
   if (opts && opts.forceRemove) return;
   if (!d.settled || !d.ledger) return;
+  // A settlement is money that actually moved, so it belongs to whichever
+  // account the user settles into — not silently to whatever was used last.
+  const accId = state.settings.lastAccountId && findAccount(state.settings.lastAccountId)
+    ? state.settings.lastAccountId
+    : cashAccountId();
   state.transactions.unshift({
     id: newId(),
     type: d.type === 'receive' ? 'income' : 'expense',
@@ -1053,6 +1651,8 @@ function syncLedgerForDebt(d, opts) {
     category: findCategory('Other') ? 'Other' : state.categories[0],
     comment: ('Udhaar settled — ' + (d.type === 'receive' ? d.person + ' paid me back' : 'I paid ' + d.person)).slice(0, COMMENT_LIMIT),
     date: d.settledAt || nowStamp(),
+    accountId: accId,
+    toAccountId: null,
     source: marker
   });
 }
@@ -1158,6 +1758,9 @@ function saveListPurchase() {
 
   const cat = findCategory('Groceries') ? 'Groceries' : (state.categories[0] || 'Other');
   const names = ticked.map((s) => s.name + (s.qty ? ' × ' + s.qty : ''));
+  const accId = $('itemAccount').value && findAccount($('itemAccount').value)
+    ? $('itemAccount').value
+    : (state.settings.lastAccountId || cashAccountId());
   const tx = {
     id: newId(),
     type: 'expense',
@@ -1165,6 +1768,8 @@ function saveListPurchase() {
     category: cat,
     comment: ('List: ' + names.join(', ')).slice(0, COMMENT_LIMIT),
     date: nowStamp(),
+    accountId: accId,
+    toAccountId: null,
     source: 'list:bulk'
   };
   state.transactions.unshift(tx);
@@ -1535,6 +2140,8 @@ function exportBackup(opts) {
     budgets: state.budgets,
     categories: state.categories,
     shopping: state.shopping,
+    custody: state.custody,
+    accounts: state.accounts,
     settings: state.settings,
     closedPeriods: state.closedPeriods
   };
@@ -1579,13 +2186,16 @@ async function importBackup() {
   const nTx = incoming.transactions.length;
   const nDebt = incoming.debts.length;
   const nItem = incoming.shopping.length;
+  const nCust = incoming.custody.length;
 
   if (!confirm(
     'Replace everything in this browser with the contents of "' + file.name + '"?\n\n' +
     'Incoming: ' + nTx + ' transaction(s), ' + nDebt + ' udhaar entr(y/ies), ' +
-    nItem + ' list item(s), ' + Object.keys(incoming.budgets).length + ' month(s) of budgets, ' +
+    nItem + ' list item(s), ' + nCust + ' amanat entr(y/ies), ' +
+    incoming.accounts.length + ' account(s), ' + Object.keys(incoming.budgets).length + ' month(s) of budgets, ' +
     incoming.categories.length + ' categor(y/ies).\n\n' +
-    'Current: ' + state.transactions.length + ' transaction(s), ' + state.debts.length + ' udhaar entr(y/ies).\n\n' +
+    'Current: ' + state.transactions.length + ' transaction(s), ' + state.debts.length + ' udhaar entr(y/ies), ' +
+    state.custody.length + ' amanat entr(y/ies), ' + state.accounts.length + ' account(s).\n\n' +
     'This cannot be undone.'
   )) return;
 
@@ -1661,14 +2271,32 @@ function handleModalKeys(e) {
 function renderBalance() {
   const all = ledgerTotals(null, null);
   const u = udhaarTotals();
+  const { rows, total } = allAccountBalances();
 
+  // The headline is the sum of the account boxes below it, so the two can never
+  // disagree — which is exactly why a transfer, which moves money between the
+  // boxes without touching income or expense, leaves this number unchanged.
   const el = $('balanceDisplay');
-  el.textContent = formatMoney(all.net);
-  el.classList.toggle('negative', all.net < 0);
-  el.classList.toggle('positive', all.net >= 0);
+  el.textContent = formatMoney(total);
+  el.classList.toggle('negative', total < 0);
+  el.classList.toggle('positive', total >= 0);
 
   $('totalIncome').textContent = formatMoney(all.income);
   $('totalExpense').textContent = formatMoney(all.expense);
+
+  mount($('accountBoxes'), rows.map((r) => {
+    const tint = accountTint(r.account.kind);
+    return h('div', {
+      class: 'acct-box' + (r.account.archived ? ' is-archived' : ''),
+      style: 'background:' + tint.bg + ';color:' + tint.ink
+    },
+      h('span', { class: 'acct-box-name' }, r.account.name + (r.account.archived ? ' (archived)' : '')),
+      h('span', { class: 'acct-box-value' }, formatMoney(r.balance)),
+      r.account.openingBalance
+        ? h('span', { class: 'acct-box-meta' }, 'opening ' + formatMoney(r.account.openingBalance))
+        : null
+    );
+  }));
 
   // Two badges so an outstanding udhaar is visible without opening the tab.
   const badges = [];
@@ -1688,6 +2316,140 @@ function renderBalance() {
   mount($('udhaarLine'), badges.length
     ? h('div', { class: 'u-badges' }, badges)
     : h('span', { class: 'udhaar-line muted' }, 'No outstanding udhaar'));
+}
+
+/* ---------- accounts tab ---------- */
+
+function renderAccounts() {
+  const { rows, total } = allAccountBalances();
+  const list = $('accountList');
+
+  mount($('accountTotal'), h('span', { class: 'label' }, 'Total across ' + rows.length + ' account(s)'),
+    h('span', { class: 'value' }, formatMoney(total)));
+
+  if (!rows.length) {
+    mount(list, h('div', { class: 'empty-state' }, 'No accounts. Add one below.'));
+  } else {
+    mount(list, rows.map((r) => {
+      const act = accountActivity(r.account.id, null, null);
+      const tint = accountTint(r.account.kind);
+      return h('div', { class: 'acct-item' + (r.account.archived ? ' is-archived' : '') },
+        h('div', { class: 'acct-head' },
+          h('span', { class: 'acct-name' },
+            h('span', { class: 'acct-kind', style: 'background:' + tint.bg + ';color:' + tint.ink }, r.account.kind),
+            r.account.name),
+          h('span', { class: 'acct-balance' + (r.balance < 0 ? ' neg' : '') }, formatMoney(r.balance))
+        ),
+        h('div', { class: 'acct-meta' },
+          'in ' + formatMoney(act.income) + '  ·  out ' + formatMoney(act.expense) +
+          (act.transferIn || act.transferOut
+            ? '  ·  moved in ' + formatMoney(act.transferIn) + ' / out ' + formatMoney(act.transferOut)
+            : '')),
+        r.account.openingBalance
+          ? h('div', { class: 'acct-meta' }, 'Opening balance ' + formatMoney(r.account.openingBalance))
+          : null,
+        h('div', { class: 'acct-actions' },
+          button(r.account.archived ? 'Unarchive' : 'Archive', 'acct-archive', { id: r.account.id }),
+          button('Rename', 'acct-rename', { id: r.account.id }),
+          button('Opening balance', 'acct-opening', { id: r.account.id }),
+          countTransactionsForAccount(r.account.id) === 0
+            ? button('Delete', 'acct-delete', { id: r.account.id, class: 'btn-mini danger' })
+            : null
+        )
+      );
+    }));
+  }
+
+  const transfers = transferList();
+  mount($('transferList'), transfers.length
+    ? transfers.slice(0, 20).map((t) => h('div', { class: 'transfer-item' },
+        h('div', { class: 'transfer-head' },
+          h('span', { class: 'transfer-route' },
+            accountName(t.accountId) + '  →  ' + accountName(t.toAccountId)),
+          h('span', { class: 'transfer-amount' }, formatMoney(t.amount))
+        ),
+        h('div', { class: 'tx-detail' },
+          [t.comment, formatDate(t.date)].filter(Boolean).join(' · ')),
+        h('div', { class: 'tx-actions' },
+          button('Edit', 'tx-edit', { id: t.id }),
+          button('Delete', 'tx-delete', { id: t.id, class: 'btn-mini danger' })
+        )
+      ))
+    : h('div', { class: 'empty-state' }, 'No transfers yet. Use "Move between accounts" on the Home tab.'));
+}
+
+/* ---------- custody / amanat tab ---------- */
+
+function renderCustody() {
+  const t = custodyTotals();
+  const list = $('custodyList');
+
+  mount($('custodySummary'), h('div', { class: 'custody-box given' },
+      h('div', { class: 'custody-box-label' }, 'You are holding'),
+      h('div', { class: 'custody-box-value' }, formatMoney(t.given)),
+      h('div', { class: 'custody-box-hint' }, "other people's money, in your hand")
+    ),
+    h('div', { class: 'custody-box held' },
+      h('div', { class: 'custody-box-label' }, 'Others are holding'),
+      h('div', { class: 'custody-box-value' }, formatMoney(t.held)),
+      h('div', { class: 'custody-box-hint' }, 'your money, in their hand')
+    )
+  );
+
+  if (!state.custody.length) {
+    mount(list, h('div', { class: 'empty-state' }, 'Nothing on amanat. Money you give someone to hold — or hold for someone — goes here.'));
+    return;
+  }
+
+  const byDateDesc = (a, b) => {
+    const diff = new Date(b.date) - new Date(a.date);
+    return diff !== 0 ? diff : (a.id < b.id ? -1 : 1);
+  };
+  const open = state.custody.filter((c) => custodyOutstanding(c) > 0).sort(byDateDesc);
+  const done = state.custody.filter((c) => custodyOutstanding(c) <= 0).sort(byDateDesc);
+
+  const children = [];
+  if (open.length) {
+    children.push(h('div', { class: 'list-section-head' }, 'Still out (' + open.length + ')'));
+    open.forEach((c) => {
+      const out = custodyOutstanding(c);
+      children.push(h('div', { class: 'custody-item' },
+        h('div', { class: 'custody-head' },
+          h('span', { class: 'custody-person' }, c.person),
+          h('span', { class: 'custody-amount ' + c.direction },
+            (c.direction === 'given' ? '− ' : '+ ') + formatMoney(out))
+        ),
+        h('div', { class: 'custody-detail' },
+          c.direction === 'given' ? 'you gave this, it is theirs' : 'they gave this, you are keeping it'),
+        c.note ? h('div', { class: 'custody-detail' }, c.note) : null,
+        h('div', { class: 'custody-detail' },
+          'Given ' + formatDate(c.date) +
+          (c.returned ? '  ·  ' + formatMoney(c.returned) + ' back' + (c.returnedDate ? ' on ' + formatDate(c.returnedDate) : '') : '')),
+        h('div', { class: 'custody-actions' },
+          button('Return some', 'custody-return', { id: c.id }),
+          button('Delete', 'custody-delete', { id: c.id, class: 'btn-mini danger' })
+        )
+      ));
+    });
+  }
+
+  if (done.length) {
+    children.push(h('div', { class: 'list-section-head' }, 'Returned in full (' + done.length + ')'));
+    done.forEach((c) => children.push(
+      h('div', { class: 'custody-item is-done' },
+        h('div', { class: 'custody-head' },
+          h('span', { class: 'custody-person' }, c.person),
+          h('span', { class: 'custody-amount' },
+            (c.direction === 'given' ? '− ' : '+ ') + formatMoney(c.amount) + ' · returned')
+        ),
+        h('div', { class: 'custody-detail' }, 'Given ' + formatDate(c.date)),
+        h('div', { class: 'custody-actions' },
+          button('Delete', 'custody-delete', { id: c.id, class: 'btn-mini danger' })
+        )
+      )));
+  }
+
+  mount(list, children);
 }
 
 function renderBudgets() {
@@ -1776,7 +2538,12 @@ function renderTransactions() {
       const comment = String(t.comment || '').toLowerCase();
       const amount = String(t.amount);
       const grouped = amount.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-      return cat.includes(search) || comment.includes(search) || amount.includes(search) || grouped.includes(search);
+      // Transfers carry no category, so the route is searched instead.
+      const route = t.type === 'transfer'
+        ? (accountName(t.accountId) + ' ' + accountName(t.toAccountId)).toLowerCase()
+        : '';
+      return cat.includes(search) || comment.includes(search) || amount.includes(search) ||
+        grouped.includes(search) || route.includes(search);
     });
   }
 
@@ -1786,10 +2553,27 @@ function renderTransactions() {
   }
 
   mount(list, rows.map((t) => {
+    if (t.type === 'transfer') {
+      return h('div', { class: 'tx-item is-transfer' },
+        h('div', { class: 'tx-header' },
+          h('span', { class: 'tx-category' },
+            h('span', { class: 'tx-kind' }, 'move'),
+            accountName(t.accountId) + '  →  ' + accountName(t.toAccountId)),
+          h('span', { class: 'tx-amount transfer' }, formatMoney(t.amount))
+        ),
+        t.comment ? h('div', { class: 'tx-detail' }, t.comment) : null,
+        h('div', { class: 'tx-detail' }, formatDate(t.date) + ' · not counted as income or spending'),
+        h('div', { class: 'tx-actions' },
+          button('Edit', 'tx-edit', { id: t.id }),
+          button('Delete', 'tx-delete', { id: t.id, class: 'btn-mini danger' })
+        )
+      );
+    }
     const isIncome = t.type === 'income';
     return h('div', { class: 'tx-item' },
       h('div', { class: 'tx-header' },
-        h('span', { class: 'tx-category' }, t.category),
+        h('span', { class: 'tx-category' }, t.category,
+          h('span', { class: 'tx-account' }, accountName(t.accountId))),
         h('span', { class: 'tx-amount ' + t.type }, (isIncome ? '+' : '−') + ' ' + formatMoney(t.amount))
       ),
       t.comment ? h('div', { class: 'tx-detail' }, t.comment) : null,
@@ -1998,9 +2782,11 @@ function renderMonths() {
 
 function renderAll() {
   renderBalance();
+  renderAccounts();
   renderBudgets();
   renderTransactions();
   renderDebts();
+  renderCustody();
   renderCategories();
   renderShopping();
   renderMonths();
@@ -2026,6 +2812,14 @@ const ACTIONS = {
   'item-toggle': (el) => toggleListItem(el.dataset.id),
   'item-delete': (el) => deleteListItem(el.dataset.id),
   'item-clear': clearCheckedItems,
+  'acct-add': () => addAccount($('accountName'), $('accountKind')),
+  'acct-rename': (el) => renameAccount(el.dataset.id),
+  'acct-opening': (el) => setOpeningBalance(el.dataset.id),
+  'acct-archive': (el) => toggleArchiveAccount(el.dataset.id),
+  'acct-delete': (el) => deleteAccount(el.dataset.id),
+  'tx-reassign': (el) => reassignTransaction(el.dataset.id, el.dataset.arg),
+  'custody-return': (el) => returnCustody(el.dataset.id),
+  'custody-delete': (el) => deleteCustody(el.dataset.id),
   'month-close': closePeriod,
   'month-reopen': (el) => reopenPeriod(el.dataset.arg),
   'month-report': (el) => showReport('custom', {
@@ -2071,6 +2865,8 @@ function wireEvents() {
     if (!(e.target instanceof Element)) return;
 
     if (e.target.id === 'budgetPeriod') { changeBudgetPeriod(e.target.value); return; }
+    if (e.target.id === 'txType') { setTxTypeFields(); return; }
+    if (e.target.id === 'editType') { setEditTypeFields(); return; }
 
     const el = e.target.closest('[data-act]');
     if (!el) return;
@@ -2089,6 +2885,8 @@ function wireEvents() {
     ['categoryForm', (e) => addCategory($('newCategoryName'))],
     ['itemForm', addListItem],
     ['buyForm', saveListPurchase],
+    ['accountForm', (e) => addAccount($('accountName'), $('accountKind'))],
+    ['custodyForm', addCustody],
     ['editForm', saveEdit],
     ['editDebtForm', saveDebtEdit]
   ];
@@ -2154,8 +2952,13 @@ function init() {
 
   wireEvents();
 
-  // Default the date field to now, so a new entry is "right now" until changed.
+  // Default the date fields to now, so a new entry is "right now" until changed.
   if ($('txDate')) $('txDate').value = stampToInput(nowStamp());
+  if ($('custodyDate')) $('custodyDate').value = stampToInput(nowStamp());
+
+  // Show only the fields that apply to the selected transaction type.
+  if ($('txType')) setTxTypeFields();
+  refreshAccountSelects();
 
   // Build the tab bar from TABS so markup and logic cannot drift apart.
   const bar = $('tabBar');

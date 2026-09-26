@@ -171,6 +171,98 @@ body.modal-open { overflow: hidden; }
 .u-badge-in { background: rgba(74, 222, 128, 0.18); color: var(--pos-dark); }
 .u-badge-out { background: rgba(255, 163, 155, 0.18); color: var(--neg-dark); }
 
+/* ===== ACCOUNT BOXES (on the dark balance card) ===== */
+/* Each box carries its own background AND its account name, so colour is never
+   the only thing distinguishing Cash from NayaPay. */
+.acct-boxes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.acct-box {
+  flex: 1 1 120px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 9px 11px;
+  border-radius: 11px;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+.acct-box.is-archived { opacity: 0.75; }
+.acct-box-name { font-size: 11.5px; font-weight: 600; overflow-wrap: anywhere; }
+.acct-box-value { font-size: 16px; font-weight: 700; white-space: nowrap; }
+.acct-box-meta { font-size: 10.5px; opacity: 0.85; }
+
+/* ===== ACCOUNTS TAB ===== */
+.acct-item {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.acct-item:last-child { border-bottom: none; }
+.acct-item.is-archived { background: var(--field-bg); border-radius: 10px; padding-left: 10px; padding-right: 10px; }
+.acct-item.is-archived .acct-name { color: var(--muted); }
+.acct-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.acct-name { font-size: 16px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.acct-kind {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.acct-balance { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--pos); }
+.acct-balance.neg { color: var(--neg); }
+.acct-meta { font-size: 12.5px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+.acct-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.acct-actions .btn-mini { flex: 1 1 auto; padding: 8px 10px; font-size: 13px; }
+
+.transfer-item { padding: 13px 0; border-bottom: 1px solid var(--line-soft); }
+.transfer-item:last-child { border-bottom: none; }
+.transfer-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.transfer-route { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.transfer-amount { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* ===== CUSTODY / AMANAT ===== */
+.custody-summary { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.custody-box { flex: 1 1 150px; padding: 12px; border-radius: 12px; }
+.custody-box.given { background: var(--neg-tint); }
+.custody-box.held { background: var(--pos-tint); }
+.custody-box-label { font-size: 12px; color: var(--muted-2); margin-bottom: 2px; }
+.custody-box-value { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.custody-box.given .custody-box-value { color: var(--neg-tint-ink); }
+.custody-box.held .custody-box-value { color: var(--pos-tint-ink); }
+.custody-box-hint { font-size: 11.5px; color: var(--muted-2); margin-top: 3px; }
+
+.custody-item { padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
+.custody-item:last-child { border-bottom: none; }
+.custody-item.is-done { background: #f7f7f9; border-radius: 10px; padding-left: 10px; padding-right: 10px; }
+.custody-item.is-done .custody-person { text-decoration: line-through; color: var(--muted); }
+.custody-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.custody-person { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.custody-amount { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.custody-amount.given { color: var(--neg); }
+.custody-amount.held { color: var(--pos); }
+.custody-detail { font-size: 13px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.custody-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* ===== TRANSFER ROWS IN THE LEDGER ===== */
+.tx-item.is-transfer { background: var(--field-bg); border-radius: 10px; padding-left: 10px; padding-right: 10px; }
+.tx-amount.transfer { color: var(--accent); }
+.tx-category { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; }
+.tx-kind {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #e8f1fd;
+  color: #0a3d80;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.tx-account { font-size: 12px; font-weight: 500; color: var(--muted); }
+
 /* ===== TAB BAR ===== */
 .tab-bar {
   display: flex;
