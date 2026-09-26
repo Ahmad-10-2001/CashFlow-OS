@@ -824,6 +824,77 @@ select {
 .mt-10 { margin-top: 10px; }
 .text-center { text-align: center; }
 
+/* ===== EMAIL CONNECT ===== */
+.email-connect-form {
+  margin-top: 16px;
+}
+.email-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+.email-status.connected {
+  background: #e3f7e9;
+  color: #0f6b2c;
+}
+.email-status.disconnected {
+  background: #fdeceb;
+  color: #a01f18;
+}
+.email-status-icon {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+/* ===== PENDING QUEUE ===== */
+.pending-empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--muted);
+  font-size: 15px;
+}
+.pending-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.pending-item:last-child { border-bottom: none; }
+.pending-info { flex: 1; min-width: 0; }
+.pending-amount {
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.pending-amount.income { color: var(--pos); }
+.pending-amount.expense { color: var(--neg); }
+.pending-desc {
+  font-size: 14px;
+  color: var(--ink);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+.pending-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.pending-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.btn-sm {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
