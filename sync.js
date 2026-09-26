@@ -414,35 +414,69 @@ window.CashFlowSync = (function () {
     if (!dirty.length && !tombs.length) return;
 
     const userId = session.userId;
-    const rows = dirty.map((r) => Object.assign({ user_id: userId, updated_at: r.updatedAt }, MAP[table].toRow(r)))
-      .concat(tombs.map((t) => ({
-        user_id: userId, updated_at: t.updatedAt, deleted: true,
-        id: t.id,
-        // The NOT NULL columns still need a value on a tombstone.
-        type: t.type || 'expense', amount: t.amount || 0.01, category: '', comment: '',
-        happened_at: '', account_id: ''
-      })));
 
-    await ensureFreshToken();
-    // resolution=merge-duplicates turns the POST into an upsert on the primary key.
-    await http(restPath(table), {
-      method: 'POST',
-      headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
-      body: JSON.stringify(rows)
-    });
+    // Send regular rows and tombstones SEPARATELY — Supabase REST API
+    // rejects mixed-shape rows with "All object keys must match".
+    
+    // First: push regular dirty rows
+    if (dirty.length) {
+      const rows = dirty.map((r) => Object.assign({ user_id: userId, updated_at: r.updatedAt }, MAP[table].toRow(r)));
+      
+      await ensureFreshToken();
+      await http(restPath(table), {
+        method: 'POST',
+        headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify(rows)
+      });
 
-    // Advance the cursor to the newest thing actually sent — not to "now".
-    // Anything edited during the request carries a later stamp and will
-    // therefore still look dirty on the next round.
-    let newest = book.lastPushed[table];
-    for (const r of rows) {
-      if (!newest || Date.parse(r.updated_at) > Date.parse(newest)) newest = r.updated_at;
+      let newest = book.lastPushed[table];
+      for (const r of rows) {
+        if (!newest || Date.parse(r.updated_at) > Date.parse(newest)) newest = r.updated_at;
+      }
+      book.lastPushed[table] = newest;
     }
-    book.lastPushed[table] = newest;
+
+    // Then: push tombstones separately
     if (tombs.length) {
+      // Get the full record data for each tombstone so we can send all required fields
+      const tombRows = tombs.map((t) => {
+        const record = (state[table] || []).find((r) => r.id === t.id);
+        const baseRow = {
+          user_id: userId,
+          updated_at: t.updatedAt,
+          deleted: true,
+          id: t.id,
+          // Include all NOT NULL fields from the record (or defaults)
+          type: record ? record.type : (t.type || 'expense'),
+          amount: record ? record.amount : (t.amount || 0.01),
+          category: record ? record.category : '',
+          comment: record ? record.comment : '',
+          happened_at: record ? record.date : '',
+          account_id: record ? record.accountId : ''
+        };
+        // Add to_account_id for transactions (transfer records)
+        if (table === 'transactions') {
+          baseRow.to_account_id = record ? (record.toAccountId || '') : '';
+        }
+        return baseRow;
+      });
+
+      await ensureFreshToken();
+      await http(restPath(table), {
+        method: 'POST',
+        headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify(tombRows)
+      });
+
+      let newest = book.lastPushed[table];
+      for (const t of tombs) {
+        if (!newest || Date.parse(t.updatedAt) > Date.parse(newest)) newest = t.updatedAt;
+      }
+      book.lastPushed[table] = newest;
       const keep = (book.tombstones[table] || []).filter((t) => Date.parse(t.updatedAt) > Date.parse(newest));
       book.tombstones[table] = keep;
     }
+
     saveBook();
   }
 
@@ -508,7 +542,13 @@ window.CashFlowSync = (function () {
       if (idx !== -1 && localStamp >= Date.parse(row.updated_at)) continue;
 
       if (row.deleted) {
-        if (idx !== -1) { list.splice(idx, 1); applied++; }
+        // CRITICAL FIX: Only apply tombstone if the local record is OLDER.
+        // If local record has a newer timestamp, it means the user edited
+        // it AFTER the delete — don't let the stale delete come back.
+        if (idx !== -1 && localStamp < Date.parse(row.updated_at)) {
+          list.splice(idx, 1);
+          applied++;
+        }
         continue;
       }
       const rec = MAP[table].fromRow(row);

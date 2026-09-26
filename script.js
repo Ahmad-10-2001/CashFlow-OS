@@ -3259,17 +3259,61 @@ function init() {
 
 /* ============================================================
    Email Connect & Pending Queue
+   ------------------------------------------------------------
+   Uses the same plain-fetch REST approach as sync.js — no
+   Supabase SDK. The session token comes from CashFlowSync.
    ============================================================ */
 
 let pendingTransactions = [];
 let emailConnected = false;
 
-function getSupabaseClient() {
-  if (!window.CASHFLOW_CONFIG) return null;
-  // Use the global supabase client from sync.js if available
-  if (window.CashFlowSync && window.CashFlowSync.supabase) {
-    return window.CashFlowSync.supabase;
+/** Build Supabase REST headers using the current session token. */
+function sbHeaders() {
+  const cfg = window.CASHFLOW_CONFIG || {};
+  const h = {
+    'apikey': cfg.publishableKey,
+    'Content-Type': 'application/json'
+  };
+  // Reuse the session token from sync.js
+  try {
+    const raw = localStorage.getItem('cashflow:session');
+    if (raw) {
+      const session = JSON.parse(raw);
+      if (session && session.accessToken) {
+        h['Authorization'] = 'Bearer ' + session.accessToken;
+      }
+    }
+  } catch (err) { /* ignore */ }
+  return h;
+}
+
+/** Make a Supabase REST API call using plain fetch. */
+async function sbFetch(path, opts) {
+  const cfg = window.CASHFLOW_CONFIG || {};
+  const url = cfg.url + '/rest/v1/' + path;
+  const res = await fetch(url, Object.assign({
+    headers: sbHeaders()
+  }, opts || {}));
+  const text = await res.text();
+  let body = null;
+  if (text) { try { body = JSON.parse(text); } catch (err) { body = text; } }
+  if (!res.ok) {
+    const msg = (body && (body.msg || body.message || body.error_description)) ||
+      (body && body.error) || ('HTTP ' + res.status);
+    throw new Error(msg);
   }
+  return body;
+}
+
+/** Get current user ID from the session. */
+function getCurrentUserId() {
+  try {
+    const raw = localStorage.getItem('cashflow:session');
+    if (raw) {
+      const session = JSON.parse(raw);
+      if (session && session.userId) return session.userId;
+    }
+  } catch (err) { /* ignore */ }
   return null;
 }
 
@@ -3287,35 +3331,29 @@ function wireEmailConnect() {
       return;
     }
 
+    const userId = getCurrentUserId();
+    if (!userId) {
+      toast('Please sign in first');
+      return;
+    }
+
     try {
-      const supabase = getSupabaseClient();
-      if (!supabase) {
-        toast('Sync not available. Please sign in first.');
-        return;
-      }
-
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        toast('Please sign in first');
-        return;
-      }
-
       // Encrypt password (base64 for now — replace with AES-256 in production)
       const encryptedPassword = btoa(password);
 
-      const { error } = await supabase
-        .from('user_email_credentials')
-        .upsert({
-          user_id: user.id,
+      // Upsert email credentials
+      await sbFetch('user_email_credentials?on_conflict=user_id', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: userId,
           email_address: email,
           imap_host: 'imap.gmail.com',
           imap_port: 993,
           encrypted_password: encryptedPassword,
           is_active: true,
-          updated_at: new Date().toISOString(),
-        });
-
-      if (error) throw error;
+          updated_at: new Date().toISOString()
+        })
+      });
 
       emailConnected = true;
       renderEmailConnectStatus();
@@ -3333,23 +3371,12 @@ function wireEmailConnect() {
 }
 
 async function loadEmailConnectionStatus() {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    const { data, error } = await supabase
-      .from('user_email_credentials')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('is_active', true)
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (data) {
+    const data = await sbFetch('user_email_credentials?user_id=eq.' + userId + '&is_active=eq.true');
+    if (data && data.length > 0) {
       emailConnected = true;
       renderEmailConnectStatus();
     }
@@ -3378,23 +3405,11 @@ function renderEmailConnectStatus() {
 }
 
 async function loadPendingTransactions() {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    const { data, error } = await supabase
-      .from('pending_transactions')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('status', 'pending')
-      .order('created_at', { ascending: false })
-      .limit(50);
-
-    if (error) throw error;
-
+    const data = await sbFetch('pending_transactions?user_id=eq.' + userId + '&status=eq.pending&order=created_at.desc&limit=50');
     pendingTransactions = data || [];
     renderPendingQueue();
   } catch (err) {
@@ -3440,16 +3455,13 @@ function renderPendingQueue() {
 }
 
 async function approveTransaction(txId) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  const tx = pendingTransactions.find(t => t.id === txId);
+  if (!tx) return;
+
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    const tx = pendingTransactions.find(t => t.id === txId);
-    if (!tx) return;
-
     // Create actual transaction
     const newTx = {
       id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
@@ -3468,12 +3480,10 @@ async function approveTransaction(txId) {
     save();
 
     // Mark as approved in Supabase
-    const { error } = await supabase
-      .from('pending_transactions')
-      .update({ status: 'approved', approved_at: new Date().toISOString() })
-      .eq('id', txId);
-
-    if (error) throw error;
+    await sbFetch('pending_transactions?id=eq.' + txId, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'approved', approved_at: new Date().toISOString() })
+    });
 
     // Remove from pending list
     pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
@@ -3488,15 +3498,10 @@ async function approveTransaction(txId) {
 
 async function rejectTransaction(txId) {
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-
-    const { error } = await supabase
-      .from('pending_transactions')
-      .update({ status: 'rejected' })
-      .eq('id', txId);
-
-    if (error) throw error;
+    await sbFetch('pending_transactions?id=eq.' + txId, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'rejected' })
+    });
 
     // Remove from pending list
     pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
