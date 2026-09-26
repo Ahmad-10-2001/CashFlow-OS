@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "Salary Manager",
-  "short_name": "Salary",
-  "description": "Track income, expenses, budgets and udhaar — works offline.",
+  "name": "CashFlow OS",
+  "short_name": "CashFlow",
+  "description": "Track income, expenses, budgets, accounts and udhaar — works offline.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

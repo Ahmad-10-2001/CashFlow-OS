@@ -7,10 +7,15 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Salary Manager">
+  <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="description" content="Track income, expenses, budgets and udhaar offline.">
-  <title>Salary Manager</title>
+  <meta name="app-build" content="v10">
+  <!-- The tab list this markup provides. script.js compares it against the TABS
+       it knows about; a mismatch means the page is running an older script and
+       would otherwise show a missing tab and an unfilled dropdown. -->
+  <meta name="app-tabs" content="home,accounts,transactions,budget,udhaar,custody,reports,list,categories,settings">
+  <meta name="description" content="Track income, expenses, budgets, accounts and udhaar — works offline.">
+  <title>CashFlow OS</title>
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icon-180.png">
   <link rel="icon" href="icon-192.png" sizes="192x192">
@@ -20,7 +25,7 @@
 
 <div class="container">
 
-  <h1 class="app-title">💰 Salary Manager</h1>
+  <h1 class="app-title">💰 CashFlow OS <span class="sync-dot" id="syncDot" hidden title="Sync status"></span></h1>
 
   <p class="storage-warning" id="storageWarning" role="alert" hidden>
     This browser is blocking local storage, so nothing you enter can be saved.
@@ -312,6 +317,17 @@
 
   <!-- ══════════════ BACKUP / SETTINGS ══════════════ -->
   <div id="panel-settings" data-panel="settings" role="tabpanel" aria-labelledby="backupHeading" hidden>
+
+    <section class="card" aria-labelledby="syncHeading">
+      <h2 class="card-title" id="syncHeading">Sync Across Devices</h2>
+      <p class="card-subtitle">
+        Optional. Everything works without an account — your data already lives in this
+        browser. Sign in to keep a second copy in the cloud so a new phone or laptop
+        picks up where you left off.
+      </p>
+      <div id="syncPanel"></div>
+    </section>
+
     <section class="card" aria-labelledby="monthHeading">
       <h2 class="card-title" id="monthHeading">Start a New Month</h2>
       <p class="card-subtitle">Close the current month to keep its budgets and reports separate. Nothing is deleted.</p>
@@ -414,6 +430,8 @@
   <p class="storage-warning">This app needs JavaScript to store and show your data.</p>
 </noscript>
 
+<script src="config.js"></script>
+<script src="sync.js"></script>
 <script src="script.js"></script>
 </body>
 </html>

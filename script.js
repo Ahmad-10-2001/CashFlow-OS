@@ -1,10 +1,14 @@
 /* ============================================================
-   Salary Manager — application script
+   CashFlow OS — application script
    ------------------------------------------------------------
    Design notes
    • All persistent state lives in ONE namespaced, versioned
      localStorage key. A single key means a write can never be
      observed half-finished the way four separate keys can.
+   • The key itself is still 'salaryManager:state' from when the app
+     was called Salary Manager. Renaming it would orphan every
+     existing user's records, so it is deliberately left alone —
+     nothing user-facing depends on it.
    • Every value that comes from disk or from a user file goes
      through sanitizeState() before it is trusted.
    • The UI is built with real DOM nodes (h() / hs() for SVG) and
@@ -24,6 +28,11 @@
 const STORAGE_KEY = 'salaryManager:state';
 const SCHEMA_VERSION = 4;
 const LEGACY_KEYS = ['transactions', 'debts', 'budgets', 'categories'];
+
+/* Display name. The app was renamed from Salary Manager to CashFlow OS;
+   backups written under the old name are still accepted on import. */
+const APP_NAME = 'CashFlow OS';
+const APP_IDS = ['cashflow-os', 'salary-manager'];
 const CURRENCY = '₨';
 const MAX_AMOUNT = 1e12;
 const NAME_LIMIT = 40;
@@ -750,6 +759,13 @@ function safeParse(raw, fallback) {
 
 /** Persist, then render. Reports quota failures instead of losing data silently. */
 function save() {
+  // Stamp any changed records FIRST, so the sync timestamp is part of what
+  // gets written to disk. Doing it after the write would leave the stamp only
+  // in memory, and a reload would lose it.
+  if (window.CashFlowSync) {
+    if (window.CashFlowSync.reconcile(state)) window.CashFlowSync.queuePush();
+  }
+
   let ok = true;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -1197,7 +1213,7 @@ function deleteAccount(id) {
     return;
   }
   if (!confirm('Delete "' + acc.name + '"? This cannot be undone.')) return;
-  state.accounts = state.accounts.filter((a) => a.id !== id);
+  dropRecord('accounts', id);
   if (state.settings.lastAccountId === id) state.settings.lastAccountId = cashAccountId();
   save();
   toast('Deleted "' + acc.name + '"');
@@ -1273,7 +1289,7 @@ function deleteCustody(id) {
   const c = state.custody.find((x) => x.id === id);
   if (!c) { toast('That entry is already gone'); return; }
   if (!confirm('Delete the amanat entry for ' + c.person + ' (' + formatMoney(c.amount) + ')?')) return;
-  state.custody = state.custody.filter((x) => x.id !== id);
+  dropRecord('custody', id);
   if (save()) toast('Amanat entry deleted');
 }
 
@@ -1377,6 +1393,20 @@ function changeBudgetPeriod(period) {
 /* ============================================================
    Transactions
    ============================================================ */
+
+/** Stamp a record as just-edited. The sync engine turns this into the
+ *  last-write-wins ordering, so every mutation must go through here. */
+function touch(record) {
+  if (window.CashFlowSync) record.updatedAt = window.CashFlowSync.touch();
+  return record;
+}
+
+/** Remove a record and leave a tombstone, so the delete reaches other
+ *  devices instead of the row coming back on the next pull. */
+function dropRecord(table, id) {
+  if (window.CashFlowSync) window.CashFlowSync.markDeleted(table, id);
+  state[table] = (state[table] || []).filter((r) => r.id !== id);
+}
 
 function readAmountField(input, label) {
   const raw = String(input.value == null ? '' : input.value).trim().replace(/,/g, '');
@@ -1500,7 +1530,7 @@ function deleteTransaction(id) {
     ? 'transfer of ' + formatMoney(tx.amount) + ' from ' + accountName(tx.accountId) + ' to ' + accountName(tx.toAccountId)
     : tx.type + ' of ' + formatMoney(tx.amount);
   if (!confirm('Delete this ' + what + '?')) return;
-  state.transactions = state.transactions.filter((t) => t.id !== id);
+  dropRecord('transactions', id);
   if (save()) toast('Transaction deleted');
 }
 
@@ -1605,7 +1635,7 @@ function deleteDebt(id) {
   const d = state.debts.find((x) => x.id === id);
   if (!d) { toast('That entry is already gone'); return; }
   if (!confirm('Delete the udhaar entry for ' + d.person + '?')) return;
-  state.debts = state.debts.filter((x) => x.id !== id);
+  dropRecord('debts', id);
   syncLedgerForDebt(d, { forceRemove: true });
   if (save()) toast('Udhaar deleted');
 }
@@ -1636,7 +1666,10 @@ function settleDebt(id) {
  */
 function syncLedgerForDebt(d, opts) {
   const marker = 'debt:' + d.id;
-  state.transactions = state.transactions.filter((t) => t.source !== marker);
+  // Drop the previously linked entry, leaving a tombstone so the removal
+  // also reaches other devices rather than the old row reappearing.
+  state.transactions.filter((t) => t.source === marker)
+    .forEach((t) => dropRecord('transactions', t.id));
   if (opts && opts.forceRemove) return;
   if (!d.settled || !d.ledger) return;
   // A settlement is money that actually moved, so it belongs to whichever
@@ -1742,7 +1775,7 @@ function toggleListItem(id) {
 function deleteListItem(id) {
   const item = state.shopping.find((s) => s.id === id);
   if (!item) { toast('That item is no longer on the list'); return; }
-  state.shopping = state.shopping.filter((s) => s.id !== id);
+  dropRecord('shopping', id);
   if (save()) toast('Removed "' + item.name + '"');
 }
 
@@ -1788,7 +1821,7 @@ function clearCheckedItems() {
   const n = state.shopping.filter((s) => s.checked).length;
   if (!n) { toast('Nothing ticked yet'); return; }
   if (!confirm('Remove ' + n + ' ticked item(s) from the list? The transactions they created are NOT deleted.')) return;
-  state.shopping = state.shopping.filter((s) => !s.checked);
+  for (const s of state.shopping.filter((x) => x.checked)) dropRecord('shopping', s.id);
   if (save()) toast('Cleared ' + n + ' item(s)');
 }
 
@@ -2132,7 +2165,7 @@ function reopenPeriod(period) {
 function exportBackup(opts) {
   const o = opts || {};
   const payload = {
-    app: 'salary-manager',
+    app: APP_IDS[0],
     version: SCHEMA_VERSION,
     exportDate: new Date().toISOString(),
     transactions: state.transactions,
@@ -2180,7 +2213,12 @@ async function importBackup() {
     toast('That file is not valid JSON');
     return;
   }
-  if (!isObject(parsed)) { toast('That is not a Salary Manager backup'); return; }
+  if (!isObject(parsed)) { toast('That is not a ' + APP_NAME + ' backup'); return; }
+  // Accept backups from before the rename as well as after it.
+  if (typeof parsed.app === 'string' && APP_IDS.indexOf(parsed.app) === -1) {
+    toast('That file is not a ' + APP_NAME + ' backup');
+    return;
+  }
 
   const { state: incoming, problems } = sanitizeState(parsed);
   const nTx = incoming.transactions.length;
@@ -2780,6 +2818,111 @@ function renderMonths() {
     : h('div', { class: 'empty-state' }, 'No closed months yet'));
 }
 
+/* ============================================================
+   Sync panel
+   ============================================================ */
+
+function relativeTime(ts) {
+  if (!ts) return 'not yet';
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 10) return 'just now';
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+function renderSyncPanel() {
+  const S = window.CashFlowSync;
+  const box = $('syncPanel');
+  const dot = $('syncDot');
+  if (!S || !box) return;
+
+  const st = S.status;
+  dot.hidden = !st.signedIn;
+  if (st.signedIn) {
+    dot.className = 'sync-dot ' + (st.syncing ? 'is-syncing' : st.error ? 'is-warn' : 'is-ok');
+    dot.title = st.syncing ? 'Syncing…' : st.error ? st.error : 'Synced ' + relativeTime(st.lastSyncAt);
+  }
+
+  if (st.signedIn) {
+    mount(box,
+      h('div', { class: 'sync-line' },
+        h('span', { class: 'sync-who' }, st.email),
+        h('span', { class: 'sync-when' }, st.syncing ? 'syncing…' : 'synced ' + relativeTime(st.lastSyncAt))
+      ),
+      st.error ? h('p', { class: 'sync-error' }, st.error) : null,
+      h('p', { class: 'field-hint' }, 'Any change you make on any device reaches the others within a minute.'),
+      h('div', { class: 'btn-row mt-10' },
+        button('Sync now', 'sync-now'),
+        button('Sign out', 'sync-signout')
+      )
+    );
+    return;
+  }
+
+  mount(box,
+    h('form', { id: 'authForm', novalidate: true },
+      h('div', { class: 'form-group' },
+        h('label', { class: 'field-label', for: 'authEmail' }, 'Email'),
+        h('input', { id: 'authEmail', type: 'email', inputmode: 'email', placeholder: 'you@example.com', autocomplete: 'username' })
+      ),
+      h('div', { class: 'form-group' },
+        h('label', { class: 'field-label', for: 'authPin' }, 'PIN'),
+        h('input', { id: 'authPin', type: 'password', placeholder: 'At least ' + S.MIN_PIN + ' characters', autocomplete: 'current-password' }),
+        h('p', { class: 'field-hint' }, 'A short PIN can be guessed by someone who has your publishable key. Use a longer one, and a real email so the account can be recovered.')
+      ),
+      h('div', { class: 'btn-row' },
+        h('button', { class: 'btn btn-primary', type: 'submit', dataset: { act: 'auth-in' } }, 'Sign in'),
+        h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'auth-up' } }, 'Create account')
+      )
+    )
+  );
+}
+
+async function handleAuth(mode) {
+  const S = window.CashFlowSync;
+  if (!S) { toast('Sync is unavailable'); return; }
+  const email = $('authEmail').value;
+  const pin = $('authPin').value;
+
+  const bad = S.validateCredentials(email, pin);
+  if (bad) { toast(bad); return; }
+
+  const btn = document.querySelector('[data-act="auth-' + (mode === 'up' ? 'up' : 'in') + '"]');
+  if (btn) btn.disabled = true;
+  $('authPin').value = '';
+  toast(mode === 'up' ? 'Creating your account…' : 'Signing in…');
+
+  const res = mode === 'up' ? await S.signUp(email, pin) : await S.signIn(email, pin);
+
+  if (btn) btn.disabled = false;
+
+  if (res.error) { toast(res.error); renderSyncPanel(); return; }
+  if (res.needsEmailConfirm) {
+    toast('Check your email to confirm the account, then sign in');
+    return;
+  }
+
+  // The debounced push needs a way to reach the live state, and the poll loop
+  // has to start now that there is a session.
+  S.setStateProvider(() => state);
+  S.setPersist(() => { save(); });
+  await S.cycle(state, { silent: true });
+  S.start(() => state);
+  renderAll();
+  toast(mode === 'up' ? 'Account created — your data is now backed up' : 'Signed in — syncing');
+}
+
+function signOut() {
+  const S = window.CashFlowSync;
+  if (!S) return;
+  if (!confirm('Sign out of this device?\n\nYour data stays in this browser and keeps working. It will just stop syncing to the cloud.')) return;
+  S.signOut();
+  renderAll();
+  toast('Signed out. Everything still works here.');
+}
+
 function renderAll() {
   renderBalance();
   renderAccounts();
@@ -2791,6 +2934,7 @@ function renderAll() {
   renderShopping();
   renderMonths();
   renderReport();
+  renderSyncPanel();
   if ($('storageWarning')) $('storageWarning').hidden = storageUsable;
 }
 
@@ -2820,6 +2964,10 @@ const ACTIONS = {
   'tx-reassign': (el) => reassignTransaction(el.dataset.id, el.dataset.arg),
   'custody-return': (el) => returnCustody(el.dataset.id),
   'custody-delete': (el) => deleteCustody(el.dataset.id),
+  'auth-in': () => handleAuth('in'),
+  'auth-up': () => handleAuth('up'),
+  'sync-now': () => { if (window.CashFlowSync) window.CashFlowSync.cycle(state).then(() => renderAll()); },
+  'sync-signout': signOut,
   'month-close': closePeriod,
   'month-reopen': (el) => reopenPeriod(el.dataset.arg),
   'month-report': (el) => showReport('custom', {
@@ -2887,6 +3035,7 @@ function wireEvents() {
     ['buyForm', saveListPurchase],
     ['accountForm', (e) => addAccount($('accountName'), $('accountKind'))],
     ['custodyForm', addCustody],
+    ['authForm', (e) => handleAuth('in')],
     ['editForm', saveEdit],
     ['editDebtForm', saveDebtEdit]
   ];
@@ -2946,7 +3095,104 @@ function wireEvents() {
    Boot
    ============================================================ */
 
+/* ============================================================
+   Stale-asset guard
+   ============================================================ */
+
+/* The service worker serves app files cache-first, so after a deploy the page
+   can end up a mix of new HTML and an old script. The symptom is confusing:
+   a tab that never appears, a dropdown that stays empty — each file is
+   individually valid, they just disagree with each other. Two independent
+   signals are checked here, and if either disagrees the caches are thrown away
+   and the page reloaded once. */
+function staleAssetReason() {
+  // 1. The build marker in the HTML against the one in the running script.
+  const meta = document.querySelector('meta[name="app-build"]');
+  const htmlBuild = meta ? meta.getAttribute('content') : null;
+  const scriptBuild = (window.CASHFLOW_CONFIG && window.CASHFLOW_CONFIG.appBuild) || null;
+  if (htmlBuild && scriptBuild && htmlBuild !== scriptBuild) {
+    return 'the page is build ' + htmlBuild + ' but the script is build ' + scriptBuild;
+  }
+
+  // 2. The markup declares the tabs it provides; this script declares the tabs
+  //    it knows how to build. A disagreement means the page is running an older
+  //    script, which is what produced a missing tab and an empty dropdown.
+  const metaTabs = document.querySelector('meta[name="app-tabs"]');
+  if (metaTabs) {
+    const promised = metaTabs.getAttribute('content').split(',').map((t) => t.trim()).filter(Boolean);
+    const mine = TABS.map((t) => t.id);
+    const unknown = promised.filter((id) => mine.indexOf(id) === -1);
+    const missing = mine.filter((id) => promised.indexOf(id) === -1);
+    if (unknown.length) return 'this page has tabs this script does not know: ' + unknown.join(', ');
+    if (missing.length) return 'this script has tabs this page does not show: ' + missing.join(', ');
+  }
+
+  // 3. Every tab this script knows must have a panel in this HTML.
+  const absent = TABS.filter((t) => !document.getElementById('panel-' + t.id));
+  if (absent.length) {
+    return 'this build of the page has no panel for: ' + absent.map((t) => t.label).join(', ');
+  }
+  return null;
+}
+
+let reloading = false;
+const RECOVERY_KEY = 'cashflow:stale-reload';
+
+/** Has a cache purge already been tried for this page load? */
+function alreadyTriedRecovery() {
+  try { return !!sessionStorage.getItem(RECOVERY_KEY); } catch (err) { return false; }
+}
+
+function clearRecoveryFlag() {
+  try { sessionStorage.removeItem(RECOVERY_KEY); } catch (err) { /* ignore */ }
+}
+
+async function recoverFromStaleAssets(reason) {
+  if (reloading) return;
+  reloading = true;
+
+  // Say something, because a blank reload gives no clue what is happening.
+  const banner = h('div', { class: 'stale-banner' },
+    'Updating the app to the latest version… this page will reload once.');
+  document.body.insertBefore(banner, document.body.firstChild);
+
+  try {
+    if (window.caches && window.caches.keys) {
+      const keys = await window.caches.keys();
+      await Promise.all(keys
+        .filter((k) => k.indexOf('cashflow-os-') === 0 || k.indexOf('salary-manager-') === 0)
+        .map((k) => window.caches.delete(k)));
+    }
+  } catch (err) { /* nothing more we can do */ }
+
+  try {
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+  } catch (err) { /* ignore */ }
+
+  clearRecoveryFlag();
+  location.reload();
+}
+
 function init() {
+  // Checked first: nothing should render until we know the files agree.
+  const stale = staleAssetReason();
+  if (stale) {
+    // If a purge was already tried and the files STILL disagree, the service
+    // worker is not the cause — reloading again would just loop on a blank
+    // page. In that case say so in the console and run anyway; the app may be
+    // partly degraded, which beats being blank.
+    if (!alreadyTriedRecovery()) {
+      try { sessionStorage.setItem(RECOVERY_KEY, String(Date.now())); } catch (err) { /* ignore */ }
+      recoverFromStaleAssets(stale);
+      return;
+    }
+    clearRecoveryFlag();
+    console.warn('App files still disagree after clearing the cache:', stale);
+  }
+
   const loaded = loadState();
   state = loaded.state;
 
@@ -2985,6 +3231,18 @@ function init() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* ignore */ }
   }
   if (loaded.notice) toast(loaded.notice);
+
+  // Hook up the cloud sync, if it is available. The app is fully usable
+  // without it, so a failure here must never block startup.
+  if (window.CashFlowSync) {
+    window.CashFlowSync.seedClock(state);
+    window.CashFlowSync.setStateProvider(() => state);
+    // A pull changes the state without going through save(), so the engine
+    // needs a way to write it down and repaint.
+    window.CashFlowSync.setPersist(() => { save(); });
+    window.CashFlowSync.onChange(renderSyncPanel);
+    if (window.CashFlowSync.isSignedIn) window.CashFlowSync.start(() => state);
+  }
 
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker.register('service-worker.js').catch((err) => console.warn('Service worker registration failed:', err));
