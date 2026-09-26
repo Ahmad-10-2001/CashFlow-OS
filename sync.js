@@ -441,23 +441,56 @@ window.CashFlowSync = (function () {
       // Get the full record data for each tombstone so we can send all required fields
       const tombRows = tombs.map((t) => {
         const record = (state[table] || []).find((r) => r.id === t.id);
+        // Build row based on table schema — only include columns that exist
         const baseRow = {
           user_id: userId,
           updated_at: t.updatedAt,
           deleted: true,
-          id: t.id,
-          // Include all NOT NULL fields from the record (or defaults)
-          type: record ? record.type : (t.type || 'expense'),
-          amount: record ? record.amount : (t.amount || 0.01),
-          category: record ? record.category : '',
-          comment: record ? record.comment : '',
-          happened_at: record ? record.date : '',
-          account_id: record ? record.accountId : ''
+          id: t.id
         };
-        // Add to_account_id for transactions (transfer records)
+        
+        // Add table-specific fields based on actual schema
         if (table === 'transactions') {
+          baseRow.type = record ? record.type : (t.type || 'expense');
+          baseRow.amount = record ? record.amount : (t.amount || 0.01);
+          baseRow.category = record ? record.category : '';
+          baseRow.comment = record ? record.comment : '';
+          baseRow.happened_at = record ? record.date : '';
+          baseRow.account_id = record ? record.accountId : '';
           baseRow.to_account_id = record ? (record.toAccountId || '') : '';
+        } else if (table === 'accounts') {
+          baseRow.name = record ? record.name : '';
+          baseRow.kind = record ? record.kind : 'ewallet';
+          baseRow.opening_balance = record ? record.openingBalance : 0;
+          baseRow.archived = record ? record.archived : false;
+        } else if (table === 'debts') {
+          baseRow.type = record ? record.type : 'receive';
+          baseRow.person = record ? record.person : '';
+          baseRow.amount = record ? record.amount : 0.01;
+          baseRow.note = record ? record.note : '';
+          baseRow.happened_at = record ? record.date : '';
+          baseRow.settled = record ? record.settled : false;
+          baseRow.settled_at = record ? (record.settledAt || '') : '';
+          baseRow.ledger = record ? record.ledger : true;
+        } else if (table === 'custody') {
+          baseRow.person = record ? record.person : '';
+          baseRow.direction = record ? record.direction : 'given';
+          baseRow.amount = record ? record.amount : 0.01;
+          baseRow.returned = record ? record.returned : 0;
+          baseRow.note = record ? record.note : '';
+          baseRow.happened_at = record ? record.date : '';
+          baseRow.returned_at = record ? (record.returnedDate || '') : '';
+        } else if (table === 'shopping') {
+          baseRow.name = record ? record.name : '';
+          baseRow.qty = record ? record.qty : '';
+          baseRow.note = record ? record.note : '';
+          baseRow.checked = record ? record.checked : false;
+          baseRow.created_at = record ? record.createdAt : '';
+          baseRow.checked_at = record ? (record.checkedAt || '') : '';
+          baseRow.bought_tx_id = record ? (record.boughtTxId || '') : '';
+          baseRow.cost = record ? record.cost : null;
         }
+        
         return baseRow;
       });
 

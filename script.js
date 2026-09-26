@@ -2425,14 +2425,14 @@ function renderCustody() {
   const list = $('custodyList');
 
   mount($('custodySummary'), h('div', { class: 'custody-box given' },
-      h('div', { class: 'custody-box-label' }, 'You are holding'),
+      h('div', { class: 'custody-box-label' }, 'Others are holding'),
       h('div', { class: 'custody-box-value' }, formatMoney(t.given)),
-      h('div', { class: 'custody-box-hint' }, "other people's money, in your hand")
+      h('div', { class: 'custody-box-hint' }, 'your money, in their hand')
     ),
     h('div', { class: 'custody-box held' },
-      h('div', { class: 'custody-box-label' }, 'Others are holding'),
+      h('div', { class: 'custody-box-label' }, 'You are holding'),
       h('div', { class: 'custody-box-value' }, formatMoney(t.held)),
-      h('div', { class: 'custody-box-hint' }, 'your money, in their hand')
+      h('div', { class: 'custody-box-hint' }, "other people's money, in your hand")
     )
   );
 
