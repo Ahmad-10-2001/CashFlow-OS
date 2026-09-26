@@ -9,11 +9,11 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v10">
+  <meta name="app-build" content="v11">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
-  <meta name="app-tabs" content="home,accounts,transactions,budget,udhaar,custody,reports,list,categories,settings">
+  <meta name="app-tabs" content="home,accounts,transactions,budget,udhaar,custody,reports,list,categories,email,pending,settings">
   <meta name="description" content="Track income, expenses, budgets, accounts and udhaar — works offline.">
   <title>CashFlow OS</title>
   <link rel="manifest" href="manifest.json">
@@ -312,6 +312,43 @@
         </div>
         <button class="btn btn-dark" type="submit">Add Category</button>
       </form>
+    </section>
+  </div>
+
+  <!-- ══════════════ EMAIL CONNECT ══════════════ -->
+  <div id="panel-email" data-panel="email" role="tabpanel" aria-labelledby="emailHeading" hidden>
+    <section class="card" aria-labelledby="emailHeading">
+      <h2 class="card-title" id="emailHeading">📧 Email Connect</h2>
+      <p class="card-subtitle">
+        Connect your Gmail to automatically import NayaPay transactions.
+        You'll receive a notification when new transactions are ready to approve.
+      </p>
+      <div id="emailConnectStatus"></div>
+      <form id="emailConnectForm" class="email-connect-form">
+        <div class="form-group">
+          <label class="field-label" for="emailAddress">Gmail Address</label>
+          <input id="emailAddress" type="email" placeholder="your.email@gmail.com" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="emailPassword">App Password</label>
+          <input id="emailPassword" type="password" placeholder="Enter your Gmail app password" autocomplete="off">
+          <p class="field-hint">
+            <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">How to generate an App Password?</a>
+          </p>
+        </div>
+        <button class="btn btn-primary" type="submit">Connect Email</button>
+      </form>
+    </section>
+  </div>
+
+  <!-- ══════════════ PENDING QUEUE ══════════════ -->
+  <div id="panel-pending" data-panel="pending" role="tabpanel" aria-labelledby="pendingHeading" hidden>
+    <section class="card" aria-labelledby="pendingHeading">
+      <h2 class="card-title" id="pendingHeading">🔔 Pending Transactions</h2>
+      <p class="card-subtitle">
+        Transactions from your bank emails. Approve to add them to your records, or reject if incorrect.
+      </p>
+      <div id="pendingQueueList"></div>
     </section>
   </div>
 

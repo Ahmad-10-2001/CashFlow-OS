@@ -78,6 +78,8 @@ const TABS = [
   { id: 'reports',      label: 'Reports',    glyph: '◔' },
   { id: 'list',         label: 'List',       glyph: '☑' },
   { id: 'categories',   label: 'Categories', glyph: '❑' },
+  { id: 'email',        label: 'Email',      glyph: '📧' },
+  { id: 'pending',      label: 'Pending',    glyph: '🔔' },
   { id: 'settings',     label: 'Backup',     glyph: '⚙' }
 ];
 
@@ -2977,7 +2979,9 @@ const ACTIONS = {
   'export': () => exportBackup(),
   'import': importBackup,
   'reset': resetAll,
-  'close-modal': (el) => closeModal(el.dataset.target)
+  'close-modal': (el) => closeModal(el.dataset.target),
+  'approve-tx': (el) => approveTransaction(el.dataset.id),
+  'reject-tx': (el) => rejectTransaction(el.dataset.id)
 };
 
 function lastDayOf(period) {
@@ -3247,6 +3251,272 @@ function init() {
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker.register('service-worker.js').catch((err) => console.warn('Service worker registration failed:', err));
   }
+
+  // ── Email Connect & Pending Queue ──
+  wireEmailConnect();
+  loadPendingTransactions();
+}
+
+/* ============================================================
+   Email Connect & Pending Queue
+   ============================================================ */
+
+let pendingTransactions = [];
+let emailConnected = false;
+
+function getSupabaseClient() {
+  if (!window.CASHFLOW_CONFIG) return null;
+  // Use the global supabase client from sync.js if available
+  if (window.CashFlowSync && window.CashFlowSync.supabase) {
+    return window.CashFlowSync.supabase;
+  }
+  return null;
+}
+
+function wireEmailConnect() {
+  const form = $('emailConnectForm');
+  if (!form) return;
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = $('emailAddress').value.trim();
+    const password = $('emailPassword').value;
+
+    if (!email || !password) {
+      toast('Please enter both email and password');
+      return;
+    }
+
+    try {
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        toast('Sync not available. Please sign in first.');
+        return;
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        toast('Please sign in first');
+        return;
+      }
+
+      // Encrypt password (base64 for now — replace with AES-256 in production)
+      const encryptedPassword = btoa(password);
+
+      const { error } = await supabase
+        .from('user_email_credentials')
+        .upsert({
+          user_id: user.id,
+          email_address: email,
+          imap_host: 'imap.gmail.com',
+          imap_port: 993,
+          encrypted_password: encryptedPassword,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        });
+
+      if (error) throw error;
+
+      emailConnected = true;
+      renderEmailConnectStatus();
+      toast('Email connected! Transactions will appear in Pending Queue.');
+      form.reset();
+
+    } catch (err) {
+      console.error('Email connect error:', err);
+      toast('Failed to connect email: ' + err.message);
+    }
+  });
+
+  // Load existing connection status
+  loadEmailConnectionStatus();
+}
+
+async function loadEmailConnectionStatus() {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from('user_email_credentials')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (data) {
+      emailConnected = true;
+      renderEmailConnectStatus();
+    }
+  } catch (err) {
+    console.error('Load email status error:', err);
+  }
+}
+
+function renderEmailConnectStatus() {
+  const statusEl = $('emailConnectStatus');
+  if (!statusEl) return;
+
+  if (emailConnected) {
+    statusEl.innerHTML = '';
+    statusEl.appendChild(h('div', { class: 'email-status connected' },
+      h('span', { class: 'email-status-icon' }, '✓'),
+      h('span', {}, 'Email connected — new transactions will appear in Pending Queue')
+    ));
+  } else {
+    statusEl.innerHTML = '';
+    statusEl.appendChild(h('div', { class: 'email-status disconnected' },
+      h('span', { class: 'email-status-icon' }, '○'),
+      h('span', {}, 'Email not connected')
+    ));
+  }
+}
+
+async function loadPendingTransactions() {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const { data, error } = await supabase
+      .from('pending_transactions')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+
+    pendingTransactions = data || [];
+    renderPendingQueue();
+  } catch (err) {
+    console.error('Load pending transactions error:', err);
+  }
+}
+
+function renderPendingQueue() {
+  const container = $('pendingQueueList');
+  if (!container) return;
+
+  container.innerHTML = '';
+
+  if (pendingTransactions.length === 0) {
+    container.appendChild(h('div', { class: 'pending-empty' }, 'No pending transactions'));
+    return;
+  }
+
+  pendingTransactions.forEach(tx => {
+    const item = h('div', { class: 'pending-item' },
+      h('div', { class: 'pending-info' },
+        h('div', { class: 'pending-amount ' + (tx.type === 'income' ? 'income' : 'expense') },
+          (tx.type === 'income' ? '+ ' : '− ') + CURRENCY + ' ' + formatAmount(tx.amount)
+        ),
+        h('div', { class: 'pending-desc' }, tx.description),
+        h('div', { class: 'pending-meta' },
+          tx.bank_name + ' • ' + formatDate(tx.transaction_date)
+        )
+      ),
+      h('div', { class: 'pending-actions' },
+        h('button', {
+          class: 'btn btn-primary btn-sm',
+          dataset: { act: 'approve-tx', id: tx.id }
+        }, 'Approve'),
+        h('button', {
+          class: 'btn btn-cancel btn-sm',
+          dataset: { act: 'reject-tx', id: tx.id }
+        }, 'Reject')
+      )
+    );
+    container.appendChild(item);
+  });
+}
+
+async function approveTransaction(txId) {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    const tx = pendingTransactions.find(t => t.id === txId);
+    if (!tx) return;
+
+    // Create actual transaction
+    const newTx = {
+      id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
+      type: tx.type,
+      amount: tx.amount,
+      category: tx.type === 'income' ? 'Bank Transfer' : 'Bank Payment',
+      comment: tx.description,
+      happened_at: new Date().toISOString().slice(0, 16),
+      account_id: 'acc-nayapay',
+      to_account_id: null,
+      source: 'email:' + tx.id
+    };
+
+    // Add to local state
+    state.transactions.push(newTx);
+    save();
+
+    // Mark as approved in Supabase
+    const { error } = await supabase
+      .from('pending_transactions')
+      .update({ status: 'approved', approved_at: new Date().toISOString() })
+      .eq('id', txId);
+
+    if (error) throw error;
+
+    // Remove from pending list
+    pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
+    renderPendingQueue();
+
+    toast('Transaction approved and added to your records');
+  } catch (err) {
+    console.error('Approve transaction error:', err);
+    toast('Failed to approve: ' + err.message);
+  }
+}
+
+async function rejectTransaction(txId) {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const { error } = await supabase
+      .from('pending_transactions')
+      .update({ status: 'rejected' })
+      .eq('id', txId);
+
+    if (error) throw error;
+
+    // Remove from pending list
+    pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
+    renderPendingQueue();
+
+    toast('Transaction rejected');
+  } catch (err) {
+    console.error('Reject transaction error:', err);
+    toast('Failed to reject: ' + err.message);
+  }
+}
+
+function formatAmount(amount) {
+  return Number(amount).toLocaleString('en-PK', { maximumFractionDigits: 2 });
+}
+
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 if (document.readyState === 'loading') {
