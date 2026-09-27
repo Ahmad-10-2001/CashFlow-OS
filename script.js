@@ -3508,14 +3508,19 @@ function init() {
     resetMode = 'newpw';
     resetEmail = window.CashFlowSync.resetEmail;
   } else if (recovered && recovered.error) {
-    // Only reachable if a link was clicked. The overwhelmingly common cause is
-    // that the project has no redirect URL set, in which case the link never
-    // gets this far — it lands on Supabase's own default page. Say so, because
-    // "invalid or expired" on its own sends people looking in the wrong place.
-    // A dead link is nearly always the project's redirect URL, not an expired
-    // token. Saying "invalid or expired" sends people looking for a security
-    // problem that is not there, so name the real cause instead.
-    toast('That link no longer works. Each one can only be used once — press Forgot your password? to have another sent.');
+    /* Only reachable if a link was clicked. Two quite different causes, and
+       they want different actions, so they are named apart rather than folded
+       into "invalid or expired" — which sends people looking for a security
+       problem that is not there.
+
+       otp_expired is almost always the second request's fault: asking for a
+       reset again invalidates the link already sitting in the inbox, and a
+       mail scanner that opens links to check them can do the same. The token
+       being single-use is the point, so the fix is a new email, not a retry. */
+    const expired = /otp_expired|expired|invalid/i.test(String(recovered.error));
+    toast(expired
+      ? 'That email link has already been used — asking for a reset again makes a new one and kills the old. Use the newest email, and open it once.'
+      : 'That link could not be opened. Press Forgot your password? to have a new one sent.');
   } else if (resetMode === null && window.CashFlowSync && window.CashFlowSync.hasResetToken) {
     // Reloaded part-way through: the token survived in storage.
     resetMode = 'newpw';

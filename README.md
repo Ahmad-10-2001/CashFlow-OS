@@ -291,11 +291,26 @@ registered. Only failures of the *project* are reported — rate limiting, and
 Two things to set up on the Supabase side, or the email never arrives:
 
 1. **The redirect URL**, which the link path needs. Add the app's address under
-   **Authentication → URL Configuration → Redirect URLs**; without it Supabase
+   **Authentication → URL Configuration → Redirect URLs**, otherwise Supabase
    sends the link to its own default page instead, which is a dead
-   "This site can't be reached" that looks like the app is broken. The error
-   raised on a dead link names this rather than saying "invalid or expired",
-   which would send people looking for a security problem that is not there.
+   "This site can't be reached" that looks like the app is broken.
+
+   The app does not simply rely on that entry. It sends `redirect_to` computed
+   from the page it is running on — origin and path — so the link points at
+   wherever the app actually is: a GitHub Pages subpath, a custom domain, or a
+   copy opened on a laptop. Without that, Supabase fell back to the project's
+   Site URL and produced a link to the site *root* while the app was served from
+   a subpath, so the link landed on a 404 and the one-time token died with the
+   click. The dashboard entry is still needed, because GoTrue silently
+   substitutes the Site URL for a `redirect_to` that is not on the allow-list —
+   but it is now a fallback rather than the thing everything depends on.
+
+   **A link can only be used once.** Asking for a reset again deliberately
+   invalidates the link already sitting in the inbox, and a mail scanner that
+   opens links to check them can do the same. So a link reporting
+   `otp_expired` is usually an older email, not a fault, and the app says so
+   rather than "invalid or expired" — which sends people looking for a security
+   problem that is not there, towards the one action that cannot work.
 2. **An email provider**, for the email to be delivered at all. Supabase's
    built-in SMTP is rate-limited to a couple of messages per hour and only goes
    to team members — fine for one person's own address, not for more. A real one
@@ -457,7 +472,7 @@ daily summary — is refused outright rather than half-parsed.
 
 ## Testing
 
-1039 assertions across ten suites, all of which run without a browser or a
+1048 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 

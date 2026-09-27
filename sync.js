@@ -426,6 +426,37 @@ window.CashFlowSync = (function () {
     } catch (err) { return null; }
   }
 
+  /** Where a reset link should send the user, worked out from the page itself.
+   *
+   *  Supabase falls back to the project's Site URL when the caller does not say
+   *  where to send the link, and that produced
+   *
+   *      https://ahmad-10-2001.github.io/#access_token=…
+   *
+   *  while the app is served from
+   *
+   *      https://ahmad-10-2001.github.io/CashFlow-OS/
+   *
+   *  The link landed on a 404. The token was fine; there was simply no app at
+   *  the end of it, and the one-time token died with the click.
+   *
+   *  Deriving it from the live location means the link is right wherever the
+   *  app happens to be served — a GitHub Pages subpath, a custom domain, or a
+   *  copy opened on a laptop — instead of needing the dashboard to be edited in
+   *  step with every deployment. The value still has to be in the project's
+   *  allow-list; GoTrue silently substitutes the Site URL if it is not, so the
+   *  dashboard entry still has to be right, but it is now a fallback rather
+   *  than the thing everything depends on. */
+  function currentAppUrl() {
+    try {
+      if (typeof location === 'undefined' || !location.origin) return null;
+      /* The fragment is dropped deliberately: it is routing state owned by
+         showTab(), and carrying it into a redirect would land the user on a
+         tab of the previous session's choosing. */
+      return location.origin + location.pathname;
+    } catch (err) { return null; }
+  }
+
   /** Ask Supabase to email a code/link.
    *  Always reports success, whatever it finds. Answering "no such account"
    *  would turn this form into a way to test which emails are registered. */
@@ -434,10 +465,13 @@ window.CashFlowSync = (function () {
     if (!e || e.indexOf('@') === -1 || e.indexOf('.') === -1) {
       return { error: 'Enter a valid email address' };
     }
+    const body = { email: e, create_user: false };
+    const here = currentAppUrl();
+    if (here) body.redirect_to = here;
     try {
       await http(authPath('/otp'), {
         method: 'POST', headers: headers(),
-        body: JSON.stringify({ email: e, create_user: false })
+        body: JSON.stringify(body)
       });
     } catch (err) {
       const msg = err.message || '';
