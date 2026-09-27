@@ -4072,7 +4072,11 @@ function renderPendingQueue() {
     const item = h('div', { class: 'pending-item' },
       h('div', { class: 'pending-info' },
         h('div', { class: 'pending-amount ' + (tx.type === 'income' ? 'income' : 'expense') },
-          (tx.type === 'income' ? '+ ' : '− ') + CURRENCY + ' ' + formatMoney(amount === null ? 0 : amount)),
+          /* formatMoney already puts the currency symbol on, so only the sign
+             is added here. Adding CURRENCY as well made every pending row read
+             "Rs Rs 1,234" — the only row in the app a user reads before
+             approving money into their ledger. */
+          (tx.type === 'income' ? '+ ' : '− ') + formatMoney(amount === null ? 0 : amount)),
         h('div', { class: 'pending-desc' }, cleanText(tx.description, COMMENT_LIMIT) || '(no description)'),
         h('div', { class: 'pending-meta' },
           cleanText(tx.bank_name, NAME_LIMIT) || 'Bank',
