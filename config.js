@@ -22,7 +22,7 @@ window.CASHFLOW_CONFIG = {
   // half-working app on screen, the caches are cleared and the page reloads
   // once. Bump this on every deploy, along with the service worker's
   // CACHE_VERSION.
-  appBuild: 'v12',
+  appBuild: 'v14',
 
   // How often the background loop wakes up, in milliseconds.
   // Only ever runs while the page is open AND signed in.

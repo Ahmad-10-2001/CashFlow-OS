@@ -102,6 +102,9 @@ let storageUsable = true;
 let activeTab = 'home';
 let reportRange = { mode: 'month' };
 let budgetPeriod = null;   // null = follow the current calendar month
+// The last result of "check and re-upload", kept so it survives a re-render of
+// the sync panel (which happens on every save()).
+let repairReport = null;
 
 /* ============================================================
    Small utilities
@@ -2893,26 +2896,108 @@ function renderSyncPanel() {
       h('div', { class: 'btn-row mt-10' },
         button('Sync now', 'sync-now'),
         button('Sign out', 'sync-signout')
+      ),
+      h('details', { class: 'sync-repair' },
+        h('summary', {}, 'Cloud copy looks wrong?'),
+        h('p', { class: 'field-hint' },
+          'If the cloud database was reset, emptied or rebuilt, this device still ' +
+          'has your records but the app believes they were already sent, so nothing ' +
+          'uploads and no error appears. This compares the two and re-sends whatever ' +
+          'is missing.'),
+        h('div', { class: 'btn-row' },
+          button('Check and re-upload', 'sync-repair')
+        ),
+        repairReport ? h('pre', { class: 'sync-repair-out' }, repairReport) : null
       )
     );
     return;
   }
 
-  mount(box,
-    h('form', { id: 'authForm', novalidate: true },
-      h('div', { class: 'form-group' },
-        h('label', { class: 'field-label', for: 'authEmail' }, 'Email'),
-        h('input', { id: 'authEmail', type: 'email', inputmode: 'email', placeholder: 'you@example.com', autocomplete: 'username' })
-      ),
-      h('div', { class: 'form-group' },
-        h('label', { class: 'field-label', for: 'authPin' }, 'PIN'),
-        h('input', { id: 'authPin', type: 'password', placeholder: 'At least ' + S.MIN_PIN + ' characters', autocomplete: 'current-password' }),
-        h('p', { class: 'field-hint' }, 'A short PIN can be guessed by someone who has your publishable key. Use a longer one, and a real email so the account can be recovered.')
-      ),
-      h('div', { class: 'btn-row' },
-        h('button', { class: 'btn btn-primary', type: 'submit', dataset: { act: 'auth-in' } }, 'Sign in'),
-        h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'auth-up' } }, 'Create account')
-      )
+  mount(box, ...(resetMode === 'newpw'
+    ? [newPasswordForm(S)]
+    : resetMode === 'code'
+      ? [resetCodeForm(S)]
+      : [signInForm(S)]));
+}
+
+/* The signed-out panel has three states, in order of how far through the
+   reset the user is. Kept as separate builders so each one is short enough to
+   read, rather than one form with a dozen hidden fields. */
+
+function signInForm(S) {
+  return h('form', { id: 'authForm', novalidate: true },
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label', for: 'authEmail' }, 'Email'),
+      h('input', { id: 'authEmail', type: 'email', inputmode: 'email', placeholder: 'you@example.com', autocomplete: 'username' })
+    ),
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label', for: 'authPassword' }, 'Password'),
+      h('input', {
+        id: 'authPassword', type: 'password',
+        placeholder: 'At least ' + S.MIN_PASSWORD + ' characters',
+        autocomplete: 'current-password'
+      }),
+      h('p', { class: 'field-hint' },
+        'This app works offline without an account. Sign in only if you want your data on more than one device.')
+    ),
+    h('div', { class: 'btn-row' },
+      h('button', { class: 'btn btn-primary', type: 'submit', dataset: { act: 'auth-in' } }, 'Sign in'),
+      h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'auth-up' } }, 'Create account')
+    ),
+    h('p', { class: 'auth-alt' },
+      h('button', { class: 'linkish', type: 'button', dataset: { act: 'auth-forgot' } }, 'Forgot your password?')
+    )
+  );
+}
+
+/** Shown after the reset email was sent. Accepts the code from the email;
+ *  if the user clicked the link in the email instead, the app skips straight
+ *  past this, because the token arrives in the URL. */
+function resetCodeForm(S) {
+  return h('form', { id: 'resetCodeForm', novalidate: true },
+    h('p', { class: 'sync-msg' },
+      'If that email exists, a code is on its way to ',
+      h('strong', {}, resetEmail || 'it'),
+      '. It can take a minute or two.'),
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label', for: 'resetCode' }, 'Code from the email'),
+      h('input', {
+        id: 'resetCode', type: 'text', inputmode: 'numeric',
+        autocomplete: 'one-time-code', placeholder: '123456'
+      }),
+      h('p', { class: 'field-hint' },
+        'Or just click the link in the email — it opens this app and fills this in for you.')
+    ),
+    h('div', { class: 'btn-row' },
+      h('button', { class: 'btn btn-primary', type: 'submit' }, 'Continue'),
+      h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'reset-cancel' } }, 'Back')
+    ),
+    h('p', { class: 'auth-alt' },
+      h('button', { class: 'linkish', type: 'button', dataset: { act: 'reset-resend' } }, 'Send it again')
+    )
+  );
+}
+
+/** Shown once a recovery token is in hand. */
+function newPasswordForm(S) {
+  return h('form', { id: 'newPwForm', novalidate: true },
+    h('p', { class: 'sync-msg' }, 'That code checked out. Choose a new password.'),
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label', for: 'newPw1' }, 'New password'),
+      h('input', {
+        id: 'newPw1', type: 'password', autocomplete: 'new-password',
+        placeholder: 'At least ' + S.MIN_PASSWORD + ' characters'
+      })
+    ),
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label', for: 'newPw2' }, 'Type it again'),
+      h('input', { id: 'newPw2', type: 'password', autocomplete: 'new-password', placeholder: 'Same password' })
+    ),
+    h('p', { class: 'auth-alt' },
+      h('button', { class: 'linkish', type: 'button', dataset: { act: 'reset-cancel' } }, 'Start over')
+    ),
+    h('div', { class: 'btn-row' },
+      h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save new password')
     )
   );
 }
@@ -2921,17 +3006,17 @@ async function handleAuth(mode) {
   const S = window.CashFlowSync;
   if (!S) { toast('Sync is unavailable'); return; }
   const email = $('authEmail').value;
-  const pin = $('authPin').value;
+  const password = $('authPassword').value;
 
-  const bad = S.validateCredentials(email, pin);
+  const bad = S.validateCredentials(email, password);
   if (bad) { toast(bad); return; }
 
   const btn = document.querySelector('[data-act="auth-' + (mode === 'up' ? 'up' : 'in') + '"]');
   if (btn) btn.disabled = true;
-  $('authPin').value = '';
+  $('authPassword').value = '';
   toast(mode === 'up' ? 'Creating your account…' : 'Signing in…');
 
-  const res = mode === 'up' ? await S.signUp(email, pin) : await S.signIn(email, pin);
+  const res = mode === 'up' ? await S.signUp(email, password) : await S.signIn(email, password);
 
   if (btn) btn.disabled = false;
 
@@ -2951,6 +3036,78 @@ async function handleAuth(mode) {
   toast(mode === 'up' ? 'Account created — your data is now backed up' : 'Signed in — syncing');
 }
 
+/* ---------- forgot password ---------- */
+
+/* The reset flow lives in the same panel as sign-in, so it is a mode on that
+   panel rather than a separate screen. `resetMode` is the only state: what the
+   user is looking at is fully determined by it, so it cannot fall out of step
+   with the DOM the way a pile of hidden inputs would. */
+let resetMode = null;   // null | 'code' | 'newpw'
+let resetEmail = null;
+
+async function beginPasswordReset() {
+  const S = window.CashFlowSync;
+  if (!S) return;
+  const email = $('authEmail') ? $('authEmail').value.trim() : '';
+  if (!email) { toast('Type your email first, then press Forgot'); return; }
+  $('authPassword').value = '';
+  toast('Sending…');
+  const res = await S.requestPasswordReset(email);
+  if (res.error) { toast(res.error); return; }
+  resetEmail = res.email;
+  resetMode = 'code';
+  renderSyncPanel();
+  toast('If that address has an account, a code is on its way');
+}
+
+async function submitResetCode() {
+  const S = window.CashFlowSync;
+  if (!S) return;
+  const code = $('resetCode').value;
+  const email = resetEmail || S.resetEmail || '';
+  const btn = $('resetCodeForm').querySelector('button[type="submit"]');
+  if (btn) btn.disabled = true;
+  const res = await S.verifyResetCode(email, code);
+  if (btn) btn.disabled = false;
+  if (res.error) { toast(res.error); return; }
+  resetMode = 'newpw';
+  renderSyncPanel();
+  const first = $('newPw1');
+  if (first) first.focus();
+}
+
+async function submitNewPassword() {
+  const S = window.CashFlowSync;
+  if (!S) return;
+  const a = $('newPw1').value;
+  const b = $('newPw2').value;
+  // Checked here as well as server-side, so a typo does not cost a round trip.
+  if (a !== b) { toast('The two passwords are not the same'); return; }
+  const btn = $('newPwForm').querySelector('button[type="submit"]');
+  if (btn) btn.disabled = true;
+  const res = await S.setNewPassword(a);
+  if (btn) btn.disabled = false;
+  if (res.error) { toast(res.error); renderSyncPanel(); return; }
+
+  resetMode = null;
+  resetEmail = null;
+  $('newPw1').value = '';
+  $('newPw2').value = '';
+  renderSyncPanel();
+  // Signed in automatically: the recovery token proves who they are, and
+  // making them type the new password a second time helps nobody.
+  $('authEmail').value = res.email || '';
+  $('authPassword').value = a;
+  await handleAuth('in');
+}
+
+/** Abandon the reset and go back to the sign-in form. */
+function cancelPasswordReset() {
+  resetMode = null;
+  resetEmail = null;
+  renderSyncPanel();
+}
+
 function signOut() {
   const S = window.CashFlowSync;
   if (!S) return;
@@ -2958,6 +3115,35 @@ function signOut() {
   S.signOut();
   renderAll();
   toast('Signed out. Everything still works here.');
+}
+
+/* Compare what the cloud actually holds against what this device holds, and
+   re-send anything the cloud is missing. The push cursor is local state, so it
+   can claim records were uploaded when the server was wiped or rebuilt — and
+   then the app uploads nothing, forever, while cheerfully reporting "synced". */
+async function repairCloud() {
+  const S = window.CashFlowSync;
+  if (!S) { toast('Sync is unavailable'); return; }
+  toast('Checking…');
+  let res;
+  try {
+    res = await S.repairCloudCopy(state);
+  } catch (err) {
+    repairReport = 'Could not check: ' + (err && err.message ? err.message : 'unknown error');
+    renderAll();
+    return;
+  }
+  if (res.error) { toast(res.error); return; }
+
+  repairReport = res.report.join('\n');
+  renderAll();
+
+  if (res.reset) {
+    renderSyncPanel();
+    toast('Re-uploaded ' + res.totalRows + ' record(s) from this device');
+  } else {
+    toast('Everything is already in step');
+  }
 }
 
 function renderAll() {
@@ -3001,8 +3187,12 @@ const ACTIONS = {
   'custody-delete': (el) => deleteCustody(el.dataset.id),
   'auth-in': () => handleAuth('in'),
   'auth-up': () => handleAuth('up'),
+  'auth-forgot': () => beginPasswordReset(),
+  'reset-cancel': () => cancelPasswordReset(),
+  'reset-resend': () => beginPasswordReset(),
   'sync-now': () => { if (window.CashFlowSync) window.CashFlowSync.cycle(state).then(() => renderAll()); },
   'sync-signout': signOut,
+  'sync-repair': repairCloud,
   'month-close': closePeriod,
   'month-reopen': (el) => reopenPeriod(el.dataset.arg),
   'month-report': (el) => showReport('custom', {
@@ -3061,16 +3251,23 @@ function wireEvents() {
     }
   });
 
-  // The sign-in form is built by renderSyncPanel(), which runs on every save()
-  // and so replaces the element. A listener bound to the element would be
-  // thrown away each time, and it could not be bound at all the first time
-  // because the form does not exist yet when wireEvents() runs. Delegating
-  // survives both problems. Pressing Enter in the PIN field used to fall
+  // The sign-in and reset forms are built by renderSyncPanel(), which runs on
+  // every save() and so replaces the element. A listener bound to the element
+  // would be thrown away each time, and it could not be bound at all the first
+  // time because the form does not exist yet when wireEvents() runs.
+  // Delegating survives both problems. Pressing Enter in a field used to fall
   // through to an implicit form GET, which reloaded the page.
+  const AUTH_FORMS = {
+    authForm: () => handleAuth('in'),
+    resetCodeForm: () => submitResetCode(),
+    newPwForm: () => submitNewPassword()
+  };
   document.addEventListener('submit', (e) => {
-    if (!(e.target instanceof Element) || e.target.id !== 'authForm') return;
+    if (!(e.target instanceof Element)) return;
+    const fn = AUTH_FORMS[e.target.id];
+    if (!fn) return;
     e.preventDefault();
-    handleAuth('in');
+    fn();
   });
 
   // forms give us Enter-to-submit for free
@@ -3225,6 +3422,15 @@ async function recoverFromStaleAssets(reason) {
 }
 
 function init() {
+  /* A password-reset link carries its token in the URL fragment, and this app
+     routes tabs through that same fragment. showTab() overwrites the fragment
+     on the first render, which would destroy the token before it was read, so
+     it has to be picked up here — before anything touches the hash. */
+  let recovered = null;
+  if (window.CashFlowSync && typeof window.CashFlowSync.pickRecoveryFromUrl === 'function') {
+    try { recovered = window.CashFlowSync.pickRecoveryFromUrl(); } catch (err) { /* ignore */ }
+  }
+
   // Checked first: nothing should render until we know the files agree.
   const stale = staleAssetReason();
   if (stale) {
@@ -3245,6 +3451,21 @@ function init() {
   state = loaded.state;
 
   wireEvents();
+
+  /* Decide what the sync panel should show, before the first render paints it.
+     Two ways to arrive here with a valid recovery token: a link the user just
+     clicked, or a reload in the middle of the flow. Both mean "show the new
+     password form", and both must land the user on the panel that has it. */
+  if (recovered && recovered.ok && window.CashFlowSync && window.CashFlowSync.hasResetToken) {
+    resetMode = 'newpw';
+    resetEmail = window.CashFlowSync.resetEmail;
+  } else if (recovered && recovered.error) {
+    toast('That reset link did not work: ' + recovered.error);
+  } else if (resetMode === null && window.CashFlowSync && window.CashFlowSync.hasResetToken) {
+    // Reloaded part-way through: the token survived in storage.
+    resetMode = 'newpw';
+    resetEmail = window.CashFlowSync.resetEmail;
+  }
 
   // Default the date fields to now, so a new entry is "right now" until changed.
   if ($('txDate')) $('txDate').value = stampToInput(nowStamp());
@@ -3271,7 +3492,9 @@ function init() {
     ));
   }
 
-  showTab(tabFromHash(), { silent: true });
+  // Someone arriving from a reset link wants the form, not the dashboard. The
+  // link's fragment is not a tab route, so tabFromHash() would send them home.
+  showTab(resetMode ? 'settings' : tabFromHash(), { silent: true });
 
   // If anything had to be repaired, write the clean state straight back so the
   // bad data does not linger on disk (and does not re-report itself next load).

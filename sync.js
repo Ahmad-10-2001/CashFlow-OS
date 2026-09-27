@@ -242,27 +242,58 @@ window.CashFlowSync = (function () {
     return body;
   }
 
-  /* ---------- auth: email + PIN ----------
-     The PIN is used as the password. Supabase stores only a hash, and
-     the traffic is TLS, so the plain PIN is never written down
-     anywhere we control. 8 characters is enforced by the UI because a
-     short PIN is guessable — rate limiting helps, but it is not a
-     substitute for length. */
-  const MIN_PIN = 8;
+  /** Like http(), but also hands back the response headers.
+   *  PostgREST reports the total row count in Content-Range, which is the only
+   *  cheap way to ask "how much of this table is actually on the server". */
+  async function httpWithHeaders(url, opts) {
+    const res = await fetch(url, opts);
+    const text = await res.text();
+    let body = null;
+    if (text) { try { body = JSON.parse(text); } catch (err) { body = text; } }
+    if (!res.ok) {
+      const msg = (body && (body.msg || body.message || body.error_description)) ||
+        (body && body.error) || ('HTTP ' + res.status);
+      const e = new Error(msg);
+      e.status = res.status;
+      e.body = body;
+      throw e;
+    }
+    let count = null;
+    const range = res.headers && res.headers.get ? res.headers.get('content-range') : null;
+    if (range) {
+      // "0-99/1234" when there are rows, "*/0" when there are none.
+      const m = range.split('/');
+      const total = parseInt(m[m.length - 1], 10);
+      if (!Number.isNaN(total)) count = total;
+    }
+    return { body, count };
+  }
 
-  function validateCredentials(email, pin) {
+  /* ---------- auth: email + password ----------
+     The password is sent over TLS and Supabase stores only a bcrypt hash, so
+     the plain value is never written down anywhere we control.
+
+     8 characters is enforced in the UI. That is a floor, not a suggestion:
+     the publishable key is baked into the app and readable by anyone, so the
+     only thing standing between an attacker and someone's ledger is the
+     password itself. Rate limiting helps, but it is not a substitute for
+     length. */
+  const MIN_PASSWORD = 8;
+
+  function validateCredentials(email, password) {
     const e = String(email || '').trim();
     if (!e || e.indexOf('@') === -1 || e.indexOf('.') === -1) return 'Enter a valid email address';
-    if (String(pin || '').length < MIN_PIN) return 'Your PIN must be at least ' + MIN_PIN + ' characters';
+    const p = String(password == null ? '' : password);
+    if (p.length < MIN_PASSWORD) return 'Your password must be at least ' + MIN_PASSWORD + ' characters';
     return null;
   }
 
-  async function signUp(email, pin) {
-    const bad = validateCredentials(email, pin);
+  async function signUp(email, password) {
+    const bad = validateCredentials(email, password);
     if (bad) return { error: bad };
     try {
       const out = await http(authPath('/signup'), {
-        method: 'POST', headers: headers(), body: JSON.stringify({ email: email.trim(), password: pin })
+        method: 'POST', headers: headers(), body: JSON.stringify({ email: email.trim(), password })
       });
       if (!out || !out.access_token) {
         return { needsEmailConfirm: true };
@@ -278,17 +309,17 @@ window.CashFlowSync = (function () {
     }
   }
 
-  async function signIn(email, pin) {
-    const bad = validateCredentials(email, pin);
+  async function signIn(email, password) {
+    const bad = validateCredentials(email, password);
     if (bad) return { error: bad };
     try {
       const out = await http(authPath('/token?grant_type=password'), {
-        method: 'POST', headers: headers(), body: JSON.stringify({ email: email.trim(), password: pin })
+        method: 'POST', headers: headers(), body: JSON.stringify({ email: email.trim(), password })
       });
       adopt(out, email);
       return { ok: true };
     } catch (err) {
-      if (/Invalid login credentials/i.test(err.message || '')) return { error: 'Wrong email or PIN' };
+      if (/Invalid login credentials/i.test(err.message || '')) return { error: 'Wrong email or password' };
       return { error: err.message };
     }
   }
@@ -312,6 +343,186 @@ window.CashFlowSync = (function () {
     if (status) { status.signedIn = true; status.email = session.email; }
   }
 
+  /* ---------- password reset ----------
+     Two ways in, both ending at the same place:
+
+       1. TYPE the code from the email. Needs the "Magic Link" email
+          template edited once in Supabase to show {{ .Token }}.
+       2. CLICK the link in the email. Supabase puts a token in the URL
+          fragment, and pickRecoveryFromUrl() picks it up on the next load.
+
+     Either way we end up holding a short-lived recovery token, and only
+     then can a new password be set.
+
+     That token is deliberately kept apart from the session. A recovery token
+     is good for changing the password and for nothing else, so a leaked reset
+     link can never read or write your ledger. */
+
+  const RESET_KEY = 'cashflow:reset';
+
+  function loadReset() {
+    try {
+      const raw = localStorage.getItem(RESET_KEY);
+      if (!raw) return null;
+      const r = JSON.parse(raw);
+      if (!r || !r.token) return null;
+      // A token past its expiry would be rejected anyway; drop it so the UI
+      // does not sit on a "set new password" form that can never succeed.
+      if (r.expiresAt && Date.now() > r.expiresAt) { clearReset(); return null; }
+      return r;
+    } catch (err) { return null; }
+  }
+  function saveReset(r) {
+    try { localStorage.setItem(RESET_KEY, JSON.stringify(r)); } catch (err) { /* ignore */ }
+  }
+  function clearReset() {
+    try { localStorage.removeItem(RESET_KEY); } catch (err) { /* ignore */ }
+  }
+
+  function adoptReset(out, email) {
+    const r = {
+      token: out.access_token,
+      userId: out.user && out.user.id,
+      email: (out.user && out.user.email) || email || null,
+      // Recovery links are short-lived by design. A small grace period on top
+      // so a form filled in slowly is not rejected at the last moment.
+      expiresAt: Date.now() + ((typeof out.expires_in === 'number' ? out.expires_in : 3600) + 300) * 1000
+    };
+    saveReset(r);
+    return r;
+  }
+
+  /** Ask Supabase to email a code/link.
+   *  Always reports success, whatever it finds. Answering "no such account"
+   *  would turn this form into a way to test which emails are registered. */
+  async function requestPasswordReset(email) {
+    const e = String(email || '').trim();
+    if (!e || e.indexOf('@') === -1 || e.indexOf('.') === -1) {
+      return { error: 'Enter a valid email address' };
+    }
+    try {
+      await http(authPath('/otp'), {
+        method: 'POST', headers: headers(),
+        body: JSON.stringify({ email: e, create_user: false })
+      });
+    } catch (err) {
+      const msg = err.message || '';
+      // Only failures of the SYSTEM are reported. Anything that depends on
+      // whether this particular address has an account — "User not found",
+      // "email not confirmed" — is swallowed and answered with success, because
+      // echoing it back turns this form into a tool for discovering who has an
+      // account here. The two shown below are properties of the project, not of
+      // the address, so they say nothing about who is registered.
+      if (/rate|limit|too many|security purposes/i.test(msg)) {
+        return { error: 'Too many attempts from this address. Wait a few minutes, then try again.' };
+      }
+      if (/smtp|email provider|not enabled|mailer/i.test(msg)) {
+        return { error: 'This project cannot send email yet. Its owner must set up an email provider in Supabase → Authentication → Email.' };
+      }
+      console.warn('Password reset request did not send:', msg);
+    }
+    clearReset();
+    return { ok: true, email: e };
+  }
+
+  /** Trade the emailed code for a recovery token.
+   *  The token type differs between GoTrue versions, so both spellings are
+   *  tried rather than failing on a version difference. */
+  async function verifyResetCode(email, code) {
+    const e = String(email || '').trim();
+    const token = String(code == null ? '' : code).trim();
+    if (!e) return { error: 'Enter your email' };
+    if (!token) return { error: 'Enter the code from the email' };
+    if (token.length < 6) return { error: 'That code looks too short' };
+
+    let last = null;
+    for (const type of ['email', 'magiclink']) {
+      try {
+        const out = await http(authPath('/verify'), {
+          method: 'POST', headers: headers(),
+          body: JSON.stringify({ email: e, token, type })
+        });
+        if (out && out.access_token) { adoptReset(out, e); return { ok: true }; }
+        last = new Error('That code was not accepted');
+      } catch (err) {
+        last = err;
+        // A wrong code will not become right under a different type name, and
+        // a used one never will. Stop early rather than hammering the server.
+        if (/expired|invalid|token/i.test(err.message || '')) return { error: friendlyResetError(err) };
+      }
+    }
+    return { error: friendlyResetError(last) };
+  }
+
+  function friendlyResetError(err) {
+    const msg = (err && err.message) || '';
+    if (/expired/i.test(msg)) return 'That code has expired. Ask for a new one.';
+    if (/not found|invalid/i.test(msg)) return 'That code is not right. Check it and try again.';
+    if (/rate|limit|too many/i.test(msg)) return 'Too many attempts. Wait a few minutes, then try again.';
+    return msg || 'That code could not be verified';
+  }
+
+  /** Set the new password. Only possible while holding a recovery token. */
+  async function setNewPassword(password) {
+    const r = loadReset();
+    if (!r) return { error: 'This reset link has expired. Ask for a new one.' };
+    const bad = validateCredentials(r.email || 'a@b.co', password);
+    if (bad) return { error: bad };
+    try {
+      await http(authPath('/user'), {
+        method: 'PUT',
+        // NOT the session token: a recovery token is scoped to the account
+        // holder changing their own password and cannot touch data.
+        headers: Object.assign({}, headers(), { Authorization: 'Bearer ' + r.token }),
+        body: JSON.stringify({ password })
+      });
+    } catch (err) {
+      if (/expired|invalid|jwt/i.test(err.message || '')) {
+        clearReset();
+        return { error: 'This reset link has expired. Ask for a new one.' };
+      }
+      return { error: err.message };
+    }
+    clearReset();
+    return { ok: true, email: r.email };
+  }
+
+  /** Read a recovery link the user clicked.
+   *
+   *  This must run before any tab routing. The app routes tabs through the
+   *  URL fragment, and showTab() overwrites the fragment on the very first
+   *  render — which would destroy the recovery token before it was read. */
+  function pickRecoveryFromUrl() {
+    let hash = '';
+    try { hash = String(location.hash || ''); } catch (err) { return null; }
+    if (hash.indexOf('access_token') === -1 && hash.indexOf('error') === -1) return null;
+
+    const p = {};
+    for (const part of hash.replace(/^#/, '').split('&')) {
+      const i = part.indexOf('=');
+      if (i === -1) continue;
+      try {
+        p[decodeURIComponent(part.slice(0, i))] =
+          decodeURIComponent(part.slice(i + 1).replace(/\+/g, ' '));
+      } catch (err) { /* skip a malformed pair rather than lose the rest */ }
+    }
+
+    // Scrub the fragment either way, so a reload cannot replay a spent token
+    // and so the token is not left sitting in the address bar or history.
+    try {
+      history.replaceState(null, '', location.pathname + location.search);
+    } catch (err) { /* not fatal; the token is short-lived either way */ }
+
+    if (p.error || p.error_code) {
+      return { error: p.error_description || p.error || p.error_code };
+    }
+    if (p.access_token) {
+      adoptReset({ access_token: p.access_token, expires_in: p.expires_in, user: { email: p.email } }, p.email);
+      return { ok: true, fromLink: true };
+    }
+    return null;
+  }
+
   async function refresh() {
     if (!session || !session.refreshToken) return false;
     try {
@@ -321,7 +532,7 @@ window.CashFlowSync = (function () {
       adopt(out, session.email);
       return true;
     } catch (err) {
-      // A rejected refresh means the PIN was changed or the account is gone.
+      // A rejected refresh means the password was changed or the account is gone.
       session = null;
       saveSession();
       return false;
@@ -428,6 +639,65 @@ window.CashFlowSync = (function () {
       pushTimer = null;
       pushAll().catch((err) => setStatus({ error: (err && err.message) || 'Sync failed' }));
     }, CFG.pushDebounceMs || 1500);
+  }
+
+  /* ---------- repairing a lost cloud copy ----------
+
+     The push cursor lives in this browser, not on the server, and it records
+     "everything up to T is already uploaded". That claim survives anything
+     happening to the server: dropping the tables, restoring a backup, a bad
+     migration, someone deleting rows in the dashboard. The records on this
+     device are all older than T, so dirtyRecords() finds nothing to send and
+     the app reports a cheerful "synced" while uploading nothing at all.
+
+     Nothing about that is detectable from the app's side, so it is made into a
+     button: count what the server actually holds, compare it with what is
+     here, and where the server is short, forget the cursor and re-upload. The
+     device holding the data wins, because it is the only copy that is
+     demonstrably complete. */
+  async function repairCloudCopy(state) {
+    if (!session || !state) return { error: 'Sign in first' };
+    const report = [];
+    let reset = 0;
+    let totalRows = 0;
+
+    for (const table of ALL_TABLES) {
+      const localCount = (state[table] || []).length;
+      let remoteCount = null;
+      try {
+        await ensureFreshToken();
+        const r = await httpWithHeaders(
+          restPath(table) + '?select=id&limit=1',
+          { headers: Object.assign({}, headers(), { Prefer: 'count=exact' }) });
+        remoteCount = r.count;
+      } catch (err) {
+        report.push(table + ': could not be checked (' + (err.message || 'failed') + ')');
+        continue;
+      }
+      if (remoteCount === null) { report.push(table + ': server did not report a count'); continue; }
+      if (localCount > remoteCount) {
+        // The server is missing rows this device has. Forget the claim and let
+        // the next push send everything.
+        book.lastPushed[table] = null;
+        book.lastPulled[table] = null;
+        reset++;
+        report.push(table + ': ' + localCount + ' here, ' + remoteCount + ' there — re-uploading');
+        totalRows += localCount;
+      } else {
+        report.push(table + ': ' + localCount + ' here, ' + remoteCount + ' there — in step');
+      }
+    }
+
+    if (reset) {
+      // A stale pull cursor is as dangerous as a stale push one: it would hide
+      // rows the server does have. Clearing both, then pushing, is the only
+      // state that cannot silently lose anything.
+      saveBook();
+      shadow = { transactions: [], accounts: [], debts: [], custody: [], shopping: [] };
+      try { await pushAll(state); } catch (err) { /* reported by pushAll's own status */ }
+    }
+
+    return { ok: true, reset, report, totalRows };
   }
 
   function dirtyRecords(state, table) {
@@ -772,11 +1042,14 @@ window.CashFlowSync = (function () {
 
   return {
     // auth
-    signUp, signIn, signOut, MIN_PIN, validateCredentials,
+    signUp, signIn, signOut, MIN_PASSWORD, validateCredentials,
+    requestPasswordReset, verifyResetCode, setNewPassword, pickRecoveryFromUrl,
     get isSignedIn() { return !!session; },
     get email() { return session ? session.email : null; },
+    get resetEmail() { const r = loadReset(); return r ? r.email : null; },
+    get hasResetToken() { return !!loadReset(); },
     // sync
-    start, stop, cycle, queuePush, setStateProvider, setPersist, pushAll, touch, seedClock, reconcile, absorbShadow,
+    start, stop, cycle, queuePush, setStateProvider, setPersist, pushAll, touch, seedClock, reconcile, absorbShadow, repairCloudCopy,
     // bookkeeping used by the app
     markDeleted: function (table, id) {
       if (!book.tombstones[table]) book.tombstones[table] = [];

@@ -214,18 +214,71 @@ If a device is offline, an edit **cannot** reach the server yet. It is queued an
 retried, and the status line says so. No design makes an offline write arrive
 immediately; anything that claims otherwise is not telling you the truth.
 
-### Auth: email + PIN
+### When the cloud copy goes missing
 
-The PIN is used as the password. Supabase stores only a hash, and the
-connection is TLS, so the plain PIN is not written down anywhere we control.
+The push cursor — "everything up to T is already uploaded" — lives in each
+browser's `localStorage`, not on the server. That makes it a claim about the
+server that nothing on the server can correct. Drop the tables, restore a
+backup, or rebuild the database, and the app carries on believing it: every
+record on the device is older than T, so it uploads nothing, and the status
+line says **synced** throughout.
 
-**The PIN must be at least 8 characters.** Rate limiting helps, but it is not a
-substitute for length — a 4-digit PIN is 10,000 guesses. Use a longer one, and a
-real email so the account can be recovered.
+This is not detectable from inside the app, so it is a button rather than a
+guess: **Backup → Cloud copy looks wrong? → Check and re-upload** asks the server
+how many rows it actually holds, compares that with this device, and where the
+server is short it forgets the cursor and re-sends. The device holding the data
+wins, because it is the only copy that is demonstrably complete.
 
-Email is not decoration: it identifies the account, and it is what Row Level
-Security keys off. Several people can use one Supabase project; each sees only
-their own rows.
+Press it after any deliberate change to the database, and whenever the cloud
+feels wrong. It is safe to press when nothing is wrong — it reports "in step"
+and uploads nothing.
+
+### Auth: email + password
+
+The password is sent over TLS and Supabase stores only a bcrypt hash, so the
+plain value is never written down anywhere we control.
+
+**The password must be at least 8 characters.** That is a floor, not a
+suggestion. The publishable key is baked into the app and readable by anyone who
+opens it, so the password is the only thing between an attacker and someone's
+ledger. Rate limiting helps; length helps more.
+
+The password is not trimmed, so a leading or trailing space is a real character
+rather than something silently swallowed — trimming would change the password
+without telling anyone.
+
+Email is not decoration: it identifies the account, it is what Row Level
+Security keys off, and it is the only way back in if the password is lost.
+Several people can use one Supabase project; each sees only their own rows.
+
+### Forgot password
+
+`Backup → Forgot your password?` asks only for the email, sends a code, and only
+then reveals the new-password fields. Two ways in, both ending in the same place:
+
+- **Type the code.** Needs the *Magic Link* email template edited once in
+  Supabase (**Authentication → Emails → Magic Link**) to include `{{ .Token }}`.
+- **Click the link in the email.** No template change needed — Supabase puts the
+  token in the URL fragment and the app reads it on the next load.
+
+Either way the user ends up holding a short-lived *recovery token*, and only that
+token can set a new password. It is kept deliberately separate from the session: a
+recovery token can change the password and nothing else, so a leaked reset link
+cannot read or write your ledger.
+
+**The request answers the same way whether or not the address has an account.**
+Echoing "no such user" would turn the form into a way to discover who is
+registered. Only failures of the *project* are reported — rate limiting, and
+"no email provider configured".
+
+Two things to set up on the Supabase side, or the email never arrives:
+
+1. **An email provider.** Supabase's built-in SMTP is rate-limited to a couple of
+   messages per hour and only goes to team members. Add a real one (Resend,
+   SendGrid, Mailjet all have free tiers) under **Authentication → Emails**.
+2. **The redirect URL**, if you use the link path. Add your app's address to
+   **Authentication → URL Configuration → Redirect URLs**, otherwise Supabase
+   refuses to send.
 
 ### Security
 
@@ -258,6 +311,9 @@ their own rows.
 | The email webhook being called by a stranger | Shared secret in a header, compared in constant time, checked before any work; the request is rejected outright if no secret is configured |
 | A forwarded email being filed twice | Each row carries the provider's message id behind a `unique (user_id, source_key)` constraint, so a re-delivery is a no-op |
 | Bank email leaking into the database | The message body is not stored — it routinely contains the account number and balance. It is logged to the function's own logs instead, for debugging the parser |
+| Learning who has an account | The password-reset form answers identically for a known and an unknown address |
+| A reset link being used to read your data | The recovery token is stored apart from the session and can only change a password; it is discarded the moment the password is set, and scrubbed out of the URL |
+| A reset link being replayed | The token is removed from the address bar on arrival, so a reload cannot re-present it |
 
 ---
 
@@ -333,7 +389,7 @@ transactions" is ambiguous until you have seen one arrive.
 
 ## Testing
 
-847 assertions across seven suites, all of which run without a browser or a
+894 assertions across seven suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
@@ -345,8 +401,8 @@ network. They are not in this repository; they live beside it, and are run with
 | `sync-test.mjs` | Auth, token refresh, outbox, tombstones, last-write-wins merge, offline retry, backwards clock |
 | `app-sync-test.mjs` | The seam between app and sync: two windows against a fake Supabase, checking that a sign-in uploads history, a second device receives it, an edit travels back, and a delete propagates |
 | `stale-test.mjs` | The mismatched-file guard, replaying the reported bug in both directions and asserting no reload loop |
-| `guards-test.mjs` | Structural rules that are cheap to break and expensive to find: no duplicate function declarations, no `innerHTML`, no password handling, every state collection initialised, sync stamps preserved, the three build markers agreeing, a bad row not wedging sync, and the schema and webhook refusing what they should |
-| `e2e.mjs` | One pass through the whole app: every tab opened, sign in and out, an email transaction approved end to end, and the per-account boxes asserted to sum to the headline balance |
+| `guards-test.mjs` | Structural rules that are cheap to break and expensive to find: no duplicate function declarations, no `innerHTML`, no email-password handling, every state collection initialised, sync stamps preserved, the three build markers agreeing, a bad row not wedging sync, the schema and webhook refusing what they should, and the reset flow not revealing who has an account |
+| `e2e.mjs` | One pass through the whole app: every tab opened, sign in and out, a forgotten password recovered end to end, an email transaction approved, and the per-account boxes asserted to sum to the headline balance |
 
 The last two exist because of specific defects that shipped. Each of their
 assertions names the failure it prevents.
