@@ -469,10 +469,24 @@ window.CashFlowSync = (function () {
     const here = currentAppUrl();
     if (here) body.redirect_to = here;
     try {
-      await http(authPath('/otp'), {
-        method: 'POST', headers: headers(),
-        body: JSON.stringify(body)
-      });
+      try {
+        await http(authPath('/otp'), {
+          method: 'POST', headers: headers(),
+          body: JSON.stringify(body)
+        });
+      } catch (err) {
+        /* A `redirect_to` outside the project's allow-list is rejected outright
+           in some configurations and ignored in others. Either way the reset
+           should still go out — a wrong link is a nuisance, no email at all is
+           the user locked out — so it is retried once without the address and
+           only the second failure is treated as the error. */
+        if (!here) throw err;
+        delete body.redirect_to;
+        await http(authPath('/otp'), {
+          method: 'POST', headers: headers(),
+          body: JSON.stringify(body)
+        });
+      }
     } catch (err) {
       const msg = err.message || '';
       // Only failures of the SYSTEM are reported. Anything that depends on

@@ -301,9 +301,18 @@ Two things to set up on the Supabase side, or the email never arrives:
    copy opened on a laptop. Without that, Supabase fell back to the project's
    Site URL and produced a link to the site *root* while the app was served from
    a subpath, so the link landed on a 404 and the one-time token died with the
-   click. The dashboard entry is still needed, because GoTrue silently
-   substitutes the Site URL for a `redirect_to` that is not on the allow-list —
-   but it is now a fallback rather than the thing everything depends on.
+   click. That is a failure worth spelling out, because the token in the email
+   is perfectly valid and the only thing wrong is the path in front of it: the
+   fragment is never sent to the server, so a dead page still has it sitting in
+   the address bar, and putting the correct path back in front of that fragment
+   completes the reset without another email.
+
+   A `redirect_to` that is not on the allow-list is rejected outright in some
+   configurations and ignored in others. A rejected address is retried once
+   without it, because a wrong link is a nuisance while no email at all is the
+   user locked out over a setting they cannot see. The dashboard entry is still
+   needed, since GoTrue substitutes the Site URL for one that is not allowed —
+   but it is a fallback rather than the thing everything depends on.
 
    **A link can only be used once.** Asking for a reset again deliberately
    invalidates the link already sitting in the inbox, and a mail scanner that
@@ -472,7 +481,7 @@ daily summary — is refused outright rather than half-parsed.
 
 ## Testing
 
-1048 assertions across ten suites, all of which run without a browser or a
+1052 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
