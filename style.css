@@ -263,6 +263,34 @@ body.modal-open { overflow: hidden; }
 }
 .tx-account { font-size: 12px; font-weight: 500; color: var(--muted); }
 
+/* ===== EMAIL SETUP STEPS ===== */
+.steps { margin: 16px 0; }
+.step { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+.step:last-child { border-bottom: none; }
+.step-n {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #fff;
+  display: grid;
+  place-content: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+.step-body { min-width: 0; }
+.step-body strong { display: block; font-size: 15px; margin-bottom: 2px; }
+.step-body p { font-size: 13px; color: var(--muted); }
+.step-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: var(--field-bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+
 /* ===== STALE-ASSET BANNER ===== */
 .stale-banner {
   position: fixed;

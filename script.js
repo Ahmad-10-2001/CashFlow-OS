@@ -95,7 +95,7 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 /* ---------- state ---------- */
 
 /** @type {{version:number, transactions:Array, debts:Array, budgets:Object,
- *           categories:string[], shopping:Array, custody:Array, accounts:Array,
+ *           categories:string[], shopping:Array, accounts:Array,
  *           settings:Object, closedPeriods:string[]}} */
 let state = blankState();
 let storageUsable = true;
@@ -265,7 +265,17 @@ function h(tag, props, ...children) {
     if (val === null || val === undefined || val === false) continue;
     if (key === 'class') node.className = val;
     else if (key === 'text') node.textContent = val;
-    else if (key === 'dataset') Object.assign(node.dataset, val);
+    else if (key === 'dataset') {
+      // Skipped rather than coerced: the dataset IDL setter turns `undefined`
+      // into the STRING "undefined", so a button built without an `arg` would
+      // hand a handler the literal text "undefined" — which is a valid-looking
+      // argument and fails much later than the mistake.
+      for (const dk of Object.keys(val)) {
+        const dv = val[dk];
+        if (dv === null || dv === undefined || dv === false) continue;
+        node.dataset[dk] = dv;
+      }
+    }
     else if (key === 'style') node.style.cssText = val;
     else if (key.slice(0, 2) === 'on' && typeof val === 'function') node.addEventListener(key.slice(2), val);
     else if (val === true) node.setAttribute(key, '');
@@ -358,6 +368,17 @@ function blankState() {
 }
 
 function isClosed(period) { return state.closedPeriods.indexOf(period) !== -1; }
+
+/** Preserve a record's sync timestamp when it is read back from disk.
+ *  Dropping it here is not cosmetic: reconcile() stamps anything it cannot
+ *  match against its shadow, so an unstamped record looks freshly edited on
+ *  every single page load and silently overwrites other devices' versions.
+ *  Returns null for an unreadable stamp so reconcile() treats it as new. */
+function keepStamp(v) {
+  if (typeof v !== 'string' || !v) return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
 
 /**
  * Turn an arbitrary parsed object into valid app state.
@@ -453,7 +474,7 @@ function sanitizeState(raw) {
   const accountNames = new Set();
   const rawAccounts = Array.isArray(raw.accounts) ? raw.accounts : null;
 
-  const addAccount = (id, name, kind, opening, archived) => {
+  const addAccount = (id, name, kind, opening, archived, a) => {
     const clean = cleanText(name, NAME_LIMIT);
     if (!clean) return null;
     const key = clean.toLowerCase();
@@ -469,20 +490,21 @@ function sanitizeState(raw) {
       // An opening balance may legitimately be zero, so it is read directly
       // rather than through toPositiveNumber, which rejects 0 and negatives.
       openingBalance: round2(clampNumber(opening, -MAX_AMOUNT, MAX_AMOUNT)),
-      archived: archived === true
+      archived: archived === true,
+      updatedAt: keepStamp(a && a.updatedAt)
     });
     return aid;
   };
 
   for (const a of rawAccounts || []) {
     if (!isObject(a)) { note('skipped a malformed account'); continue; }
-    addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived);
+    addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived, a);
   }
 
   let assignedToCash = 0;
   if (!accounts.length) {
     if (rawAccounts !== null) note('no usable account was in the file, so Cash, NayaPay and Easypaisa were created');
-    for (const a of DEFAULT_ACCOUNTS) addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived);
+    for (const a of DEFAULT_ACCOUNTS) addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived, a);
   }
 
   const cashId = accounts.some((a) => a.kind === 'cash') ? accounts.find((a) => a.kind === 'cash').id : accounts[0].id;
@@ -516,45 +538,6 @@ function sanitizeState(raw) {
     closedPeriods.push(p);
   }
   closedPeriods.sort();
-
-  // ── custody: money held for someone else ────────────────────
-  // 'given' = the user handed it over and it is no longer theirs.
-  // 'held'  = someone handed it to the user to keep. Neither is counted in the
-  // balance; the only fields the balance ever reads are transactions.
-  const custody = [];
-  const custodyIds = new Set();
-  const rawCustody = Array.isArray(raw.custody) ? raw.custody : [];
-  for (const c of rawCustody) {
-    if (!isObject(c)) { note('skipped a malformed amanat entry'); continue; }
-    const person = cleanText(c.person, NAME_LIMIT);
-    const amount = toPositiveNumber(c.amount);
-    if (!person) { note('dropped an amanat entry with no person name'); continue; }
-    if (amount === null) { note('dropped an amanat entry with an unusable amount'); continue; }
-
-    let id = typeof c.id === 'string' && c.id.trim() ? c.id.trim() : newId();
-    if (custodyIds.has(id)) { note('gave a duplicated amanat id a fresh one'); id = newId(); }
-    custodyIds.add(id);
-
-    // A partial return is normal, so returned is allowed to be 0 or partial but
-    // never more than was handed over.
-    let returned = c.returned === 0 ? 0 : toPositiveNumber(c.returned);
-    if (returned === null) returned = 0;
-    if (returned > amount) { note('capped a return that was larger than the original amount'); returned = amount; }
-
-    const date = parseDate(c.date);
-    const returnedDate = returned > 0 ? (parseDate(c.returnedDate) || date || new Date()) : null;
-
-    custody.push({
-      id,
-      person,
-      direction: c.direction === 'given' ? 'given' : 'held',
-      amount,
-      returned,
-      note: cleanText(c.note, COMMENT_LIMIT),
-      date: toLocalStamp(date || new Date()),
-      returnedDate: returnedDate ? toLocalStamp(returnedDate) : null
-    });
-  }
 
   // ── transactions ────────────────────────────────────────────
   const transactions = [];
@@ -609,7 +592,8 @@ function sanitizeState(raw) {
       date: toLocalStamp(date || new Date()),
       accountId,
       toAccountId: isTransfer ? toAccountId : null,
-      source: typeof t.source === 'string' ? t.source : undefined
+      source: typeof t.source === 'string' ? t.source : undefined,
+      updatedAt: keepStamp(t.updatedAt)
     });
   }
 
@@ -647,7 +631,8 @@ function sanitizeState(raw) {
       date: toLocalStamp(date || new Date()),
       settled,
       settledAt,
-      ledger: d.ledger !== false
+      ledger: d.ledger !== false,
+      updatedAt: keepStamp(d.updatedAt)
     });
   }
 
@@ -675,15 +660,56 @@ function sanitizeState(raw) {
       checkedAt: checked ? toLocalStamp(parseDate(s.checkedAt) || new Date()) : null,
       // A pointer to the expense this item produced, so the row can show it.
       boughtTxId: typeof s.boughtTxId === 'string' && s.boughtTxId ? s.boughtTxId : null,
-      cost: toPositiveNumber(s.cost)
+      cost: toPositiveNumber(s.cost),
+      updatedAt: keepStamp(s.updatedAt)
+    });
+  }
+
+  // ── custody / amanat: money held for someone else ──────────
+  // 'given' = the user handed it over and it is no longer theirs.
+  // 'held'  = someone handed it to the user to keep. Neither is ever counted
+  // in the balance; the only fields the balance reads are transactions.
+  const custody = [];
+  const custodyIds = new Set();
+  const rawCustody = Array.isArray(raw.custody) ? raw.custody : [];
+  for (const c of rawCustody) {
+    if (!isObject(c)) { note('skipped a malformed amanat entry'); continue; }
+    const person = cleanText(c.person, NAME_LIMIT);
+    const amount = toPositiveNumber(c.amount);
+    if (!person) { note('dropped an amanat entry with no person name'); continue; }
+    if (amount === null) { note('dropped an amanat entry with an unusable amount'); continue; }
+
+    let id = typeof c.id === 'string' && c.id.trim() ? c.id.trim() : newId();
+    if (custodyIds.has(id)) { note('gave a duplicated amanat id a fresh one'); id = newId(); }
+    custodyIds.add(id);
+
+    // A partial return is normal, so 0 and partial are both fine — but never
+    // more than what was handed over.
+    let returned = c.returned === 0 ? 0 : toPositiveNumber(c.returned);
+    if (returned === null) returned = 0;
+    if (returned > amount) { note('capped an amanat return that was larger than the original amount'); returned = amount; }
+
+    const date = parseDate(c.date);
+    const returnedDate = returned > 0 ? (parseDate(c.returnedDate) || date || new Date()) : null;
+
+    custody.push({
+      id,
+      person,
+      direction: c.direction === 'given' ? 'given' : 'held',
+      amount,
+      returned,
+      note: cleanText(c.note, COMMENT_LIMIT),
+      date: toLocalStamp(date || new Date()),
+      returnedDate: returnedDate ? toLocalStamp(returnedDate) : null,
+      updatedAt: keepStamp(c.updatedAt)
     });
   }
 
   return {
     state: {
       version: SCHEMA_VERSION,
-      transactions, debts, budgets, categories, shopping,
-      custody, accounts,
+      transactions, debts, budgets, categories, shopping, custody,
+      accounts,
       settings: { budgetOffset, lastAccountId },
       closedPeriods
     },
@@ -1030,6 +1056,12 @@ function showTab(name, opts) {
   // Only the visible panel is worth measuring, so charts render once they show.
   renderAll();
 
+  // The email tabs are the only ones that need the network, and most sessions
+  // never open them. Fetching on every page load spent two requests to fill
+  // panels nobody looked at, on a connection that may not even exist.
+  if (name === 'email') loadEmailRouteStatus();
+  if (name === 'pending') loadPendingTransactions();
+
   if (!o.silent && typeof location !== 'undefined') {
     const hash = '#/' + name;
     if (location.hash !== hash) {
@@ -1219,16 +1251,6 @@ function deleteAccount(id) {
   if (state.settings.lastAccountId === id) state.settings.lastAccountId = cashAccountId();
   save();
   toast('Deleted "' + acc.name + '"');
-}
-
-/** Point a transaction at a different account without opening the edit modal —
- *  this is the fast path for fixing the records migrated to Cash. */
-function reassignTransaction(id, newAccountId) {
-  const t = state.transactions.find((x) => x.id === id);
-  if (!t) { toast('That record no longer exists'); return; }
-  const from = accountName(t.accountId);
-  t.accountId = newAccountId;
-  if (save()) toast('Moved ' + formatMoney(t.amount) + ' from ' + from + ' to ' + accountName(newAccountId));
 }
 
 /* ============================================================
@@ -1585,7 +1607,24 @@ function saveEdit() {
     return;
   }
 
-  const wasTransfer = tx.type === 'transfer';
+  // A record generated from a settled udhaar entry must be changed at the
+  // udhaar entry, not here: syncLedgerForDebt() deletes and regenerates it on
+  // every settlement change, so an edit made here would be silently discarded
+  // the next time that debt is touched.
+  //
+  // Checked BEFORE any mutation. This used to sit after the assignments below,
+  // where the early return left the live object half-edited in memory — the
+  // next unrelated save() would then write the "rejected" edit to disk anyway.
+  //
+  // Only 'debt:' is guarded. 'list:' and 'email:' records are ordinary
+  // standalone entries that nothing regenerates, so refusing to edit them would
+  // just be an obstacle.
+  if (typeof tx.source === 'string' && tx.source.indexOf('debt:') === 0) {
+    closeModal('editModal');
+    toast('This one came from a udhaar settlement. Change the udhaar entry, so the two stay in step.');
+    return;
+  }
+
   tx.type = type;
   tx.amount = amount.value;
   tx.category = type === 'transfer' ? '' : $('editCategory').value;
@@ -1593,11 +1632,7 @@ function saveEdit() {
   tx.date = inputToStamp($('editDate').value);
   tx.accountId = $('editAccount').value;
   tx.toAccountId = type === 'transfer' ? $('editToAccount').value : null;
-  // A record that was auto-generated from a udhaar settlement or a list
-  // purchase must not be re-filed by hand and leave the original out of step.
-  if (wasTransfer === false && type !== 'transfer' && tx.source) {
-    toast('This record came from ' + (tx.source.split(':')[0]) + '. Change it there, not here.');
-  }
+  touch(tx);
 
   closeModal('editModal');
   if (save()) toast('Transaction updated');
@@ -2958,12 +2993,10 @@ const ACTIONS = {
   'item-toggle': (el) => toggleListItem(el.dataset.id),
   'item-delete': (el) => deleteListItem(el.dataset.id),
   'item-clear': clearCheckedItems,
-  'acct-add': () => addAccount($('accountName'), $('accountKind')),
   'acct-rename': (el) => renameAccount(el.dataset.id),
   'acct-opening': (el) => setOpeningBalance(el.dataset.id),
   'acct-archive': (el) => toggleArchiveAccount(el.dataset.id),
   'acct-delete': (el) => deleteAccount(el.dataset.id),
-  'tx-reassign': (el) => reassignTransaction(el.dataset.id, el.dataset.arg),
   'custody-return': (el) => returnCustody(el.dataset.id),
   'custody-delete': (el) => deleteCustody(el.dataset.id),
   'auth-in': () => handleAuth('in'),
@@ -3028,6 +3061,18 @@ function wireEvents() {
     }
   });
 
+  // The sign-in form is built by renderSyncPanel(), which runs on every save()
+  // and so replaces the element. A listener bound to the element would be
+  // thrown away each time, and it could not be bound at all the first time
+  // because the form does not exist yet when wireEvents() runs. Delegating
+  // survives both problems. Pressing Enter in the PIN field used to fall
+  // through to an implicit form GET, which reloaded the page.
+  document.addEventListener('submit', (e) => {
+    if (!(e.target instanceof Element) || e.target.id !== 'authForm') return;
+    e.preventDefault();
+    handleAuth('in');
+  });
+
   // forms give us Enter-to-submit for free
   const forms = [
     ['txForm', addTransaction],
@@ -3039,7 +3084,6 @@ function wireEvents() {
     ['buyForm', saveListPurchase],
     ['accountForm', (e) => addAccount($('accountName'), $('accountKind'))],
     ['custodyForm', addCustody],
-    ['authForm', (e) => handleAuth('in')],
     ['editForm', saveEdit],
     ['editDebtForm', saveDebtEdit]
   ];
@@ -3252,9 +3296,10 @@ function init() {
     navigator.serviceWorker.register('service-worker.js').catch((err) => console.warn('Service worker registration failed:', err));
   }
 
-  // ── Email Connect & Pending Queue ──
-  wireEmailConnect();
-  loadPendingTransactions();
+  // The email tabs fetch their data when they are first opened (see showTab),
+  // not here, so an ordinary page load makes no email requests at all.
+  renderEmailConnectStatus();
+  renderPendingQueue();
 }
 
 /* ============================================================
@@ -3266,11 +3311,14 @@ function init() {
 
 let pendingTransactions = [];
 let emailConnected = false;
+let pendingQueueError = null;
 
 /** Build Supabase REST headers using the current session token. */
 function sbHeaders() {
   const cfg = window.CASHFLOW_CONFIG || {};
-  const h = {
+  // Named `headers`, not `h`: h() is this file's element builder, and shadowing
+  // it inside a helper is the kind of thing that gets "fixed" wrongly later.
+  const headers = {
     'apikey': cfg.publishableKey,
     'Content-Type': 'application/json'
   };
@@ -3280,11 +3328,11 @@ function sbHeaders() {
     if (raw) {
       const session = JSON.parse(raw);
       if (session && session.accessToken) {
-        h['Authorization'] = 'Bearer ' + session.accessToken;
+        headers['Authorization'] = 'Bearer ' + session.accessToken;
       }
     }
   } catch (err) { /* ignore */ }
-  return h;
+  return headers;
 }
 
 /** Make a Supabase REST API call using plain fetch. */
@@ -3317,72 +3365,27 @@ function getCurrentUserId() {
   return null;
 }
 
-function wireEmailConnect() {
-  const form = $('emailConnectForm');
-  if (!form) return;
+/* This app deliberately collects no email credentials. An earlier version
+   posted a base64 "encrypted" password to `user_email_credentials`, where the
+   signed-in user could read it straight back. The forwarding model needs no
+   secret from the mail account at all, so the whole path was removed rather
+   than merely hidden. The status panel below only reports whether a forwarding
+   route is registered for this account. */
 
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const email = $('emailAddress').value.trim();
-    const password = $('emailPassword').value;
-
-    if (!email || !password) {
-      toast('Please enter both email and password');
-      return;
-    }
-
-    const userId = getCurrentUserId();
-    if (!userId) {
-      toast('Please sign in first');
-      return;
-    }
-
-    try {
-      // Encrypt password (base64 for now — replace with AES-256 in production)
-      const encryptedPassword = btoa(password);
-
-      // Upsert email credentials
-      await sbFetch('user_email_credentials?on_conflict=user_id', {
-        method: 'POST',
-        body: JSON.stringify({
-          user_id: userId,
-          email_address: email,
-          imap_host: 'imap.gmail.com',
-          imap_port: 993,
-          encrypted_password: encryptedPassword,
-          is_active: true,
-          updated_at: new Date().toISOString()
-        })
-      });
-
-      emailConnected = true;
-      renderEmailConnectStatus();
-      toast('Email connected! Transactions will appear in Pending Queue.');
-      form.reset();
-
-    } catch (err) {
-      console.error('Email connect error:', err);
-      toast('Failed to connect email: ' + err.message);
-    }
-  });
-
-  // Load existing connection status
-  loadEmailConnectionStatus();
-}
-
-async function loadEmailConnectionStatus() {
+async function loadEmailRouteStatus() {
   const userId = getCurrentUserId();
-  if (!userId) return;
+  if (!userId) { renderEmailConnectStatus(); return; }
 
   try {
-    const data = await sbFetch('user_email_credentials?user_id=eq.' + userId + '&is_active=eq.true');
-    if (data && data.length > 0) {
-      emailConnected = true;
-      renderEmailConnectStatus();
-    }
+    const data = await sbFetch('email_routes?user_id=eq.' + userId + '&is_active=eq.true');
+    emailConnected = !!(data && data.length);
   } catch (err) {
-    console.error('Load email status error:', err);
+    // A missing table or a policy gap must not break the app; the panel just
+    // reports that forwarding is not confirmed.
+    console.warn('Could not read the forwarding route:', err && err.message);
+    emailConnected = false;
   }
+  renderEmailConnectStatus();
 }
 
 function renderEmailConnectStatus() {
@@ -3390,68 +3393,87 @@ function renderEmailConnectStatus() {
   if (!statusEl) return;
 
   if (emailConnected) {
-    statusEl.innerHTML = '';
-    statusEl.appendChild(h('div', { class: 'email-status connected' },
+    mount(statusEl, h('div', { class: 'email-status connected' },
       h('span', { class: 'email-status-icon' }, '✓'),
-      h('span', {}, 'Email connected — new transactions will appear in Pending Queue')
+      h('span', {}, 'Forwarding is set up — new NayaPay emails will appear under Pending')
     ));
   } else {
-    statusEl.innerHTML = '';
-    statusEl.appendChild(h('div', { class: 'email-status disconnected' },
+    mount(statusEl, h('div', { class: 'email-status disconnected' },
       h('span', { class: 'email-status-icon' }, '○'),
-      h('span', {}, 'Email not connected')
+      h('span', {}, 'Forwarding not set up yet — follow the steps below')
     ));
   }
 }
 
 async function loadPendingTransactions() {
   const userId = getCurrentUserId();
-  if (!userId) return;
+  if (!userId) { renderPendingQueue(); return; }
 
   try {
-    const data = await sbFetch('pending_transactions?user_id=eq.' + userId + '&status=eq.pending&order=created_at.desc&limit=50');
-    pendingTransactions = data || [];
-    renderPendingQueue();
+    const data = await sbFetch(
+      'pending_transactions?user_id=eq.' + encodeURIComponent(userId) +
+      '&status=eq.pending&order=created_at.desc&limit=50');
+    pendingTransactions = Array.isArray(data) ? data : [];
   } catch (err) {
-    console.error('Load pending transactions error:', err);
+    // A missing table or a policy gap must not break the app. Report it in the
+    // panel rather than only the console, because otherwise the user just sees
+    // an empty queue and concludes no transactions arrived.
+    console.warn('Could not read the pending queue:', err && err.message);
+    pendingTransactions = [];
+    pendingQueueError = (err && err.message) || 'Could not load';
   }
+  renderPendingQueue();
 }
 
 function renderPendingQueue() {
   const container = $('pendingQueueList');
   if (!container) return;
 
-  container.innerHTML = '';
+  // mount(), not innerHTML — the app builds every node through h().
+  mount(container);
 
+  if (pendingQueueError) {
+    container.appendChild(h('div', { class: 'pending-empty' },
+      'Could not load the pending queue: ' + pendingQueueError));
+    return;
+  }
   if (pendingTransactions.length === 0) {
-    container.appendChild(h('div', { class: 'pending-empty' }, 'No pending transactions'));
+    container.appendChild(h('div', { class: 'pending-empty' },
+      'Nothing waiting. Transactions parsed from your bank emails land here for approval.'));
     return;
   }
 
-  pendingTransactions.forEach(tx => {
+  for (const tx of pendingTransactions) {
+    // Every one of these comes from the server, so none of it is trusted to be
+    // present or well-typed. It all lands as text, never as markup.
+    const amount = toPositiveNumber(tx.amount);
+    const when = parseDate(tx.transaction_date);
     const item = h('div', { class: 'pending-item' },
       h('div', { class: 'pending-info' },
         h('div', { class: 'pending-amount ' + (tx.type === 'income' ? 'income' : 'expense') },
-          (tx.type === 'income' ? '+ ' : '− ') + CURRENCY + ' ' + formatAmount(tx.amount)
-        ),
-        h('div', { class: 'pending-desc' }, tx.description),
+          (tx.type === 'income' ? '+ ' : '− ') + CURRENCY + ' ' + formatMoney(amount === null ? 0 : amount)),
+        h('div', { class: 'pending-desc' }, cleanText(tx.description, COMMENT_LIMIT) || '(no description)'),
         h('div', { class: 'pending-meta' },
-          tx.bank_name + ' • ' + formatDate(tx.transaction_date)
-        )
+          cleanText(tx.bank_name, NAME_LIMIT) || 'Bank',
+          when ? ' • ' + formatDate(when.toISOString()) : ' • date unknown')
       ),
       h('div', { class: 'pending-actions' },
         h('button', {
           class: 'btn btn-primary btn-sm',
+          type: 'button',
+          disabled: amount === null,
+          title: amount === null ? 'This row has no usable amount' : null,
           dataset: { act: 'approve-tx', id: tx.id }
         }, 'Approve'),
         h('button', {
           class: 'btn btn-cancel btn-sm',
+          type: 'button',
           dataset: { act: 'reject-tx', id: tx.id }
         }, 'Reject')
       )
     );
     container.appendChild(item);
-  });
+  }
 }
 
 async function approveTransaction(txId) {
@@ -3461,68 +3483,131 @@ async function approveTransaction(txId) {
   const tx = pendingTransactions.find(t => t.id === txId);
   if (!tx) return;
 
-  try {
-    // Create actual transaction
-    const newTx = {
-      id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
-      type: tx.type,
-      amount: tx.amount,
-      category: tx.type === 'income' ? 'Bank Transfer' : 'Bank Payment',
-      comment: tx.description,
-      happened_at: new Date().toISOString().slice(0, 16),
-      account_id: 'acc-nayapay',
-      to_account_id: null,
-      source: 'email:' + tx.id
-    };
+  // The row came from the server, so its amount is not trusted to be a number.
+  // Approving a NaN would write a poisoned row straight into the ledger.
+  const amount = toPositiveNumber(tx.amount);
+  if (amount === null) { toast('This row has no usable amount, so it cannot be approved'); return; }
 
-    // Add to local state
-    state.transactions.push(newTx);
+  try {
+    // Built through the same helper the manual form uses, so the record has the
+    // app's field names (date / accountId) rather than the database's column
+    // names. Getting this wrong means accountBalance() never matches the row,
+    // the balance stays wrong, and the push fails on a NOT NULL column.
+    const accId = pendingAccountId(tx);
+    const stamp = pendingDateStamp(tx);
+    const built = buildTransaction(
+      tx.type === 'income' ? 'income' : 'expense',
+      amount,
+      emailCategory(tx.type),
+      cleanText(tx.description, COMMENT_LIMIT),
+      stamp,
+      accId,
+      null
+    );
+    if (built.error) { toast(built.error); return; }
+
+    built.value.source = 'email:' + tx.id;
+    touch(built.value);
+
+    // unshift, so an approved transaction appears at the top of the ledger like
+    // every other new entry.
+    state.transactions.unshift(built.value);
     save();
 
-    // Mark as approved in Supabase
-    await sbFetch('pending_transactions?id=eq.' + txId, {
-      method: 'PATCH',
-      body: JSON.stringify({ status: 'approved', approved_at: new Date().toISOString() })
-    });
+    // Mark as approved in Supabase. Done AFTER the local save: if this call
+    // fails, the transaction is already safely in the ledger and the row will
+    // simply stay pending, which is better than losing the money entry.
+    try {
+      await sbFetch('pending_transactions?id=eq.' + txId, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'approved', approved_at: new Date().toISOString() })
+      });
+    } catch (err) {
+      console.warn('Saved locally, but the pending row could not be marked approved:', err && err.message);
+    }
 
-    // Remove from pending list
     pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
     renderPendingQueue();
 
-    toast('Transaction approved and added to your records');
+    toast('Added ' + formatMoney(amount) + ' to ' + accountName(accId) + ' — dated ' + formatDate(stamp));
   } catch (err) {
     console.error('Approve transaction error:', err);
     toast('Failed to approve: ' + err.message);
   }
 }
 
+/** Where an approved email transaction is filed: the account whose name matches
+ *  the bank the email came from, then the account the user last used, then cash.
+ *  Never a hard-coded id, which would dangle the moment an account is renamed. */
+function pendingAccountId(tx) {
+  // Match the bank named on the row against the user's own account names, so
+  // this works for any bank rather than one hard-coded favourite. findAccount()
+  // takes an ID, not a name — passing a name returns null and used to send every
+  // approved transaction silently to Cash.
+  const bank = cleanText(tx && tx.bank_name, NAME_LIMIT).toLowerCase();
+  if (bank) {
+    const hit = state.accounts.find(
+      (a) => !a.archived && String(a.name).toLowerCase() === bank);
+    if (hit) return hit.id;
+    const loose = state.accounts.find(
+      (a) => !a.archived && String(a.name).toLowerCase().indexOf(bank) !== -1);
+    if (loose) return loose.id;
+  }
+  const last = state.settings && state.settings.lastAccountId;
+  if (last && findAccount(last)) return last;
+  return cashAccountId();
+}
+
+/** Use the date from the EMAIL. Falling back to today would file an old
+ *  payment as a new one, which is the whole point of reading the email. */
+function pendingDateStamp(tx) {
+  const raw = tx.transaction_date || tx.transactionDate || '';
+  const parsed = parseDate(raw);
+  if (parsed) {
+    // Keep the email's day, but a real time of day for ordering.
+    return toLocalStamp(new Date(
+      parsed.getFullYear(), parsed.getMonth(), parsed.getDate(),
+      parsed.getHours() || 12, parsed.getMinutes()
+    ));
+  }
+  return nowStamp();
+}
+
+/** A category that certainly exists, so an approved email never lands in a
+ *  name the user has to repair later. */
+function emailCategory(type) {
+  const wanted = type === 'income' ? 'Salary' : 'Other';
+  if (findCategory(wanted)) return wanted;
+  if (findCategory('Other')) return 'Other';
+  return state.categories[0] || 'Other';
+}
+
 async function rejectTransaction(txId) {
+  // Drop it from the list first. Rejecting is about not wanting to see it, so
+  // the row should disappear immediately; if the PATCH then fails, the worst
+  // case is that the same email reappears in the queue and can be rejected
+  // again. The reverse order left the button looking broken on a slow network.
+  pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
+  renderPendingQueue();
+
   try {
-    await sbFetch('pending_transactions?id=eq.' + txId, {
+    await sbFetch('pending_transactions?id=eq.' + encodeURIComponent(txId), {
       method: 'PATCH',
       body: JSON.stringify({ status: 'rejected' })
     });
-
-    // Remove from pending list
-    pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
-    renderPendingQueue();
-
-    toast('Transaction rejected');
+    toast('Rejected');
   } catch (err) {
-    console.error('Reject transaction error:', err);
-    toast('Failed to reject: ' + err.message);
+    console.warn('Removed from the list, but the server was not told:', err && err.message);
+    toast('Removed here, but it may reappear. Check your connection.');
   }
 }
 
-function formatAmount(amount) {
-  return Number(amount).toLocaleString('en-PK', { maximumFractionDigits: 2 });
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return '';
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' });
-}
+// NOTE: there is deliberately no second formatDate here, and no second
+// formatAmount. An earlier version of this file declared a formatDate for the
+// email code; because function declarations hoist, it silently replaced the
+// real one near the top of the file and every date in the UI quietly lost its
+// time component. The email code now uses formatMoney, which already existed.
+// A test asserts no function name is declared twice in this file.
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init, { once: true });

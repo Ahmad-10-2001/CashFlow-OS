@@ -151,6 +151,12 @@ window.CashFlowSync = (function () {
   const clone = (r) => Object.assign({}, r);
   const fingerprint = (r) => JSON.stringify(r);
 
+  /* A delete queued by markDeleted() counts as a change, even though
+     reconcile() then finds the tombstone already present and skips adding a
+     second one. Without this, deleting a record reported "nothing changed", so
+     queuePush() was never called and the delete silently never synced. */
+  let markedSinceLastReconcile = 0;
+
   function reconcile(state) {
     let changed = false;
     for (const t of ALL_TABLES) {
@@ -173,14 +179,18 @@ window.CashFlowSync = (function () {
       for (const p of prev) {
         if (liveIds.has(p.id)) continue;
         if (!book.tombstones[t]) book.tombstones[t] = [];
+        // One tombstone per id. markDeleted() may already have queued this one.
+        if (book.tombstones[t].some((x) => x.id === p.id)) continue;
         book.tombstones[t].push({ id: p.id, updatedAt: touch() });
         changed = true;
       }
 
       shadow[t] = list.map(clone);
     }
-    if (changed) saveBook();
-    return changed;
+    const marked = markedSinceLastReconcile > 0;
+    markedSinceLastReconcile = 0;
+    if (changed || marked) saveBook();
+    return changed || marked;
   }
 
   /** Called after a pull so server rows are not re-stamped as local edits. */
@@ -383,17 +393,41 @@ window.CashFlowSync = (function () {
   let persist = function () {};
   function setPersist(fn) { persist = typeof fn === 'function' ? fn : function () {}; }
 
-  async function pushAll() {
-    const state = stateProvider();
-    if (!session || !state) return;
-    for (const t of ALL_TABLES) await pushOneTable(state, t);
-    await pushPrefs(state);
+  /** Push every table. Takes the state explicitly when a caller already has
+   *  it, and otherwise asks the provider. Without the parameter this silently
+   *  pushed nothing whenever no provider had been registered. */
+  async function pushAll(stateArg) {
+    const state = stateArg || stateProvider();
+    if (!session || !state) return [];
+    // Each table is isolated. Previously a failure on `transactions` threw out
+    // of the loop, so accounts/debts/custody/shopping/prefs were never pushed
+    // again — one bad row wedged the whole pipeline permanently.
+    const failures = [];
+    for (const t of ALL_TABLES) {
+      try {
+        await pushOneTable(state, t);
+      } catch (err) {
+        failures.push(t + ': ' + (err && err.message ? err.message : 'failed'));
+      }
+    }
+    try {
+      await pushPrefs(state);
+    } catch (err) {
+      failures.push('prefs: ' + (err && err.message ? err.message : 'failed'));
+    }
+    if (failures.length) setStatus({ error: 'Sync problem — ' + failures[0] + (failures.length > 1 ? ' (+' + (failures.length - 1) + ' more)' : '') });
+    return failures;
   }
 
   function queuePush() {
     if (!session) return;
     if (pushTimer) clearTimeout(pushTimer);
-    pushTimer = setTimeout(() => { pushTimer = null; pushAll(); }, CFG.pushDebounceMs || 1500);
+    // Without this catch, a rejected push became an unhandled rejection and
+    // the error never reached the UI — the debounced path failed in silence.
+    pushTimer = setTimeout(() => {
+      pushTimer = null;
+      pushAll().catch((err) => setStatus({ error: (err && err.message) || 'Sync failed' }));
+    }, CFG.pushDebounceMs || 1500);
   }
 
   function dirtyRecords(state, table) {
@@ -402,6 +436,19 @@ window.CashFlowSync = (function () {
     if (!cursor) return list.slice();
     const c = Date.parse(cursor);
     return list.filter((r) => r && r.updatedAt && Date.parse(r.updatedAt) > c);
+  }
+
+  /** Deduplicate rows by id, keeping the newest updatedAt. Prevents
+   *  "ON CONFLICT DO UPDATE cannot affect row a second time" errors. */
+  function dedupeById(rows) {
+    const map = new Map();
+    for (const r of rows) {
+      const existing = map.get(r.id);
+      if (!existing || Date.parse(r.updated_at) > Date.parse(existing.updated_at)) {
+        map.set(r.id, r);
+      }
+    }
+    return Array.from(map.values());
   }
 
   async function pushOneTable(state, table) {
@@ -418,9 +465,9 @@ window.CashFlowSync = (function () {
     // Send regular rows and tombstones SEPARATELY — Supabase REST API
     // rejects mixed-shape rows with "All object keys must match".
     
-    // First: push regular dirty rows
+    // First: push regular dirty rows (deduplicated)
     if (dirty.length) {
-      const rows = dirty.map((r) => Object.assign({ user_id: userId, updated_at: r.updatedAt }, MAP[table].toRow(r)));
+      const rows = dedupeById(dirty.map((r) => Object.assign({ user_id: userId, updated_at: r.updatedAt }, MAP[table].toRow(r))));
       
       await ensureFreshToken();
       await http(restPath(table), {
@@ -436,10 +483,10 @@ window.CashFlowSync = (function () {
       book.lastPushed[table] = newest;
     }
 
-    // Then: push tombstones separately
+    // Then: push tombstones separately (deduplicated)
     if (tombs.length) {
       // Get the full record data for each tombstone so we can send all required fields
-      const tombRows = tombs.map((t) => {
+      const tombRows = dedupeById(tombs.map((t) => {
         const record = (state[table] || []).find((r) => r.id === t.id);
         // Build row based on table schema — only include columns that exist
         const baseRow = {
@@ -492,7 +539,7 @@ window.CashFlowSync = (function () {
         }
         
         return baseRow;
-      });
+      }));
 
       await ensureFreshToken();
       await http(restPath(table), {
@@ -551,48 +598,68 @@ window.CashFlowSync = (function () {
   }
 
   /* ---------- pull ---------- */
+  const PAGE = 500;
+  /** Guard against a pathological loop; 40 pages is 20,000 rows. */
+  const MAX_PAGES = 40;
+
+  /* Pages until the server returns fewer rows than asked for. The previous
+     version fetched one page of 1000 and then set the cursor to the last row it
+     saw — so on a device with more than 1000 changes, everything past that
+     point was skipped *forever*, silently. */
   async function pullOneTable(state, table) {
-    const cursor = book.lastPulled[table];
-    const q = new URLSearchParams({ select: '*', order: 'updated_at.asc' });
-    if (cursor) q.set('updated_at', 'gt.' + cursor);
-    q.set('limit', '1000');
-
-    await ensureFreshToken();
-    const rows = await http(restPath(table) + '?' + q.toString(), { headers: headers() });
-    if (!Array.isArray(rows) || !rows.length) return 0;
-
-    const list = state[table] || [];
+    const list = state[table] || (state[table] = []);
     let applied = 0;
-    let newest = cursor;
+    let cursor = book.lastPulled[table];
 
-    for (const row of rows) {
-      if (!row.updated_at) continue;
-      if (!newest || Date.parse(row.updated_at) > Date.parse(newest)) newest = row.updated_at;
-      const idx = list.findIndex((r) => r.id === row.id);
-      const localStamp = idx === -1 ? 0 : Date.parse(list[idx].updatedAt || 0) || 0;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const q = new URLSearchParams({ select: '*', order: 'updated_at.asc' });
+      if (cursor) q.set('updated_at', 'gt.' + cursor);
+      q.set('limit', String(PAGE));
 
-      // Last-write-wins: only accept a strictly newer server version.
-      if (idx !== -1 && localStamp >= Date.parse(row.updated_at)) continue;
+      await ensureFreshToken();
+      const rows = await http(restPath(table) + '?' + q.toString(), { headers: headers() });
+      if (!Array.isArray(rows) || !rows.length) break;
 
-      if (row.deleted) {
-        // CRITICAL FIX: Only apply tombstone if the local record is OLDER.
-        // If local record has a newer timestamp, it means the user edited
-        // it AFTER the delete — don't let the stale delete come back.
-        if (idx !== -1 && localStamp < Date.parse(row.updated_at)) {
-          list.splice(idx, 1);
-          applied++;
+      let newest = cursor;
+      let consumed = 0;
+
+      for (const row of rows) {
+        if (!row.updated_at) continue;
+        if (!newest || Date.parse(row.updated_at) > Date.parse(newest)) newest = row.updated_at;
+        consumed++;
+
+        const idx = list.findIndex((r) => r.id === row.id);
+        const localStamp = idx === -1 ? 0 : Date.parse(list[idx].updatedAt || 0) || 0;
+
+        // Last-write-wins: only accept a strictly newer server version.
+        if (idx !== -1 && localStamp >= Date.parse(row.updated_at)) continue;
+
+        if (row.deleted) {
+          // A tombstone older than the local copy must not wipe it: that means
+          // the local edit came after the delete, so local is newer.
+          if (idx !== -1 && localStamp < Date.parse(row.updated_at)) {
+            list.splice(idx, 1);
+            applied++;
+          }
+          continue;
         }
-        continue;
+        const rec = MAP[table].fromRow(row);
+        if (idx === -1) list.push(rec);
+        else list[idx] = Object.assign({}, list[idx], rec);
+        applied++;
       }
-      const rec = MAP[table].fromRow(row);
-      if (idx === -1) list.push(rec);
-      else list[idx] = Object.assign({}, list[idx], rec);
-      applied++;
+
+      if (!consumed) break;
+      cursor = newest;
+      book.lastPulled[table] = newest;
+      absorbShadow(table, list);
+      saveBook();
+
+      // A short page means we have caught up.
+      if (rows.length < PAGE) break;
     }
+
     state[table] = list;
-    absorbShadow(table, list);
-    book.lastPulled[table] = newest;
-    saveBook();
     return applied;
   }
 
@@ -638,22 +705,36 @@ window.CashFlowSync = (function () {
       reconcile(state);
 
       // Pull first, so a local edit made against a stale view is not
-      // overwritten by a version it never saw.
+      // overwritten by a version it never saw. Each table isolated for the
+      // same reason as the push side.
       let changed = 0;
-      for (const t of ALL_TABLES) changed += await pullOneTable(state, t);
-      if (await pullPrefs(state)) changed++;
+      const pullFailures = [];
+      for (const t of ALL_TABLES) {
+        try {
+          changed += await pullOneTable(state, t);
+        } catch (err) {
+          // Keep the real reason, not just the table name: "network down" and
+          // "permission denied for table X" call for completely different
+          // responses from the user.
+          pullFailures.push(t + ': ' + ((err && err.message) || 'failed'));
+        }
+      }
+      try {
+        if (await pullPrefs(state)) changed++;
+      } catch (err) { pullFailures.push('prefs: ' + ((err && err.message) || 'failed')); }
 
       // Write the incoming rows down before pushing anything, so a reload
       // cannot lose what was just received.
       if (changed) persist();
 
-      for (const t of ALL_TABLES) await pushOneTable(state, t);
-      await pushPrefs(state);
+      const pushFailures = await pushAll(state);
 
       setStatus({
         lastSyncAt: Date.now(),
         pending: countPending(state),
-        error: null
+        error: pushFailures.length
+          ? 'Sync problem on ' + pushFailures.length + ' table(s) — ' + pushFailures[0]
+          : (pullFailures.length ? 'Could not fetch updates — ' + pullFailures[0] : null)
       });
       if (changed && !(opts && opts.silent)) if (window.CashFlowSyncNotify) window.CashFlowSyncNotify(changed);
     } catch (err) {
@@ -699,7 +780,13 @@ window.CashFlowSync = (function () {
     // bookkeeping used by the app
     markDeleted: function (table, id) {
       if (!book.tombstones[table]) book.tombstones[table] = [];
-      book.tombstones[table].push({ id, updatedAt: touch() });
+      const list = book.tombstones[table];
+      // reconcile() also sees the record vanish and would queue the same id.
+      // One entry per id: duplicates are waste, and an unbounded list can hit
+      // the storage quota and be dropped silently.
+      if (list.some((t) => t.id === id)) { markedSinceLastReconcile++; return; }
+      list.push({ id, updatedAt: touch() });
+      markedSinceLastReconcile++;
       saveBook();
     },
     // prefs bookkeeping

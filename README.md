@@ -254,6 +254,10 @@ their own rows.
 | Storage quota | `QuotaExceededError` is reported, not swallowed; the write is declared failed |
 | Corrupt data | Every load goes through `sanitizeState()`, which never throws |
 | Prototype pollution | Null-prototype objects and `Map`s for user-controlled keys |
+| Your email password | Never asked for, never stored, never transmitted. Transactions arrive by forwarding, which needs no secret from your mail account |
+| The email webhook being called by a stranger | Shared secret in a header, compared in constant time, checked before any work; the request is rejected outright if no secret is configured |
+| A forwarded email being filed twice | Each row carries the provider's message id behind a `unique (user_id, source_key)` constraint, so a re-delivery is a no-op |
+| Bank email leaking into the database | The message body is not stored — it routinely contains the account number and balance. It is logged to the function's own logs instead, for debugging the parser |
 
 ---
 
@@ -268,11 +272,17 @@ config.js             Supabase URL, publishable key, and the build number
 service-worker.js     offline cache
 manifest.json         PWA metadata
 db/schema.sql         tables, indexes, RLS policies, grants
+db/email-schema.sql   optional: forwarding routes and the approval queue
+supabase/functions/poll-emails/index.ts
+                      optional: the webhook that parses forwarded bank emails
 README.md             this file
 ```
 
 `config.js` and `db/schema.sql` are the two files worth reading first if you are
 picking this up.
+
+The last two are optional. Without them the app works exactly as before; nothing
+else depends on them.
 
 ---
 
@@ -287,12 +297,45 @@ The app runs by opening `index.html`. For cloud sync:
 4. Put your project URL and publishable key in `config.js`.
 5. Sign in from **Backup → Sync Across Devices**.
 
+### Optional: automatic transactions from bank email
+
+This is **off by default** and not needed for anything else in the app.
+
+The app never asks for your email password. That is not a policy decision — an
+earlier version collected one, base64-encoded it into a column, and the signed-in
+user could read their own password back out. Forwarding needs no secret from
+your mail account at all, so the credential path was removed rather than
+hardened.
+
+How it works instead: NayaPay emails are forwarded to an address you control; a
+mail provider POSTs each message to a Supabase Edge Function with a shared
+secret; the function parses amount, direction and date and writes one row to
+`pending_transactions`; the app lists it under **Pending** and you approve it.
+Nothing reaches your balance without your approval.
+
+1. Run `db/email-schema.sql` once. It creates `email_routes` and
+   `pending_transactions`, both with the same ownership policy as the rest.
+2. Deploy the function: `supabase functions deploy poll-emails`.
+3. Set its secret: `supabase secrets set WEBHOOK_SECRET=<long random string>`.
+4. Point your mail provider's inbound route at the function URL, sending that
+   secret in the `X-Webhook-Secret` header.
+5. Add one row to `email_routes` linking the forwarding address to your user id.
+6. In Gmail, forward NayaPay mail to that address (keep a copy).
+
+**The amount and date patterns in the function are a starting point, not a
+guarantee.** NayaPay's wording may not match. When that happens nothing is
+written and nothing is lost — the failure is a silent no-op, and the raw message
+is logged to the function's own logs so the pattern can be corrected against a
+real sample. That is the safe direction to fail in, but it does mean "no pending
+transactions" is ambiguous until you have seen one arrive.
+
 ---
 
 ## Testing
 
-743 assertions across six suites, all of which run without a browser or a
-network.
+847 assertions across seven suites, all of which run without a browser or a
+network. They are not in this repository; they live beside it, and are run with
+`node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
 | Suite | Covers |
 |---|---|
@@ -302,9 +345,11 @@ network.
 | `sync-test.mjs` | Auth, token refresh, outbox, tombstones, last-write-wins merge, offline retry, backwards clock |
 | `app-sync-test.mjs` | The seam between app and sync: two windows against a fake Supabase, checking that a sign-in uploads history, a second device receives it, an edit travels back, and a delete propagates |
 | `stale-test.mjs` | The mismatched-file guard, replaying the reported bug in both directions and asserting no reload loop |
+| `guards-test.mjs` | Structural rules that are cheap to break and expensive to find: no duplicate function declarations, no `innerHTML`, no password handling, every state collection initialised, sync stamps preserved, the three build markers agreeing, a bad row not wedging sync, and the schema and webhook refusing what they should |
+| `e2e.mjs` | One pass through the whole app: every tab opened, sign in and out, an email transaction approved end to end, and the per-account boxes asserted to sum to the headline balance |
 
-Run them with `node <suite>` from the project root (the `.mjs` suites need
-`npm i jsdom`).
+The last two exist because of specific defects that shipped. Each of their
+assertions names the failure it prevents.
 
 These tests are not decoration. They caught real bugs during development, among
 them: a month picker that never fired, a settled udhaar leaving a phantom
@@ -320,12 +365,11 @@ a test so it cannot come back.
 
 Stated plainly so nothing here is mistaken for finished:
 
-- **Automatic bank transactions from email.** NayaPay emails are the intended
-  source, but a web page cannot read email — it needs a forwarding address, a
-  webhook, and a per-bank parser. Parsed transactions must land in a
-  *pending* queue for the user to approve, never straight into the ledger: a
-  silently wrong regex would corrupt a budget, which is worse than no automation.
-  Easypaisa is deliberately out of scope for now.
+- **The email parser is unverified against a real NayaPay email.** The
+  forwarding pipeline is built and tested, but the amount and date patterns are
+  inferred, not confirmed against a live sample. Until one real message has been
+  parsed successfully, treat automatic import as untested. Easypaisa is
+  deliberately out of scope.
 - **Real-time push.** Sync is on a one-minute timer plus on-focus. Live updates
   would need Supabase Realtime, which is more machinery than this needs yet.
 - **Cloud backup history.** The database is the live copy; a corrupt row is not

@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v11">
+  <meta name="app-build" content="v12">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -315,29 +315,62 @@
     </section>
   </div>
 
-  <!-- ══════════════ EMAIL CONNECT ══════════════ -->
+  <!-- ══════════════ EMAIL (forwarding setup) ══════════════ -->
   <div id="panel-email" data-panel="email" role="tabpanel" aria-labelledby="emailHeading" hidden>
     <section class="card" aria-labelledby="emailHeading">
-      <h2 class="card-title" id="emailHeading">📧 Email Connect</h2>
+      <h2 class="card-title" id="emailHeading">📧 Automatic Transactions</h2>
       <p class="card-subtitle">
-        Connect your Gmail to automatically import Bank account transactions.
-        You'll receive a notification when new transactions are ready to approve.
+        This app never asks for, and never stores, your email password.
+        Transactions arrive because you <em>forward</em> your NayaPay emails to
+        a dedicated address, and a small server function reads them.
       </p>
+
       <div id="emailConnectStatus"></div>
-      <form id="emailConnectForm" class="email-connect-form">
-        <div class="form-group">
-          <label class="field-label" for="emailAddress">Gmail Address</label>
-          <input id="emailAddress" type="email" placeholder="your.email@gmail.com" autocomplete="off">
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-n">1</div>
+          <div class="step-body">
+            <strong>Get a forwarding address</strong>
+            <p>Any mail provider (Mailgun, SendGrid, Postmark) gives you an
+              address that accepts mail and posts it over HTTP. Add it in
+              <code>email_routes</code> so the function knows it is yours.</p>
+          </div>
         </div>
-        <div class="form-group">
-          <label class="field-label" for="emailPassword">App Password</label>
-          <input id="emailPassword" type="password" placeholder="Enter your Gmail app password" autocomplete="off">
-          <p class="field-hint">
-            <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">How to generate an App Password?</a>
-          </p>
+        <div class="step">
+          <div class="step-n">2</div>
+          <div class="step-body">
+            <strong>Point it at the webhook</strong>
+            <p>Have the provider POST every message to
+              <code>supabase/functions/poll-emails</code>, with a long random
+              secret in the <code>X-Webhook-Secret</code> header. Set it with
+              <code>supabase secrets set WEBHOOK_SECRET=…</code></p>
+          </div>
         </div>
-        <button class="btn btn-primary" type="submit">Connect Email</button>
-      </form>
+        <div class="step">
+          <div class="step-n">3</div>
+          <div class="step-body">
+            <strong>Forward NayaPay emails there</strong>
+            <p>Gmail → Settings → Forwarding and POP/IMAP → add the address, and
+              choose "a copy" so nothing leaves your inbox.</p>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-n">4</div>
+          <div class="step-body">
+            <strong>Approve what arrives</strong>
+            <p>Parsed transactions wait under <strong>Pending</strong>. Nothing
+              touches your balance until you press Approve.</p>
+          </div>
+        </div>
+      </div>
+
+      <p class="field-hint">
+        Why not connect a password instead? Because a stored password is a
+        liability: base64 is not encryption, and any bug that exposed the
+        database would expose everyone's mail access. Forwarding needs no secret
+        from your mail account at all.
+      </p>
     </section>
   </div>
 
