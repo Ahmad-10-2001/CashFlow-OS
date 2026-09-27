@@ -546,7 +546,7 @@ the same path and names the step that failed.
 
 ## Testing
 
-1114 assertions across ten suites, all of which run without a browser or a
+1119 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
@@ -557,7 +557,7 @@ network. They are not in this repository; they live beside it, and are run with
 | `integration-test.mjs` | The real page in a real DOM: clicks, typing, form submits, and assertions on what a user would actually see — including corruption recovery and XSS |
 | `sync-test.mjs` | Auth, password reset at the API level, token refresh, outbox, tombstones, last-write-wins merge, offline retry, backwards clock |
 | `app-sync-test.mjs` | The seam between app and sync: two windows against a fake Supabase, checking that a sign-in uploads history, a second device receives it, an edit travels back, a delete propagates, and a cloud database wiped from under the app is detected and repaired |
-| `stale-test.mjs` | The mismatched-file guard, replaying the reported bug in both directions and asserting no reload loop |
+| `stale-test.mjs` | The mismatched-file guard, replaying the reported bug in both directions and asserting no reload loop. Every line-ending assumption in it is written `\r?\n` rather than `\n`, because Git rewrites the working tree to CRLF on Windows and a test that assumes LF silently stops doctoring anything — the "old" file then equals the current one and the suite fails with no connection to the code it claims to test |
 | `guards-test.mjs` | Structural rules that are cheap to break and expensive to find: no duplicate function declarations, no `innerHTML`, no email-password handling, every state collection initialised, sync stamps preserved, the three build markers agreeing, a bad row not wedging sync, the schema and webhook refusing what they should, the reset flow not revealing who has an account, and the email intake not losing its secret or being checked without one — both of which shipped and both of which were reported from a live setup as a configuration mistake |
 | `reset-flow-test.mjs` | Forgot password driven through the UI step by step, including "Send it again" on a screen with no email field — which shipped broken — going Back without retyping, the whole emailed-link path including recovering the address from the token, and the root forwarding page run against a stub window |
 | `parser-test.mjs` | The email parser against realistic phrasings, including the ones the first version silently dropped and the subject-repeats-the-body shape that would have made it reject nearly every real alert. Also the provider payload shapes. Runs the shipped TypeScript, with the type annotations stripped, so it tests the real code |

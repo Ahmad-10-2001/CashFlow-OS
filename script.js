@@ -3828,6 +3828,22 @@ function emailFetchHeaders(extra) {
   return Object.assign({ apikey: cfg.publishableKey || '' }, extra || {});
 }
 
+/** "Failed to fetch" is what the browser says when it never sent the request.
+ *
+ *  Almost always the preflight, and almost always because the function's CORS
+ *  list does not name a header this app sends. Worth naming plainly, because
+ *  every other message here implies a server answered, and this is the one case
+ *  where the server was never dialled — so there is nothing in its logs either. */
+function describeUnreachable(err) {
+  const msg = (err && err.message) || '';
+  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+    return 'The browser blocked the request before it left, so the server was never asked. ' +
+      'This is a CORS problem: the deployed function does not list "apikey" among its allowed headers. ' +
+      'Deploy the current index.ts from the repository, then try again.';
+  }
+  return 'Could not reach the function: ' + (msg || 'no reply');
+}
+
 /** Turn a gateway refusal into something the user can act on.
  *
  *  A 401 from Supabase's own gateway and a 401 from the function's secret check
@@ -3879,7 +3895,7 @@ async function checkEmailFunction() {
     showEmailTest('bad', 'The server answered in a way this app does not recognise. ' +
       'Check the function is deployed from the code in the repository.');
   } catch (err) {
-    showEmailTest('bad', 'Could not reach the function: ' + ((err && err.message) || 'no reply'));
+    showEmailTest('bad', describeUnreachable(err));
   }
 }
 
@@ -3958,7 +3974,7 @@ async function runEmailSelfTest() {
     }
     showEmailTest('bad', 'Unexpected answer: ' + JSON.stringify(body || {}).slice(0, 200));
   } catch (err) {
-    showEmailTest('bad', 'Could not reach the function: ' + ((err && err.message) || 'no reply'));
+    showEmailTest('bad', describeUnreachable(err));
   }
 }
 
