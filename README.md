@@ -470,8 +470,22 @@ simply the cheapest option here, it is the one that works at all.
    and is not.
 5. In the app, press **Copy webhook URL** and paste it into AgentMail under
    **Settings → Webhooks**, for the event `message.received`.
-6. In Gmail, **Settings → Forwarding and POP/IMAP → Add a forwarding address**,
+6. **Turn off "Verify JWT"** for the function: **Edge Functions → poll-emails →
+   Settings**, and set *Verify JWT* to off.
+
+   This is not optional and it is easy to miss. Supabase's gateway refuses a call
+   to a function that carries no `Authorization` header *before the function's own
+   code runs*, so with the setting left on, nothing from a mail provider can ever
+   reach it — a third party has no Supabase login token to send. The app's own
+   test calls carry the publishable key and get through, which makes it a
+   particularly confusing failure: the test passes and the feature does not.
+
+7. In Gmail, **Settings → Forwarding and POP/IMAP → Add a forwarding address**,
    and tick *Keep a copy* so nothing leaves your inbox.
+
+The two credentials are separate and both are needed, which is easy to conflate:
+the **apikey** gets past the gateway, and the **shared secret** proves the caller
+is the mail provider. Neither replaces the other.
 
 The webhook URL contains the shared secret, so it is kept in that browser only.
 It is never written to the repository — the publishable key is already there for
@@ -532,7 +546,7 @@ the same path and names the step that failed.
 
 ## Testing
 
-1105 assertions across ten suites, all of which run without a browser or a
+1114 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 

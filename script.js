@@ -3816,6 +3816,43 @@ function emailWebhookUrl() {
  *  from a wrong secret, which is the one thing the user needed to be told.
  *  The whole point of this button is to distinguish those cases, so it has to
  *  send the credential it is checking. */
+/* Supabase's gateway rejects a call to a function that carries no `apikey`
+   before the function's own code runs at all, so every request from here needs
+   the publishable key. It is public by design — it ships in this file — and
+   knowing it grants nothing, because the function's shared secret is a separate
+   thing. Two different credentials, two different jobs:
+   the apikey gets past the gateway, the secret proves the caller is the mail
+   provider. */
+function emailFetchHeaders(extra) {
+  const cfg = window.CASHFLOW_CONFIG || {};
+  return Object.assign({ apikey: cfg.publishableKey || '' }, extra || {});
+}
+
+/** Turn a gateway refusal into something the user can act on.
+ *
+ *  A 401 from Supabase's own gateway and a 401 from the function's secret check
+ *  are the same status with completely different causes, and the second one
+ *  sends people off to re-copy a secret that was correct all along. The gateway
+ *  names itself in the body, so read it. */
+function describeGatewayProblem(status, body) {
+  const code = (body && (body.code || body.error_code)) || '';
+  if (/NO_AUTH_HEADER|MISSING_AUTH/i.test(code) || /Missing authorization header/i.test(body && body.message || '')) {
+    return 'The request never reached the function — Supabase refused it first. ' +
+      'The apikey header is missing from this app’s request, which is a bug here rather than a setting on your side. ' +
+      'Reopen the app to pull the newest version.';
+  }
+  if (/INVALID_JWT|INVALID_TOKEN/i.test(code)) {
+    return 'Supabase refused the request before it reached the function. ' +
+      'Open Edge Functions → poll-emails → Settings and turn OFF "Verify JWT". ' +
+      'A webhook from a mail provider cannot present a Supabase login token, and while that setting is on, nothing from AgentMail can ever reach the function.';
+  }
+  if (/403|forbidden/i.test(String(status))) {
+    return 'Supabase refused the request. Turn OFF "Verify JWT" in the function’s Settings — a third-party webhook cannot send a login token.';
+  }
+  return 'The server answered ' + status + '. Check the function is deployed from the code in the repository, ' +
+    'and that the value after ?k= matches WEBHOOK_SECRET.';
+}
+
 async function checkEmailFunction() {
   const url = emailWebhookUrl();
   if (!url) { showEmailTest('bad', 'The webhook URL is empty above.'); return; }
@@ -3824,12 +3861,11 @@ async function checkEmailFunction() {
     return;
   }
   try {
-    const res = await fetch(url, { method: 'GET' });
+    const res = await fetch(url, { method: 'GET', headers: emailFetchHeaders() });
     const body = await res.json().catch(function () { return null; });
 
-    if (res.status === 401) {
-      showEmailTest('bad', 'The server rejected the secret. The value after ?k= must exactly match WEBHOOK_SECRET — ' +
-        'check for a missing or extra character when copying it.');
+    if (!res.ok) {
+      showEmailTest('bad', describeGatewayProblem(res.status, body));
       return;
     }
     if (body && body.ok && body.secret_configured) {
@@ -3873,7 +3909,7 @@ async function runEmailSelfTest() {
     const target = url + (url.indexOf('?') === -1 ? '?' : '&') + 'test=1';
     const res = await fetch(target, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: emailFetchHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         event_type: 'message.received',
         message: {
@@ -3889,7 +3925,13 @@ async function runEmailSelfTest() {
     const body = await res.json().catch(function () { return null; });
 
     if (res.status === 401) {
-      showEmailTest('bad', 'The server rejected the secret. Check the ?k= part of the URL matches WEBHOOK_SECRET.');
+      /* A 401 here is ambiguous: the gateway refuses a missing apikey and the
+         function refuses a wrong secret, with the same status. The gateway
+         names itself in the body, so read it before blaming the secret. */
+      const fromGateway = body && (body.code || body.error_code);
+      showEmailTest('bad', fromGateway
+        ? describeGatewayProblem(res.status, body)
+        : 'The server rejected the secret. The value after ?k= must exactly match WEBHOOK_SECRET.');
       return;
     }
     if (res.status === 500 && body && /not configured/i.test(body.error || '')) {
@@ -3908,6 +3950,10 @@ async function runEmailSelfTest() {
       showEmailTest('ok', 'It worked. ' + body.type + ' of Rs. ' + body.amount +
         ' was filed — open the Pending tab and you will see it there. Reject it when you are done.');
       loadPendingTransactions();
+      return;
+    }
+    if (!res.ok) {
+      showEmailTest('bad', describeGatewayProblem(res.status, body));
       return;
     }
     showEmailTest('bad', 'Unexpected answer: ' + JSON.stringify(body || {}).slice(0, 200));
