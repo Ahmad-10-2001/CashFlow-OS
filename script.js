@@ -3241,6 +3241,10 @@ const ACTIONS = {
   'sync-now': () => { if (window.CashFlowSync) window.CashFlowSync.cycle(state).then(() => renderAll()); },
   'sync-signout': signOut,
   'sync-repair': repairCloud,
+  'email-save': () => saveEmailRoute(),
+  'email-check': () => checkEmailFunction(),
+  'email-test': () => runEmailSelfTest(),
+  'email-copy-url': () => copyEmailWebhookUrl(),
   'month-close': closePeriod,
   'month-reopen': (el) => reopenPeriod(el.dataset.arg),
   'month-report': (el) => showReport('custom', {
@@ -3657,11 +3661,19 @@ function getCurrentUserId() {
 
 async function loadEmailRouteStatus() {
   const userId = getCurrentUserId();
+  restoreEmailSetup();
   if (!userId) { renderEmailConnectStatus(); return; }
 
   try {
-    const data = await sbFetch('email_routes?user_id=eq.' + userId + '&is_active=eq.true');
-    emailConnected = !!(data && data.length);
+    const data = await sbFetch('email_routes?user_id=eq.' + encodeURIComponent(userId) + '&is_active=eq.true');
+    if (data && data.length) {
+      emailConnected = true;
+      const known = data[0].address || '';
+      const box = $('emailForwardAddress');
+      if (box && !box.value) box.value = known;
+    } else {
+      emailConnected = false;
+    }
   } catch (err) {
     // A missing table or a policy gap must not break the app; the panel just
     // reports that forwarding is not confirmed.
@@ -3671,6 +3683,206 @@ async function loadEmailRouteStatus() {
   renderEmailConnectStatus();
 }
 
+/* The webhook URL carries the shared secret, so it is held in this browser and
+   nowhere else — never in the repository, never in the database. It is not a
+   credential of the mail account, so losing it costs nothing but the ability to
+   run the test and paste the URL again. */
+const EMAIL_SETUP_KEY = 'cashflow:emailSetup';
+
+function restoreEmailSetup() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EMAIL_SETUP_KEY) || '{}');
+    const urlBox = $('emailWebhookUrl');
+    if (urlBox && saved.webhookUrl) urlBox.value = saved.webhookUrl;
+    const addrBox = $('emailForwardAddress');
+    if (addrBox && saved.address && !addrBox.value) addrBox.value = saved.address;
+  } catch (err) { /* a corrupt value is not worth reporting */ }
+}
+
+function rememberEmailSetup(patch) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(EMAIL_SETUP_KEY) || '{}'); } catch (err) { saved = {}; }
+  try { localStorage.setItem(EMAIL_SETUP_KEY, JSON.stringify(Object.assign(saved, patch))); } catch (err) { /* ignore */ }
+}
+
+/** Register the forwarding address against the signed-in account.
+ *
+ *  This used to be a manual SQL insert, and that is a step that looks optional
+ *  and is not: without it the function has nobody to file messages against, and
+ *  the app says "not set up" with nothing the user can act on. */
+async function saveEmailRoute() {
+  const userId = getCurrentUserId();
+  if (!userId) { toast('Sign in first'); return; }
+  const box = $('emailForwardAddress');
+  const address = box ? box.value.trim().toLowerCase() : '';
+  if (!address || address.indexOf('@') === -1 || address.indexOf('.') === -1) {
+    toast('Type the forwarding address, like cashflow@agentmail.to');
+    return;
+  }
+  try {
+    const q = 'email_routes?user_id=eq.' + encodeURIComponent(userId);
+    const existing = await sbFetch(q + '&select=id,address,is_active');
+
+    /* Update rather than insert-and-insert. The address column is unique, so
+       saving the same address twice — which is the normal thing to do while
+       setting this up — would fail on the constraint and report a problem the
+       user cannot act on. */
+    if (existing && existing.length) {
+      const mine = existing.filter((r) => r.address === address)[0] ||
+                   existing.filter((r) => r.is_active)[0] || existing[0];
+      await sbFetch(q + '&id=eq.' + encodeURIComponent(mine.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ address, is_active: true }),
+      });
+      /* Retire any other rows for this account. Two live rows make the server
+         refuse to choose between them, and messages stop arriving with nothing
+         visible to explain why. */
+      for (const r of existing) {
+        if (r.id !== mine.id) {
+          await sbFetch(q + '&id=eq.' + encodeURIComponent(r.id), {
+            method: 'PATCH', body: JSON.stringify({ is_active: false }),
+          });
+        }
+      }
+    } else {
+      await sbFetch('email_routes', {
+        method: 'POST',
+        body: JSON.stringify({ user_id: userId, address, is_active: true }),
+      });
+    }
+    emailConnected = true;
+    rememberEmailSetup({ address });
+    renderEmailConnectStatus();
+    showEmailTest('ok', 'Saved. Messages sent to ' + address + ' will be filed for this account.');
+  } catch (err) {
+    const msg = (err && err.message) || 'failed';
+    showEmailTest('bad', /duplicate|unique/i.test(msg)
+      ? 'That address is already registered to another account. Each address can belong to only one.'
+      : 'Could not save: ' + msg);
+  }
+}
+
+function emailWebhookUrl() {
+  const box = $('emailWebhookUrl');
+  return box ? box.value.trim() : '';
+}
+
+/** Does the function exist, and is its secret set? The two states look
+ *  identical from the app — nothing arriving — and this tells them apart. */
+async function checkEmailFunction() {
+  let base = emailWebhookUrl();
+  if (!base) { showEmailTest('bad', 'Paste your webhook URL above first.'); return; }
+  base = base.split('?')[0];
+  try {
+    const res = await fetch(base, { method: 'GET' });
+    const body = await res.json();
+    if (body && body.ok && body.secret_configured) {
+      showEmailTest('ok', 'The function is deployed and its secret is set. Next: save your forwarding address and run the test.');
+    } else if (body && body.ok) {
+      showEmailTest('bad', 'The function is deployed, but WEBHOOK_SECRET is not set. Add it under Edge Functions → Secrets.');
+    } else {
+      showEmailTest('bad', 'Unexpected answer from the function.');
+    }
+  } catch (err) {
+    showEmailTest('bad', 'Could not reach the function: ' + ((err && err.message) || 'no reply'));
+  }
+}
+
+/** Run a sample alert through the entire chain and report which step it reached.
+ *
+ *  Without this, "no transactions are arriving" has four possible causes —
+ *  wrong URL, missing secret, no registered address, and a parser that does not
+ *  understand the bank's wording — and the app cannot tell them apart. Each of
+ *  those produces the same silence, which is the reason a feature like this
+ *  usually gets abandoned rather than fixed. */
+async function runEmailSelfTest() {
+  const url = emailWebhookUrl();
+  if (!url) { showEmailTest('bad', 'Paste your webhook URL above first.'); return; }
+  const userId = getCurrentUserId();
+  if (!userId) { showEmailTest('bad', 'Sign in first.'); return; }
+
+  showEmailTest('busy', 'Sending a test transaction…');
+  const when = new Date();
+  const stamp = String(when.getDate()).padStart(2, '0') + '/' +
+    String(when.getMonth() + 1).padStart(2, '0') + '/' + when.getFullYear();
+
+  try {
+    const target = url + (url.indexOf('?') === -1 ? '?' : '&') + 'test=1';
+    const res = await fetch(target, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        event_type: 'message.received',
+        message: {
+          from_: 'no-reply@nayapay.com',
+          to: [($('emailForwardAddress') || {}).value || 'test@agentmail.to'],
+          subject: 'NayaPay: You have received Rs. 1,234 on ' + stamp,
+          text: 'Dear customer, you have received Rs. 1,234 from CashFlow OS test on ' + stamp +
+                '. This is a test message and can be rejected.',
+          message_id: 'self-test-' + Date.now(),
+        },
+      }),
+    });
+    const body = await res.json().catch(function () { return null; });
+
+    if (res.status === 401) {
+      showEmailTest('bad', 'The server rejected the secret. Check the ?k= part of the URL matches WEBHOOK_SECRET.');
+      return;
+    }
+    if (res.status === 500 && body && /not configured/i.test(body.error || '')) {
+      showEmailTest('bad', 'WEBHOOK_SECRET is not set on the server. Add it under Edge Functions → Secrets.');
+      return;
+    }
+    if (res.status === 422 && body && /routing|route/i.test(body.reason || body.error || '')) {
+      showEmailTest('bad', 'No account is registered for the forwarding address. Press "Save address" first.');
+      return;
+    }
+    if (body && body.status === 'failed') {
+      showEmailTest('bad', 'The test reached the server but failed at ' + (body.stage || '?') + ': ' + (body.reason || 'unknown'));
+      return;
+    }
+    if (body && body.status === 'filed') {
+      showEmailTest('ok', 'It worked. ' + body.type + ' of Rs. ' + body.amount +
+        ' was filed — open the Pending tab and you will see it there. Reject it when you are done.');
+      loadPendingTransactions();
+      return;
+    }
+    showEmailTest('bad', 'Unexpected answer: ' + JSON.stringify(body || {}).slice(0, 200));
+  } catch (err) {
+    showEmailTest('bad', 'Could not reach the function: ' + ((err && err.message) || 'no reply'));
+  }
+}
+
+function showEmailTest(kind, message) {
+  const box = $('emailTestResult');
+  if (!box) return;
+  const cls = kind === 'ok' ? 'email-test ok' : (kind === 'busy' ? 'email-test busy' : 'email-test bad');
+  const mark = kind === 'ok' ? '✓' : (kind === 'busy' ? '…' : '✕');
+  mount(box, h('div', { class: cls }, h('span', { class: 'email-test-icon' }, mark), h('span', {}, message)));
+}
+
+/** Put the webhook URL on the clipboard, so it can be pasted into the mail
+ *  provider without being retyped — a mistyped secret fails in a way that looks
+ *  like the provider is at fault. */
+async function copyEmailWebhookUrl() {
+  const box = $('emailWebhookUrl');
+  const url = box ? box.value.trim() : '';
+  if (!url) { showEmailTest('bad', 'There is no URL to copy yet.'); return; }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      // Older browsers, and any context where clipboard access is refused.
+      box.select();
+      document.execCommand('copy');
+    }
+    showEmailTest('ok', 'Copied. Paste it into AgentMail → Settings → Webhooks.');
+  } catch (err) {
+    box.select();
+    showEmailTest('bad', 'Copying was blocked — the URL is selected, press Ctrl+C.');
+  }
+}
+
 function renderEmailConnectStatus() {
   const statusEl = $('emailConnectStatus');
   if (!statusEl) return;
@@ -3678,12 +3890,12 @@ function renderEmailConnectStatus() {
   if (emailConnected) {
     mount(statusEl, h('div', { class: 'email-status connected' },
       h('span', { class: 'email-status-icon' }, '✓'),
-      h('span', {}, 'Forwarding is set up — new NayaPay emails will appear under Pending')
+      h('span', {}, 'Address saved. Bank emails forwarded to it will appear under Pending once the test below passes.')
     ));
   } else {
     mount(statusEl, h('div', { class: 'email-status disconnected' },
       h('span', { class: 'email-status-icon' }, '○'),
-      h('span', {}, 'Forwarding not set up yet — follow the steps below')
+      h('span', {}, 'Not working yet. Follow the steps below, then press "Send a test transaction" — until that passes, nothing will arrive.')
     ));
   }
 }

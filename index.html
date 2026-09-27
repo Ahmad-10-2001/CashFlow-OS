@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v17">
+  <meta name="app-build" content="v19">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -327,43 +327,70 @@
 
       <div id="emailConnectStatus"></div>
 
-      <div class="steps">
-        <div class="step">
-          <div class="step-n">1</div>
-          <div class="step-body">
-            <strong>Get a forwarding address</strong>
-            <p>Any mail provider (Mailgun, SendGrid, Postmark) gives you an
-              address that accepts mail and posts it over HTTP. Add it in
-              <code>email_routes</code> so the function knows it is yours.</p>
-          </div>
-        </div>
-        <div class="step">
-          <div class="step-n">2</div>
-          <div class="step-body">
-            <strong>Point it at the webhook</strong>
-            <p>Have the provider POST every message to
-              <code>supabase/functions/poll-emails</code>, with a long random
-              secret in the <code>X-Webhook-Secret</code> header. Set it with
-              <code>supabase secrets set WEBHOOK_SECRET=…</code></p>
-          </div>
-        </div>
-        <div class="step">
-          <div class="step-n">3</div>
-          <div class="step-body">
-            <strong>Forward NayaPay emails there</strong>
-            <p>Gmail → Settings → Forwarding and POP/IMAP → add the address, and
-              choose "a copy" so nothing leaves your inbox.</p>
-          </div>
-        </div>
-        <div class="step">
-          <div class="step-n">4</div>
-          <div class="step-body">
-            <strong>Approve what arrives</strong>
-            <p>Parsed transactions wait under <strong>Pending</strong>. Nothing
-              touches your balance until you press Approve.</p>
-          </div>
-        </div>
+      <!-- Everything below is done from inside the app. Registering the address
+           used to mean pasting SQL into the Supabase editor, which is a step
+           that silently fails for anyone who has not done it before and then
+           leaves the app saying "not set up" with nothing to act on. -->
+      <div class="setup-block">
+        <h3 class="setup-title">Set this up</h3>
+        <ol class="setup-list">
+          <li>
+            <strong>Create a free inbox at
+              <a href="https://console.agentmail.to/sign-up?plan=free" target="_blank" rel="noopener noreferrer">agentmail.to</a></strong>
+            <p>You get an address like <code>cashflow@agentmail.to</code>. No domain
+              to buy, and it accepts mail from anyone — which is what makes this
+              the one provider that works without one.</p>
+          </li>
+          <li>
+            <strong>Save that address below.</strong> This tells the server the
+              address is yours.
+          </li>
+          <li>
+            <strong>Copy your webhook URL</strong> and paste it into AgentMail
+              under Settings → Webhooks, for the event <code>message.received</code>.
+            </li>
+          <li>
+            <strong>Forward your bank emails</strong> to the address. In Gmail:
+              Settings → Forwarding and POP/IMAP → Add a forwarding address, and
+              tick "Keep a copy" so nothing leaves your inbox.
+          </li>
+          <li>
+            <strong>Run the test below.</strong> It sends a sample alert through
+              the whole chain and a real row should appear under
+              <strong>Pending</strong>. Do this before trusting it with a real
+              transaction.
+          </li>
+        </ol>
       </div>
+
+      <div class="form-group">
+        <label class="field-label" for="emailForwardAddress">Forwarding address</label>
+        <input id="emailForwardAddress" type="email" inputmode="email"
+               autocomplete="off" placeholder="cashflow@agentmail.to"
+               spellcheck="false">
+        <p class="field-hint">The address your bank emails are forwarded to.</p>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" type="button" data-act="email-save">Save address</button>
+        <button class="btn btn-dark" type="button" data-act="email-check">Check the server</button>
+        <button class="btn btn-dark" type="button" data-act="email-test">Send a test transaction</button>
+      </div>
+
+      <div class="form-group mt-10">
+        <label class="field-label" for="emailWebhookUrl">Your webhook URL</label>
+        <input id="emailWebhookUrl" type="url" inputmode="url" autocomplete="off"
+               placeholder="https://….supabase.co/functions/v1/poll-emails?k=…" spellcheck="false">
+        <div class="btn-row mt-10">
+          <button class="btn btn-dark" type="button" data-act="email-copy-url">Copy webhook URL</button>
+        </div>
+        <p class="field-hint">
+          Contains a secret, so it is kept in this browser only and is never part
+          of the app. You need it to paste into AgentMail and to run the test.
+        </p>
+      </div>
+
+      <div id="emailTestResult"></div>
 
       <p class="field-hint">
         Why not connect a password instead? Because a stored password is a

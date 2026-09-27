@@ -299,6 +299,36 @@ body.modal-open { overflow: hidden; }
 .reset-code-alt summary:hover { color: var(--ink); }
 .reset-code-alt .form-group { margin-top: 10px; }
 
+/* ===== EMAIL INTAKE SETUP ===== */
+
+.setup-block {
+  margin: 14px 0 18px;
+  padding: 14px 16px;
+  border: 1px solid var(--line, #e3e3e6);
+  border-radius: 12px;
+  background: var(--panel-2, #f7f7f8);
+}
+.setup-title { margin: 0 0 8px; font-size: 15px; }
+.setup-list { margin: 0; padding-left: 20px; }
+.setup-list li { margin-bottom: 10px; }
+.setup-list li:last-child { margin-bottom: 0; }
+.setup-list p { margin: 2px 0 0; font-size: 14px; color: var(--muted, #6b6b70); }
+
+.email-test {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: 12px; padding: 10px 12px;
+  border-radius: 10px; font-size: 14px; line-height: 1.45;
+}
+.email-test-icon { flex: none; font-weight: 700; }
+.email-test.ok   { background: #e8f6ec; color: #1c6b34; }
+.email-test.bad  { background: #fdecec; color: #97231f; }
+.email-test.busy { background: #eef1f6; color: #3a4a63; }
+
+.email-webhook-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+
 /* ===== FORGOT PASSWORD ===== */
 .linkish {
   background: none;

@@ -290,29 +290,49 @@ registered. Only failures of the *project* are reported — rate limiting, and
 
 Two things to set up on the Supabase side, or the email never arrives:
 
-1. **The redirect URL**, which the link path needs. Add the app's address under
-   **Authentication → URL Configuration → Redirect URLs**, otherwise Supabase
-   sends the link to its own default page instead, which is a dead
-   "This site can't be reached" that looks like the app is broken.
+1. **A forwarding page at the account root.** Supabase builds the reset link
+   itself and decides where it points. With the project's Site URL, the redirect
+   allow-list and the app all correct, it still sent links to
+   `https://<user>.github.io/` — the account root — while the app is served from
+   `https://<user>.github.io/CashFlow-OS/`. That is a step in Supabase's own
+   service, and it is not something this app can correct from its own side.
 
-   The app does not simply rely on that entry. It sends `redirect_to` computed
-   from the page it is running on — origin and path — so the link points at
-   wherever the app actually is: a GitHub Pages subpath, a custom domain, or a
-   copy opened on a laptop. Without that, Supabase fell back to the project's
-   Site URL and produced a link to the site *root* while the app was served from
-   a subpath, so the link landed on a 404 and the one-time token died with the
-   click. That is a failure worth spelling out, because the token in the email
-   is perfectly valid and the only thing wrong is the path in front of it: the
-   fragment is never sent to the server, so a dead page still has it sitting in
-   the address bar, and putting the correct path back in front of that fragment
-   completes the reset without another email.
+   The fix is to stop relying on it: GitHub serves a repository named
+   `<user>.github.io` at exactly that root, so a one-file page there forwards
+   the visitor to the app, **carrying the URL fragment across**. `#
+   access_token=…` is never sent to a server, which is precisely why this cannot
+   be done with a server redirect — and why a valid token arriving at a dead
+   address is so confusing: the page 404s, the one-time token dies with the
+   click, and the next attempt reports it expired.
 
-   A `redirect_to` that is not on the allow-list is rejected outright in some
-   configurations and ignored in others. A rejected address is retried once
-   without it, because a wrong link is a nuisance while no email at all is the
-   user locked out over a setting they cannot see. The dashboard entry is still
-   needed, since GoTrue substitutes the Site URL for one that is not allowed —
-   but it is a fallback rather than the thing everything depends on.
+   The file is [`site-root-redirect.html`](site-root-redirect.html) in this
+   repository. Publish it as `index.html` in a repository named
+   `Ahmad-10-2001.github.io`. Once that exists the link works whatever Supabase
+   puts in it, and the app stops depending on the Site URL staying correct.
+
+   **The name has to be exactly `index.html`.** Getting this wrong is quiet: the
+   repository looks correct, Pages reports the site as live, and the root still
+   404s, because there is no `index.html` for it to serve. A misspelling such as
+   `index.httml` is enough.
+
+   It forwards on `load` rather than on parse, so a link-preview scanner that
+   fetches the page without running its script cannot spend the token before its
+   owner opens it.
+
+2. **The project's Site URL** and **Redirect URLs**, both the app's full address
+   including its path:
+
+   ```
+   https://ahmad-10-2001.github.io/CashFlow-OS/
+   ```
+
+   Worth having right, but no longer the thing everything depends on.
+
+   The request also states `type: 'recovery'`. Without it GoTrue defaults to
+   `magiclink`, which is a sign-in link from the Magic Link template carrying a
+   token scoped to opening a session rather than changing a password. It
+   happened to work, which is the worst kind of fault: the right answer for the
+   wrong reason, so nothing looked broken until something else was also wrong.
 
    **A link can only be used once.** Asking for a reset again deliberately
    invalidates the link already sitting in the inbox, and a mail scanner that
@@ -410,44 +430,61 @@ user could read their own password back out. Forwarding needs no secret from
 your mail account at all, so the credential path was removed rather than
 hardened.
 
-How it works instead: bank emails are forwarded to an address you control; a
-mail provider POSTs each message to a Supabase Edge Function with a shared
-secret; the function parses the amount, the direction and **the date from the
-message** and writes one row to `pending_transactions`; the app lists it under
-**Pending** and you approve it. Nothing reaches your balance without your
-approval.
+How it works: your bank's emails are forwarded to an address you control; a mail
+provider POSTs each message to a Supabase Edge Function with a shared secret; the
+function parses the amount, the direction and **the date from the message** and
+writes one row to `pending_transactions`; the app lists it under **Pending** and
+you approve it. Nothing reaches your balance without your approval.
 
-**This needs a domain you own.** Every provider that accepts mail and posts it
-over HTTP — Mailgun, SendGrid Inbound Parse, Postmark — verifies a domain before
-it will accept mail for it, and inbound routing works through MX records, which
-only exist for a domain you control. There is no free workaround. A `.com` is
-about $10 a year; the free tiers of the providers above are then enough for one
-person's transactions indefinitely. The alternative is Google OAuth against the
-Gmail API, which needs no domain but requires authorising a Google app and
-storing refresh tokens, and is considerably more machinery.
+#### Which provider, and why it is the only one
+
+**AgentMail** (`agentmail.to`). Its free tier — 3 inboxes, 100 messages a day,
+webhook endpoints — hands out `@agentmail.to` addresses with no domain to buy.
+
+That matters more than the price. Every other provider that accepts mail and
+posts it over HTTP — Mailgun, SendGrid Inbound Parse, Postmark — verifies a
+domain before it will accept mail for it, and inbound routing runs on MX records,
+which only exist for a domain you control. There is no free workaround. The
+alternative, Google OAuth against the Gmail API, needs no domain but requires
+authorising a Google app, and `gmail.readonly` is a restricted scope: an
+unverified app in testing mode gets refresh tokens that expire after seven days,
+and getting a verified one is a process measured in weeks. So AgentMail is not
+simply the cheapest option here, it is the one that works at all.
+
+#### Setting it up
 
 1. Run `db/email-schema.sql` once. It creates `email_routes` and
    `pending_transactions`, both with the same ownership policy as the rest.
-2. Deploy the function: `supabase functions deploy poll-emails`.
-3. Set its secret: `supabase secrets set WEBHOOK_SECRET=<long random string>`.
-4. Check the deployment: `GET https://<project>.supabase.co/functions/v1/poll-emails`
-   answers `{"service":"poll-emails","ok":true,"secret_configured":true}`. It
-   reveals nothing else, and confirms both that the function is live and that
-   the secret is set, without needing a real bank email.
-5. Point your mail provider's inbound route at
-   `https://<project>.supabase.co/functions/v1/poll-emails`, sending the secret
-   in the `X-Webhook-Secret` header.
-6. Add one row to `email_routes` linking the forwarding address to your user id:
-
-   ```sql
-   insert into public.email_routes (user_id, address)
-   select id, 'bank@yourdomain.com' from auth.users
-   where email = 'you@example.com';
+2. Set the function's shared secret, under **Edge Functions → Secrets**:
    ```
+   WEBHOOK_SECRET = <a long random string>
+   ```
+   Without it the function refuses every request — that is deliberate, and the
+   app's "Check the server" button tells you when it is missing.
+3. Open the **Email** tab, sign in, and press **Send a test transaction**. It
+   posts a sample alert through the whole chain. When a row appears under
+   **Pending**, everything is wired up.
+4. Create an inbox at [agentmail.to](https://console.agentmail.to/sign-up?plan=free)
+   and save its address in the app. The address is registered from the UI —
+   previously this meant pasting SQL by hand, which is a step that looks optional
+   and is not.
+5. In the app, press **Copy webhook URL** and paste it into AgentMail under
+   **Settings → Webhooks**, for the event `message.received`.
+6. In Gmail, **Settings → Forwarding and POP/IMAP → Add a forwarding address**,
+   and tick *Keep a copy* so nothing leaves your inbox.
 
-7. In Gmail, forward bank mail to that address (keep a copy).
+The webhook URL contains the shared secret, so it is kept in that browser only.
+It is never written to the repository — the publishable key is already there for
+everyone to read, and a secret beside it would be published with it.
 
-### How the routing decides whose ledger a message belongs to
+#### Checking the deployment
+
+`GET https://<project>.supabase.co/functions/v1/poll-emails` answers
+`{"service":"poll-emails","ok":true,"secret_configured":true}`. It reveals
+nothing else, and separates the two states that otherwise look identical from the
+app: not deployed, and deployed with no secret set.
+
+#### How the routing decides whose ledger a message belongs to
 
 The recipient is matched against `email_routes`, tolerating the forms a provider
 sends it in (`bank@x.com`, `<bank@x.com>`, `Bank <bank@x.com>`). With **exactly
@@ -459,29 +496,43 @@ user, which meant a message forwarded from any address at all would land in that
 one account's ledger. Someone else's bank email must never reach someone's money
 records.
 
-### The parser is the weak point, and it is honest about it
+#### The parser, and the bug that would have made it silently useless
 
 Bank alerts are written by marketers, and they do not agree on a word order. The
-first version matched whole fixed sentences and testing it against realistic
-phrasings showed it silently dropped most of them — "payment of Rs. 900",
-"Rs. 250 received", "you received Rs. 5,000" with no counterparty. So it now
-works on the parts: find a word that says which way the money moved, then the
-amount on either side of it, then the date, treating the counterparty as
-optional. `parser-test.mjs` covers those shapes.
+first version matched whole fixed sentences and dropped most real messages:
+"payment of Rs. 900", "Rs. 250 received", "you received Rs. 5,000" with no
+counterparty. It now works on the parts: a word saying which way the money moved,
+the amount on either side of it, the date, and the counterparty as optional.
+
+The subtler failure was in what the first version of that *refused*. It treated
+more than one movement word as a summary and declined the message. But a bank
+email states the same payment in the subject and again in the body —
+
+```
+NayaPay: You have sent Rs. 1,500 to Ali Khan on 27/09/2026
+Dear customer, you have sent Rs. 1,500 to Ali Khan. Your balance is Rs. 8,500.
+```
+
+— which is one transaction said twice. So it rejected very nearly every real
+alert, and the symptom was indistinguishable from a parser that does not
+understand the bank at all. What is compared now is not how many times a word
+appears but how many *distinct readings* the message gives: a repeat collapses to
+one, while a message that really does describe two movements — an amount sent and
+an amount received — is still refused.
 
 **It has still never seen a real NayaPay email.** The patterns are inferred. When
 one does not match, nothing is written and nothing is lost — the failure is a
 silent no-op and the raw message is logged to the function's own logs so the
-pattern can be corrected against a real sample. That is the safe direction to
-fail in, but it does mean "no pending transactions" is ambiguous until you have
-seen one arrive. A message naming two or more movements — a statement, or a
-daily summary — is refused outright rather than half-parsed.
+pattern can be corrected against a real sample. That is the safe direction to fail
+in, but it does mean "no pending transactions" is ambiguous until you have seen
+one arrive, which is what the self-test is for: it puts a sample message through
+the same path and names the step that failed.
 
 ---
 
 ## Testing
 
-1052 assertions across ten suites, all of which run without a browser or a
+1099 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
@@ -494,8 +545,8 @@ network. They are not in this repository; they live beside it, and are run with
 | `app-sync-test.mjs` | The seam between app and sync: two windows against a fake Supabase, checking that a sign-in uploads history, a second device receives it, an edit travels back, a delete propagates, and a cloud database wiped from under the app is detected and repaired |
 | `stale-test.mjs` | The mismatched-file guard, replaying the reported bug in both directions and asserting no reload loop |
 | `guards-test.mjs` | Structural rules that are cheap to break and expensive to find: no duplicate function declarations, no `innerHTML`, no email-password handling, every state collection initialised, sync stamps preserved, the three build markers agreeing, a bad row not wedging sync, the schema and webhook refusing what they should, and the reset flow not revealing who has an account |
-| `reset-flow-test.mjs` | Forgot password driven through the UI step by step, including "Send it again" on a screen with no email field — which shipped broken — going Back without retyping, and the whole emailed-link path including recovering the address from the token |
-| `parser-test.mjs` | The email parser against realistic phrasings, including the ones the first version silently dropped. Runs the shipped TypeScript, with the type annotations stripped, so it tests the real code |
+| `reset-flow-test.mjs` | Forgot password driven through the UI step by step, including "Send it again" on a screen with no email field — which shipped broken — going Back without retyping, the whole emailed-link path including recovering the address from the token, and the root forwarding page run against a stub window |
+| `parser-test.mjs` | The email parser against realistic phrasings, including the ones the first version silently dropped and the subject-repeats-the-body shape that would have made it reject nearly every real alert. Also the provider payload shapes. Runs the shipped TypeScript, with the type annotations stripped, so it tests the real code |
 | `e2e.mjs` | One pass through the whole app: every tab opened, sign in and out, a forgotten password recovered end to end, an email transaction approved, and the per-account boxes asserted to sum to the headline balance |
 
 The last two exist because of specific defects that shipped. Each of their

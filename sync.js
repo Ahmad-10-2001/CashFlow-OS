@@ -465,7 +465,17 @@ window.CashFlowSync = (function () {
     if (!e || e.indexOf('@') === -1 || e.indexOf('.') === -1) {
       return { error: 'Enter a valid email address' };
     }
-    const body = { email: e, create_user: false };
+    const body = {
+      email: e,
+      create_user: false,
+      /* Without a type, GoTrue defaults to "magiclink" — a sign-in link, sent
+         from the Magic Link template, carrying a token whose scope is opening a
+         session rather than changing a password. It happened to work, but it is
+         the wrong email for the job and it is why the link said
+         "type=magiclink". "recovery" selects the Recovery template and a token
+         scoped to a password change. */
+      type: 'recovery'
+    };
     const here = currentAppUrl();
     if (here) body.redirect_to = here;
     try {
