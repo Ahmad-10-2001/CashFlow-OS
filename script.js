@@ -3689,7 +3689,25 @@ async function loadEmailRouteStatus() {
    run the test and paste the URL again. */
 const EMAIL_SETUP_KEY = 'cashflow:emailSetup';
 
+/** Fill in everything about the webhook URL that is already known.
+ *
+ *  Only the secret is left blank. Asking someone to assemble a URL from a
+ *  function name and a project reference in a dashboard is a step that
+ *  produces a wrong URL, and a wrong URL fails silently — no error anywhere,
+ *  just no transactions, which is the failure mode that gets a feature
+ *  abandoned rather than fixed. */
+function prefillWebhookUrl() {
+  const box = $('emailWebhookUrl');
+  if (!box) return;
+  if (box.value && box.value.indexOf('?k=') !== -1) return;   // already done
+  const base = (window.CASHFLOW_CONFIG || {}).emailWebhookBase;
+  if (!base) return;
+  box.value = base + '?k=';
+  box.setAttribute('placeholder', base + '?k= then your secret');
+}
+
 function restoreEmailSetup() {
+  prefillWebhookUrl();
   try {
     const saved = JSON.parse(localStorage.getItem(EMAIL_SETUP_KEY) || '{}');
     const urlBox = $('emailWebhookUrl');
@@ -3771,7 +3789,11 @@ function emailWebhookUrl() {
  *  identical from the app — nothing arriving — and this tells them apart. */
 async function checkEmailFunction() {
   let base = emailWebhookUrl();
-  if (!base) { showEmailTest('bad', 'Paste your webhook URL above first.'); return; }
+  if (!base) { showEmailTest('bad', 'The webhook URL is empty above.'); return; }
+  if (base.indexOf('?k=') === -1 && !/(^|\?)(secret|k)=/i.test(base)) {
+    showEmailTest('bad', 'The URL is missing the secret. It should end with ?k= followed by your WEBHOOK_SECRET value.');
+    return;
+  }
   base = base.split('?')[0];
   try {
     const res = await fetch(base, { method: 'GET' });
@@ -3797,7 +3819,11 @@ async function checkEmailFunction() {
  *  usually gets abandoned rather than fixed. */
 async function runEmailSelfTest() {
   const url = emailWebhookUrl();
-  if (!url) { showEmailTest('bad', 'Paste your webhook URL above first.'); return; }
+  if (!url) { showEmailTest('bad', 'The webhook URL is empty above.'); return; }
+  if (/[?&#]k=$/.test(url)) {
+    showEmailTest('bad', 'Paste your WEBHOOK_SECRET after ?k= at the end of the URL.');
+    return;
+  }
   const userId = getCurrentUserId();
   if (!userId) { showEmailTest('bad', 'Sign in first.'); return; }
 

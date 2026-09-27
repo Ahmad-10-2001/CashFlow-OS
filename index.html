@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v19">
+  <meta name="app-build" content="v20">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -385,8 +385,10 @@
           <button class="btn btn-dark" type="button" data-act="email-copy-url">Copy webhook URL</button>
         </div>
         <p class="field-hint">
-          Contains a secret, so it is kept in this browser only and is never part
-          of the app. You need it to paste into AgentMail and to run the test.
+          The address is already filled in. Paste your <code>WEBHOOK_SECRET</code>
+          after the <code>?k=</code> — it is the value you added under Edge
+          Functions → Secrets. The finished URL contains a secret, so it is kept
+          in this browser only and never written into the app.
         </p>
       </div>
 
