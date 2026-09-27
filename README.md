@@ -253,18 +253,35 @@ Several people can use one Supabase project; each sees only their own rows.
 
 ### Forgot password
 
-`Backup → Forgot your password?` asks only for the email, sends a code, and only
-then reveals the new-password fields. Two ways in, both ending in the same place:
+`Backup → Forgot your password?` asks only for the email, then offers two ways
+in, both ending in the same place.
 
-- **Type the code.** Needs the *Magic Link* email template edited once in
-  Supabase (**Authentication → Emails → Magic Link**) to include `{{ .Token }}`.
-- **Click the link in the email.** No template change needed — Supabase puts the
-  token in the URL fragment and the app reads it on the next load.
+- **Click the link in the email.** This is the main route and it needs nothing
+  beyond the redirect URL. Supabase puts the token in the URL fragment and the
+  app reads it on the next load, opening straight on the new-password fields.
+- **Type the code.** A fallback, in a collapsed box. It needs the *Magic Link*
+  email template edited once to include `{{ .Token }}`, and **Supabase will not
+  let the template be edited until custom SMTP is configured** — the template
+  fields are visibly disabled with a "Set up custom SMTP to edit templates"
+  banner. So on a project still using the default SMTP there is no code in the
+  email, and the link is the only way in.
 
 Either way the user ends up holding a short-lived *recovery token*, and only that
 token can set a new password. It is kept deliberately separate from the session: a
 recovery token can change the password and nothing else, so a leaked reset link
 cannot read or write your ledger.
+
+**The link does not carry the email address.** Supabase's fragment is
+`#access_token=…&expires_in=…&refresh_token=…&token_type=bearer&type=recovery` —
+there is no `email` in it. The address is recovered from the token's own claims,
+and failing that from the response to the password change. Without that, setting
+the new password succeeded and the automatic sign-in that followed failed with
+"Enter a valid email address", which is both wrong and alarming: the user had
+just chosen a working password. The claim is read without verifying the
+signature, which is deliberate and safe — it only prefills a field, every
+request is still made with the token, and the server verifies that token on each
+one. A forged claim changes nothing except which address appears in a box the
+user can edit.
 
 **The request answers the same way whether or not the address has an account.**
 Echoing "no such user" would turn the form into a way to discover who is
@@ -273,12 +290,18 @@ registered. Only failures of the *project* are reported — rate limiting, and
 
 Two things to set up on the Supabase side, or the email never arrives:
 
-1. **An email provider.** Supabase's built-in SMTP is rate-limited to a couple of
-   messages per hour and only goes to team members. Add a real one (Resend,
-   SendGrid, Mailjet all have free tiers) under **Authentication → Emails**.
-2. **The redirect URL**, if you use the link path. Add your app's address to
-   **Authentication → URL Configuration → Redirect URLs**, otherwise Supabase
-   refuses to send.
+1. **The redirect URL**, which the link path needs. Add the app's address under
+   **Authentication → URL Configuration → Redirect URLs**; without it Supabase
+   sends the link to its own default page instead, which is a dead
+   "This site can't be reached" that looks like the app is broken. The error
+   raised on a dead link names this rather than saying "invalid or expired",
+   which would send people looking for a security problem that is not there.
+2. **An email provider**, for the email to be delivered at all. Supabase's
+   built-in SMTP is rate-limited to a couple of messages per hour and only goes
+   to team members — fine for one person's own address, not for more. A real one
+   (Resend, SendGrid, Mailjet all have free tiers) goes under
+   **Authentication → Emails**, and is also what unlocks editing the template so
+   the code path works.
 
 ### Security
 
@@ -363,33 +386,78 @@ user could read their own password back out. Forwarding needs no secret from
 your mail account at all, so the credential path was removed rather than
 hardened.
 
-How it works instead: NayaPay emails are forwarded to an address you control; a
+How it works instead: bank emails are forwarded to an address you control; a
 mail provider POSTs each message to a Supabase Edge Function with a shared
-secret; the function parses amount, direction and date and writes one row to
-`pending_transactions`; the app lists it under **Pending** and you approve it.
-Nothing reaches your balance without your approval.
+secret; the function parses the amount, the direction and **the date from the
+message** and writes one row to `pending_transactions`; the app lists it under
+**Pending** and you approve it. Nothing reaches your balance without your
+approval.
+
+**This needs a domain you own.** Every provider that accepts mail and posts it
+over HTTP — Mailgun, SendGrid Inbound Parse, Postmark — verifies a domain before
+it will accept mail for it, and inbound routing works through MX records, which
+only exist for a domain you control. There is no free workaround. A `.com` is
+about $10 a year; the free tiers of the providers above are then enough for one
+person's transactions indefinitely. The alternative is Google OAuth against the
+Gmail API, which needs no domain but requires authorising a Google app and
+storing refresh tokens, and is considerably more machinery.
 
 1. Run `db/email-schema.sql` once. It creates `email_routes` and
    `pending_transactions`, both with the same ownership policy as the rest.
 2. Deploy the function: `supabase functions deploy poll-emails`.
 3. Set its secret: `supabase secrets set WEBHOOK_SECRET=<long random string>`.
-4. Point your mail provider's inbound route at the function URL, sending that
-   secret in the `X-Webhook-Secret` header.
-5. Add one row to `email_routes` linking the forwarding address to your user id.
-6. In Gmail, forward NayaPay mail to that address (keep a copy).
+4. Check the deployment: `GET https://<project>.supabase.co/functions/v1/poll-emails`
+   answers `{"service":"poll-emails","ok":true,"secret_configured":true}`. It
+   reveals nothing else, and confirms both that the function is live and that
+   the secret is set, without needing a real bank email.
+5. Point your mail provider's inbound route at
+   `https://<project>.supabase.co/functions/v1/poll-emails`, sending the secret
+   in the `X-Webhook-Secret` header.
+6. Add one row to `email_routes` linking the forwarding address to your user id:
 
-**The amount and date patterns in the function are a starting point, not a
-guarantee.** NayaPay's wording may not match. When that happens nothing is
-written and nothing is lost — the failure is a silent no-op, and the raw message
-is logged to the function's own logs so the pattern can be corrected against a
-real sample. That is the safe direction to fail in, but it does mean "no pending
-transactions" is ambiguous until you have seen one arrive.
+   ```sql
+   insert into public.email_routes (user_id, address)
+   select id, 'bank@yourdomain.com' from auth.users
+   where email = 'you@example.com';
+   ```
+
+7. In Gmail, forward bank mail to that address (keep a copy).
+
+### How the routing decides whose ledger a message belongs to
+
+The recipient is matched against `email_routes`, tolerating the forms a provider
+sends it in (`bank@x.com`, `<bank@x.com>`, `Bank <bank@x.com>`). With **exactly
+one** active route it is used regardless — one person, one address, and providers
+rewrite the recipient differently often enough that a strict comparison would
+silently file nothing. With **two or more**, an unrecognised recipient is
+refused rather than guessed: an earlier version fell back to a single configured
+user, which meant a message forwarded from any address at all would land in that
+one account's ledger. Someone else's bank email must never reach someone's money
+records.
+
+### The parser is the weak point, and it is honest about it
+
+Bank alerts are written by marketers, and they do not agree on a word order. The
+first version matched whole fixed sentences and testing it against realistic
+phrasings showed it silently dropped most of them — "payment of Rs. 900",
+"Rs. 250 received", "you received Rs. 5,000" with no counterparty. So it now
+works on the parts: find a word that says which way the money moved, then the
+amount on either side of it, then the date, treating the counterparty as
+optional. `parser-test.mjs` covers those shapes.
+
+**It has still never seen a real NayaPay email.** The patterns are inferred. When
+one does not match, nothing is written and nothing is lost — the failure is a
+silent no-op and the raw message is logged to the function's own logs so the
+pattern can be corrected against a real sample. That is the safe direction to
+fail in, but it does mean "no pending transactions" is ambiguous until you have
+seen one arrive. A message naming two or more movements — a statement, or a
+daily summary — is refused outright rather than half-parsed.
 
 ---
 
 ## Testing
 
-894 assertions across seven suites, all of which run without a browser or a
+1039 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
@@ -398,10 +466,12 @@ network. They are not in this repository; they live beside it, and are run with
 | `test.js` | Schema migration, balance arithmetic, transfer invariants, custody rules, chart maths, prototype-pollution guards |
 | `markup-test.js` | Every referenced id exists, every `data-act` has a handler, accessibility attributes, the rename did not touch the storage key |
 | `integration-test.mjs` | The real page in a real DOM: clicks, typing, form submits, and assertions on what a user would actually see — including corruption recovery and XSS |
-| `sync-test.mjs` | Auth, token refresh, outbox, tombstones, last-write-wins merge, offline retry, backwards clock |
-| `app-sync-test.mjs` | The seam between app and sync: two windows against a fake Supabase, checking that a sign-in uploads history, a second device receives it, an edit travels back, and a delete propagates |
+| `sync-test.mjs` | Auth, password reset at the API level, token refresh, outbox, tombstones, last-write-wins merge, offline retry, backwards clock |
+| `app-sync-test.mjs` | The seam between app and sync: two windows against a fake Supabase, checking that a sign-in uploads history, a second device receives it, an edit travels back, a delete propagates, and a cloud database wiped from under the app is detected and repaired |
 | `stale-test.mjs` | The mismatched-file guard, replaying the reported bug in both directions and asserting no reload loop |
 | `guards-test.mjs` | Structural rules that are cheap to break and expensive to find: no duplicate function declarations, no `innerHTML`, no email-password handling, every state collection initialised, sync stamps preserved, the three build markers agreeing, a bad row not wedging sync, the schema and webhook refusing what they should, and the reset flow not revealing who has an account |
+| `reset-flow-test.mjs` | Forgot password driven through the UI step by step, including "Send it again" on a screen with no email field — which shipped broken — going Back without retyping, and the whole emailed-link path including recovering the address from the token |
+| `parser-test.mjs` | The email parser against realistic phrasings, including the ones the first version silently dropped. Runs the shipped TypeScript, with the type annotations stripped, so it tests the real code |
 | `e2e.mjs` | One pass through the whole app: every tab opened, sign in and out, a forgotten password recovered end to end, an email transaction approved, and the per-account boxes asserted to sum to the headline balance |
 
 The last two exist because of specific defects that shipped. Each of their

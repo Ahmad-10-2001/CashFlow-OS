@@ -383,13 +383,47 @@ window.CashFlowSync = (function () {
     const r = {
       token: out.access_token,
       userId: out.user && out.user.id,
-      email: (out.user && out.user.email) || email || null,
+      email: (out.user && out.user.email) || email || decodeJwtEmail(out.access_token) || null,
       // Recovery links are short-lived by design. A small grace period on top
       // so a form filled in slowly is not rejected at the last moment.
       expiresAt: Date.now() + ((typeof out.expires_in === 'number' ? out.expires_in : 3600) + 300) * 1000
     };
     saveReset(r);
     return r;
+  }
+
+  /** The address a recovery token belongs to, read out of the token itself.
+   *
+   *  Needed because Supabase's emailed link does not carry the address: the
+   *  fragment is
+   *
+   *      #access_token=…&expires_in=…&refresh_token=…&token_type=bearer&type=recovery
+   *
+   *  with no `email`. Without this, the code path worked (the user typed the
+   *  address) and the link path did not: the new password was set correctly and
+   *  then the automatic sign-in failed with "Enter a valid email address",
+   *  leaving the user holding a password they had just chosen and an error.
+   *
+   *  The payload is read without checking the signature, and that is
+   *  deliberate. It is not being trusted for anything — it only pre-fills a
+   *  field. Every request that matters is made with the token, and the server
+   *  verifies the signature on each one, so a forged payload achieves nothing
+   *  beyond showing the user a wrong address in a box they can correct. */
+  function decodeJwtEmail(token) {
+    try {
+      const parts = String(token || '').split('.');
+      if (parts.length < 2) return null;
+      /* base64url -> base64, then atob -> bytes -> UTF-8. btoa/atob need
+         latin1 input, and an address is ASCII, but the guard keeps a
+         non-ASCII claim from throwing. */
+      let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      const claims = JSON.parse(decodeURIComponent(escape(atob(b64))));
+      const found = claims.email ||
+        (claims.user_metadata && claims.user_metadata.email) ||
+        (claims.user && claims.user.email);
+      return typeof found === 'string' && found.indexOf('@') !== -1 ? found : null;
+    } catch (err) { return null; }
   }
 
   /** Ask Supabase to email a code/link.
@@ -468,14 +502,22 @@ window.CashFlowSync = (function () {
     if (!r) return { error: 'This reset link has expired. Ask for a new one.' };
     const bad = validateCredentials(r.email || 'a@b.co', password);
     if (bad) return { error: bad };
+    /* The address is needed afterwards to sign in without making the user type
+       the new password twice. If the token did not yield one, the response to
+       this call carries the user record and does. */
+    let email = r.email;
     try {
-      await http(authPath('/user'), {
+      const out = await http(authPath('/user'), {
         method: 'PUT',
         // NOT the session token: a recovery token is scoped to the account
         // holder changing their own password and cannot touch data.
         headers: Object.assign({}, headers(), { Authorization: 'Bearer ' + r.token }),
         body: JSON.stringify({ password })
       });
+      if (!email) {
+        const u = (out && (out.user || out)) || null;
+        if (u && u.email) email = u.email;
+      }
     } catch (err) {
       if (/expired|invalid|jwt/i.test(err.message || '')) {
         clearReset();
@@ -484,7 +526,7 @@ window.CashFlowSync = (function () {
       return { error: err.message };
     }
     clearReset();
-    return { ok: true, email: r.email };
+    return { ok: true, email: email || null };
   }
 
   /** Read a recovery link the user clicked.
@@ -1044,6 +1086,11 @@ window.CashFlowSync = (function () {
     // auth
     signUp, signIn, signOut, MIN_PASSWORD, validateCredentials,
     requestPasswordReset, verifyResetCode, setNewPassword, pickRecoveryFromUrl,
+    /* Exported so the tests can exercise it directly. It is a pure function
+       that reads a claim out of a token, and the property that matters — that
+       a forged claim changes nothing except a prefilled field — is worth
+       asserting against the real implementation rather than a stand-in. */
+    decodeJwtEmail,
     get isSignedIn() { return !!session; },
     get email() { return session ? session.email : null; },
     get resetEmail() { const r = loadReset(); return r ? r.email : null; },

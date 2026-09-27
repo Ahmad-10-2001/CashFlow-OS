@@ -2928,7 +2928,13 @@ function signInForm(S) {
   return h('form', { id: 'authForm', novalidate: true },
     h('div', { class: 'form-group' },
       h('label', { class: 'field-label', for: 'authEmail' }, 'Email'),
-      h('input', { id: 'authEmail', type: 'email', inputmode: 'email', placeholder: 'you@example.com', autocomplete: 'username' })
+      // Pre-filled after a reset attempt, so going Back to this form does not
+      // make the user retype an address they have already typed twice.
+      h('input', {
+        id: 'authEmail', type: 'email', inputmode: 'email',
+        placeholder: 'you@example.com', autocomplete: 'username',
+        value: resetEmail || ''
+      })
     ),
     h('div', { class: 'form-group' },
       h('label', { class: 'field-label', for: 'authPassword' }, 'Password'),
@@ -2950,30 +2956,46 @@ function signInForm(S) {
   );
 }
 
-/** Shown after the reset email was sent. Accepts the code from the email;
- *  if the user clicked the link in the email instead, the app skips straight
- *  past this, because the token arrives in the URL. */
+/** Shown after the reset email was sent. The code is the only way through.
+ *  Both ways in are offered, because which one is available depends on how the
+ *  project is set up and the user cannot be expected to know which:
+ *
+ *    - The LINK works with no extra setup at all, as long as the project's
+ *      redirect URL is configured. Clicking it opens this app with a token in
+ *      the address, and pickRecoveryFromUrl() picks it up. It was briefly
+ *      removed because a project with no redirect URL sends the link to
+ *      localhost:3000 instead — a dead page saying "This site can't be
+ *      reached", which looks like the app is broken. With the redirect URL set,
+ *      the link is the simpler path and it is first.
+ *
+ *    - The CODE needs the email template edited, and Supabase only allows
+ *      that once custom SMTP is configured. Until then the template is fixed and
+ *      the email carries no code, so this box is a fallback rather than the
+ *      main event. */
 function resetCodeForm(S) {
   return h('form', { id: 'resetCodeForm', novalidate: true },
     h('p', { class: 'sync-msg' },
-      'If that email exists, a code is on its way to ',
+      'If that email exists, a link is on its way to ',
       h('strong', {}, resetEmail || 'it'),
-      '. It can take a minute or two.'),
-    h('div', { class: 'form-group' },
-      h('label', { class: 'field-label', for: 'resetCode' }, 'Code from the email'),
-      h('input', {
-        id: 'resetCode', type: 'text', inputmode: 'numeric',
-        autocomplete: 'one-time-code', placeholder: '123456'
-      }),
-      h('p', { class: 'field-hint' },
-        'Or just click the link in the email — it opens this app and fills this in for you.')
+      '. It can take a minute or two, and it may land in spam.'),
+    h('p', { class: 'field-hint' },
+      'Open the link in the email on this device and it brings you straight back here to set a new password.'),
+    h('details', { class: 'reset-code-alt' },
+      h('summary', {}, 'My email shows a code instead of a link'),
+      h('div', { class: 'form-group' },
+        h('label', { class: 'field-label', for: 'resetCode' }, 'Code from the email'),
+        h('input', {
+          id: 'resetCode', type: 'text', inputmode: 'numeric',
+          autocomplete: 'one-time-code', placeholder: '6-digit code'
+        })
+      ),
+      h('div', { class: 'btn-row' },
+        h('button', { class: 'btn btn-primary', type: 'submit' }, 'Continue')
+      )
     ),
-    h('div', { class: 'btn-row' },
-      h('button', { class: 'btn btn-primary', type: 'submit' }, 'Continue'),
-      h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'reset-cancel' } }, 'Back')
-    ),
-    h('p', { class: 'auth-alt' },
-      h('button', { class: 'linkish', type: 'button', dataset: { act: 'reset-resend' } }, 'Send it again')
+    h('div', { class: 'btn-row mt-10' },
+      h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'reset-cancel' } }, 'Back'),
+      h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'reset-resend' } }, 'Send it again')
     )
   );
 }
@@ -3048,9 +3070,19 @@ let resetEmail = null;
 async function beginPasswordReset() {
   const S = window.CashFlowSync;
   if (!S) return;
-  const email = $('authEmail') ? $('authEmail').value.trim() : '';
+  /* Two ways in: the "Forgot your password?" link on the sign-in form, which
+     has an email field, and "Send it again" on the code form, which does not —
+     the panel only shows a code box at that point. Reading the field alone made
+     resending dead on arrival with "type your email first", on a screen where
+     there is nowhere to type one. */
+  const field = $('authEmail');
+  const email = (field && field.value.trim()) || resetEmail || '';
   if (!email) { toast('Type your email first, then press Forgot'); return; }
-  $('authPassword').value = '';
+  // Only clear the password if it is on screen. Resending starts from the code
+  // panel, which has no password field, and reading it blindly threw and killed
+  // the resend outright.
+  const pw = $('authPassword');
+  if (pw) pw.value = '';
   toast('Sending…');
   const res = await S.requestPasswordReset(email);
   if (res.error) { toast(res.error); return; }
@@ -3094,17 +3126,33 @@ async function submitNewPassword() {
   $('newPw1').value = '';
   $('newPw2').value = '';
   renderSyncPanel();
+  /* The password is already changed by this point, so the sign-in that follows
+     is a convenience. If the address could not be recovered, saying "enter a
+     valid email address" is both wrong and alarming — the user did nothing
+     wrong, and their new password works. Say what actually happened instead. */
+  if (!res.email) {
+    toast('Password changed. Sign in with your email address.');
+    renderSyncPanel();
+    const f = $('authEmail');
+    if (f) f.focus();
+    return;
+  }
   // Signed in automatically: the recovery token proves who they are, and
   // making them type the new password a second time helps nobody.
-  $('authEmail').value = res.email || '';
+  $('authEmail').value = res.email;
   $('authPassword').value = a;
   await handleAuth('in');
 }
 
-/** Abandon the reset and go back to the sign-in form. */
+/** Abandon the reset and go back to the sign-in form.
+ *
+ *  resetEmail is deliberately kept. The address is the one thing the user has
+ *  already typed and does not want to type a third time, and throwing it away
+ *  here is what made "Send it again" fail on a panel with no email field. It is
+ *  cleared once the password is actually changed, and typing a different
+ *  address always wins over it. */
 function cancelPasswordReset() {
   resetMode = null;
-  resetEmail = null;
   renderSyncPanel();
 }
 
@@ -3460,7 +3508,14 @@ function init() {
     resetMode = 'newpw';
     resetEmail = window.CashFlowSync.resetEmail;
   } else if (recovered && recovered.error) {
-    toast('That reset link did not work: ' + recovered.error);
+    // Only reachable if a link was clicked. The overwhelmingly common cause is
+    // that the project has no redirect URL set, in which case the link never
+    // gets this far — it lands on Supabase's own default page. Say so, because
+    // "invalid or expired" on its own sends people looking in the wrong place.
+    // A dead link is nearly always the project's redirect URL, not an expired
+    // token. Saying "invalid or expired" sends people looking for a security
+    // problem that is not there, so name the real cause instead.
+    toast('That link no longer works. Each one can only be used once — press Forgot your password? to have another sent.');
   } else if (resetMode === null && window.CashFlowSync && window.CashFlowSync.hasResetToken) {
     // Reloaded part-way through: the token survived in storage.
     resetMode = 'newpw';

@@ -288,6 +288,17 @@ body.modal-open { overflow: hidden; }
   overflow-wrap: anywhere;
 }
 
+/* The code box is a fallback: the emailed link is the main path, and most
+   projects cannot put a code in the email at all without custom SMTP. */
+.reset-code-alt { margin-top: 12px; }
+.reset-code-alt summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+.reset-code-alt summary:hover { color: var(--ink); }
+.reset-code-alt .form-group { margin-top: 10px; }
+
 /* ===== FORGOT PASSWORD ===== */
 .linkish {
   background: none;
