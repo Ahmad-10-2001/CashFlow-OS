@@ -534,7 +534,30 @@ appears but how many *distinct readings* the message gives: a repeat collapses t
 one, while a message that really does describe two movements — an amount sent and
 an amount received — is still refused.
 
-**It has still never seen a real NayaPay email.** The patterns are inferred. When
+**It has now seen real alerts**, which is worth recording because they broke it
+in two ways that no amount of guessing would have found. A NayaPay message
+arrives as
+
+```
+from:    NayaPay <no-reply@nayapay.com>
+subject: You got Rs. 100 from Muhammad Ahmed 🎉 - Cha-Ching! Muhammad Ahmed easypaisa B...
+```
+
+and the bank's name is **only in the sender**. The "is this a bank email" check
+read the subject and the body, found no bank in either, and dropped every
+message — silently, and identically every time, so the feature looked broken
+rather than misconfigured. The sender is now part of the text examined.
+
+Second, and quieter: because the recipient has accounts at two wallets, the
+subject names the *other* one. That one got past the check and was filed under
+the wrong bank — a wrong balance rather than a missing one. The bank is now taken
+from the sender first, which is the only place it is reliable.
+
+The words themselves are as expected: `You sent Rs. X to <name>` and
+`You got Rs. X from <name>`, both of which the verb-based parser reads. The date
+is taken from the body, not the moment the message arrived.
+
+When a pattern does not match, nothing is written and nothing is lost — the failure is a
 one does not match, nothing is written and nothing is lost — the failure is a
 silent no-op and the raw message is logged to the function's own logs so the
 pattern can be corrected against a real sample. That is the safe direction to fail
@@ -542,11 +565,27 @@ in, but it does mean "no pending transactions" is ambiguous until you have seen
 one arrive, which is what the self-test is for: it puts a sample message through
 the same path and names the step that failed.
 
+#### Why the app sends no custom header
+
+The app's two calls to the function put the apikey in the query string and send
+the body as `text/plain`, which makes both "simple" by the browser's definition —
+no custom header, no non-safelisted content type, therefore **no preflight at
+all**.
+
+That is not a substitute for declaring CORS headers, and the function does
+declare a full set. It is so that a stale allowed-headers list, a cached
+preflight, or a proxy in between cannot stop the one request a user relies on to
+find out whether the feature works. Adding the apikey as a header had already
+caused exactly that: a 401 became `Failed to fetch`, with no status code and
+nothing in the function's logs, because the browser blocked the call without
+sending it. The function reads its body with `json()` either way, so the content
+type is only ever a label.
+
 ---
 
 ## Testing
 
-1122 assertions across ten suites, all of which run without a browser or a
+1145 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 

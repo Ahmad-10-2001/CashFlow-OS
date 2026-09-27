@@ -3823,9 +3823,35 @@ function emailWebhookUrl() {
    thing. Two different credentials, two different jobs:
    the apikey gets past the gateway, the secret proves the caller is the mail
    provider. */
-function emailFetchHeaders(extra) {
+/* Supabase's gateway refuses a function call that carries no apikey before the
+   function's own code runs, so one has to be sent. Sending it as a header is
+   what introduced a second failure: a header the browser did not expect makes it
+   preflight, and if the function's allowed-headers list is even slightly out of
+   date the browser refuses the call without sending it — "Failed to fetch", with
+   no status code and nothing in the function's logs because it was never
+   dialled. The CORS list was fixed, and the app still could not reach the
+   function, which is the part that made this so hard to see.
+
+   Putting the key in the query string, and sending the body as text/plain,
+   makes both requests "simple" by the browser's definition: no custom header, no
+   non-safelisted content type, therefore no preflight at all. The function reads
+   its body with json() either way, so the content type is only ever a label.
+
+   This is deliberately not a workaround for a missing CORS entry — the function
+   still declares a full set. It is so that a stale list, a cached preflight, or
+   a proxy in between cannot stop the one request the user is relying on to tell
+   them whether the feature works. */
+function emailRequestUrl(url) {
   const cfg = window.CASHFLOW_CONFIG || {};
-  return Object.assign({ apikey: cfg.publishableKey || '' }, extra || {});
+  if (!cfg.publishableKey) return url;
+  return url + (url.indexOf('?') === -1 ? '?' : '&') + 'apikey=' + encodeURIComponent(cfg.publishableKey);
+}
+
+/* Deliberately not application/json: that is not a CORS-safelisted content type
+   and would bring the preflight back. The body is still JSON; nothing reads this
+   header. */
+function emailFetchHeaders(extra) {
+  return Object.assign({ 'Content-Type': 'text/plain;charset=UTF-8' }, extra || {});
 }
 
 /** "Failed to fetch" is what the browser says when it never sent the request.
@@ -3838,8 +3864,8 @@ function describeUnreachable(err) {
   const msg = (err && err.message) || '';
   if (/failed to fetch|networkerror|load failed/i.test(msg)) {
     return 'The browser blocked the request before it left, so the server was never asked. ' +
-      'This is a CORS problem: the deployed function does not list "apikey" among its allowed headers. ' +
-      'Deploy the current index.ts from the repository, then try again.';
+      'Nothing is sent from here that needs a preflight, so this is no longer a header the ' +
+      'function forgot to allow — check your connection, and that the function is deployed.';
   }
   return 'Could not reach the function: ' + (msg || 'no reply');
 }
@@ -3877,7 +3903,7 @@ async function checkEmailFunction() {
     return;
   }
   try {
-    const res = await fetch(url, { method: 'GET', headers: emailFetchHeaders() });
+    const res = await fetch(emailRequestUrl(url), { method: 'GET', headers: emailFetchHeaders() });
     const body = await res.json().catch(function () { return null; });
 
     if (!res.ok) {
@@ -3922,10 +3948,10 @@ async function runEmailSelfTest() {
     String(when.getMonth() + 1).padStart(2, '0') + '/' + when.getFullYear();
 
   try {
-    const target = url + (url.indexOf('?') === -1 ? '?' : '&') + 'test=1';
+    const target = emailRequestUrl(url) + '&test=1';
     const res = await fetch(target, {
       method: 'POST',
-      headers: emailFetchHeaders({ 'Content-Type': 'application/json' }),
+      headers: emailFetchHeaders(),
       body: JSON.stringify({
         event_type: 'message.received',
         message: {
