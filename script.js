@@ -3662,6 +3662,7 @@ function getCurrentUserId() {
 async function loadEmailRouteStatus() {
   const userId = getCurrentUserId();
   restoreEmailSetup();
+  wireEmailSetupFields();
   if (!userId) { renderEmailConnectStatus(); return; }
 
   try {
@@ -3721,6 +3722,28 @@ function rememberEmailSetup(patch) {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(EMAIL_SETUP_KEY) || '{}'); } catch (err) { saved = {}; }
   try { localStorage.setItem(EMAIL_SETUP_KEY, JSON.stringify(Object.assign(saved, patch))); } catch (err) { /* ignore */ }
+}
+
+/* Keep both fields as they are typed.
+ *
+ *  They were only written to storage when a button was pressed, so pasting the
+ *  secret and then reloading the page — which a service worker update does on
+ *  its own — silently emptied the field. The user then copied a half-finished
+ *  URL somewhere, and the symptom was the provider rejecting a URL that had
+ *  been correct a moment earlier. */
+function wireEmailSetupFields() {
+  const url = $('emailWebhookUrl');
+  if (url) {
+    url.addEventListener('change', function () {
+      rememberEmailSetup({ webhookUrl: url.value.trim() });
+    });
+  }
+  const addr = $('emailForwardAddress');
+  if (addr) {
+    addr.addEventListener('change', function () {
+      rememberEmailSetup({ address: addr.value.trim().toLowerCase() });
+    });
+  }
 }
 
 /** Register the forwarding address against the signed-in account.
@@ -3785,26 +3808,40 @@ function emailWebhookUrl() {
   return box ? box.value.trim() : '';
 }
 
-/** Does the function exist, and is its secret set? The two states look
- *  identical from the app — nothing arriving — and this tells them apart. */
+/** Does the function exist, and is its secret set?
+ *
+ *  The secret travels with the request. Stripping the query string to make a
+ *  "harmless" check sent an unauthenticated GET at a function that refuses
+ *  every unauthenticated request, so the check answered 401 — indistinguishable
+ *  from a wrong secret, which is the one thing the user needed to be told.
+ *  The whole point of this button is to distinguish those cases, so it has to
+ *  send the credential it is checking. */
 async function checkEmailFunction() {
-  let base = emailWebhookUrl();
-  if (!base) { showEmailTest('bad', 'The webhook URL is empty above.'); return; }
-  if (base.indexOf('?k=') === -1 && !/(^|\?)(secret|k)=/i.test(base)) {
-    showEmailTest('bad', 'The URL is missing the secret. It should end with ?k= followed by your WEBHOOK_SECRET value.');
+  const url = emailWebhookUrl();
+  if (!url) { showEmailTest('bad', 'The webhook URL is empty above.'); return; }
+  if (/[?&#]k=$/.test(url)) {
+    showEmailTest('bad', 'Paste your WEBHOOK_SECRET after ?k= at the end of the URL first.');
     return;
   }
-  base = base.split('?')[0];
   try {
-    const res = await fetch(base, { method: 'GET' });
-    const body = await res.json();
-    if (body && body.ok && body.secret_configured) {
-      showEmailTest('ok', 'The function is deployed and its secret is set. Next: save your forwarding address and run the test.');
-    } else if (body && body.ok) {
-      showEmailTest('bad', 'The function is deployed, but WEBHOOK_SECRET is not set. Add it under Edge Functions → Secrets.');
-    } else {
-      showEmailTest('bad', 'Unexpected answer from the function.');
+    const res = await fetch(url, { method: 'GET' });
+    const body = await res.json().catch(function () { return null; });
+
+    if (res.status === 401) {
+      showEmailTest('bad', 'The server rejected the secret. The value after ?k= must exactly match WEBHOOK_SECRET — ' +
+        'check for a missing or extra character when copying it.');
+      return;
     }
+    if (body && body.ok && body.secret_configured) {
+      showEmailTest('ok', 'The function is deployed and the secret matches. Now press "Send a test transaction".');
+      return;
+    }
+    if (body && body.ok) {
+      showEmailTest('bad', 'The function is deployed, but WEBHOOK_SECRET is not set on it. Add it under Edge Functions → Secrets.');
+      return;
+    }
+    showEmailTest('bad', 'The server answered in a way this app does not recognise. ' +
+      'Check the function is deployed from the code in the repository.');
   } catch (err) {
     showEmailTest('bad', 'Could not reach the function: ' + ((err && err.message) || 'no reply'));
   }
@@ -3902,6 +3939,7 @@ async function copyEmailWebhookUrl() {
       box.select();
       document.execCommand('copy');
     }
+    rememberEmailSetup({ webhookUrl: url });
     showEmailTest('ok', 'Copied. Paste it into AgentMail → Settings → Webhooks.');
   } catch (err) {
     box.select();
