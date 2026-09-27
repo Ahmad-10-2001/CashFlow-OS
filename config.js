@@ -22,7 +22,15 @@ window.CASHFLOW_CONFIG = {
   // half-working app on screen, the caches are cleared and the page reloads
   // once. Bump this on every deploy, along with the service worker's
   // CACHE_VERSION.
-  appBuild: 'v11',
+  appBuild: 'v26',
+
+  // The Edge Function that receives forwarded bank emails. Public: it is just an
+  // address, and the shared secret that goes with it is typed in by the user at
+  // runtime and never written to a file. Having the app supply the address
+  // removes the step where someone is asked to assemble a URL out of a dashboard
+  // and a function name, and mistypes it — which then looks like the provider is
+  // at fault rather than the address.
+  emailWebhookBase: 'https://dmvwbgvbgvxwkezmuzdc.supabase.co/functions/v1/poll-emails',
 
   // How often the background loop wakes up, in milliseconds.
   // Only ever runs while the page is open AND signed in.

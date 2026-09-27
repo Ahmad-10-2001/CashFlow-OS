@@ -78,9 +78,12 @@ const TABS = [
   { id: 'reports',      label: 'Reports',    glyph: '◔' },
   { id: 'list',         label: 'List',       glyph: '☑' },
   { id: 'categories',   label: 'Categories', glyph: '❑' },
-  { id: 'email',        label: 'Email',      glyph: '📧' },
   { id: 'pending',      label: 'Pending',    glyph: '🔔' },
-  { id: 'settings',     label: 'Backup',     glyph: '⚙' }
+  { id: 'settings',     label: 'Backup',     glyph: '⚙' },
+  /* Last, and marked optional. Email is a one-time setup, not a daily screen,
+     and sitting between Categories and Pending made it read as part of the
+     routine — something still to be done rather than something finished. */
+  { id: 'email',        label: 'Email',      glyph: '📧', optional: true }
 ];
 
 /* Categorical palette. Chosen to stay distinguishable on white and to hold
@@ -95,13 +98,16 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 /* ---------- state ---------- */
 
 /** @type {{version:number, transactions:Array, debts:Array, budgets:Object,
- *           categories:string[], shopping:Array, custody:Array, accounts:Array,
+ *           categories:string[], shopping:Array, accounts:Array,
  *           settings:Object, closedPeriods:string[]}} */
 let state = blankState();
 let storageUsable = true;
 let activeTab = 'home';
 let reportRange = { mode: 'month' };
 let budgetPeriod = null;   // null = follow the current calendar month
+// The last result of "check and re-upload", kept so it survives a re-render of
+// the sync panel (which happens on every save()).
+let repairReport = null;
 
 /* ============================================================
    Small utilities
@@ -130,6 +136,11 @@ function formatMoney(n, opts) {
   const body = Math.abs(v).toLocaleString('en-PK', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   const sign = v < 0 ? '-' : (o.signed && v > 0 ? '+' : '');
   return sign + CURRENCY + ' ' + body;
+}
+
+function formatDayOnly(d) {
+  const p = (x) => String(x).padStart(2, '0');
+  return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear();
 }
 
 function formatDate(iso) {
@@ -265,7 +276,17 @@ function h(tag, props, ...children) {
     if (val === null || val === undefined || val === false) continue;
     if (key === 'class') node.className = val;
     else if (key === 'text') node.textContent = val;
-    else if (key === 'dataset') Object.assign(node.dataset, val);
+    else if (key === 'dataset') {
+      // Skipped rather than coerced: the dataset IDL setter turns `undefined`
+      // into the STRING "undefined", so a button built without an `arg` would
+      // hand a handler the literal text "undefined" — which is a valid-looking
+      // argument and fails much later than the mistake.
+      for (const dk of Object.keys(val)) {
+        const dv = val[dk];
+        if (dv === null || dv === undefined || dv === false) continue;
+        node.dataset[dk] = dv;
+      }
+    }
     else if (key === 'style') node.style.cssText = val;
     else if (key.slice(0, 2) === 'on' && typeof val === 'function') node.addEventListener(key.slice(2), val);
     else if (val === true) node.setAttribute(key, '');
@@ -358,6 +379,17 @@ function blankState() {
 }
 
 function isClosed(period) { return state.closedPeriods.indexOf(period) !== -1; }
+
+/** Preserve a record's sync timestamp when it is read back from disk.
+ *  Dropping it here is not cosmetic: reconcile() stamps anything it cannot
+ *  match against its shadow, so an unstamped record looks freshly edited on
+ *  every single page load and silently overwrites other devices' versions.
+ *  Returns null for an unreadable stamp so reconcile() treats it as new. */
+function keepStamp(v) {
+  if (typeof v !== 'string' || !v) return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
 
 /**
  * Turn an arbitrary parsed object into valid app state.
@@ -453,7 +485,7 @@ function sanitizeState(raw) {
   const accountNames = new Set();
   const rawAccounts = Array.isArray(raw.accounts) ? raw.accounts : null;
 
-  const addAccount = (id, name, kind, opening, archived) => {
+  const addAccount = (id, name, kind, opening, archived, a) => {
     const clean = cleanText(name, NAME_LIMIT);
     if (!clean) return null;
     const key = clean.toLowerCase();
@@ -469,20 +501,21 @@ function sanitizeState(raw) {
       // An opening balance may legitimately be zero, so it is read directly
       // rather than through toPositiveNumber, which rejects 0 and negatives.
       openingBalance: round2(clampNumber(opening, -MAX_AMOUNT, MAX_AMOUNT)),
-      archived: archived === true
+      archived: archived === true,
+      updatedAt: keepStamp(a && a.updatedAt)
     });
     return aid;
   };
 
   for (const a of rawAccounts || []) {
     if (!isObject(a)) { note('skipped a malformed account'); continue; }
-    addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived);
+    addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived, a);
   }
 
   let assignedToCash = 0;
   if (!accounts.length) {
     if (rawAccounts !== null) note('no usable account was in the file, so Cash, NayaPay and Easypaisa were created');
-    for (const a of DEFAULT_ACCOUNTS) addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived);
+    for (const a of DEFAULT_ACCOUNTS) addAccount(a.id, a.name, a.kind, a.openingBalance, a.archived, a);
   }
 
   const cashId = accounts.some((a) => a.kind === 'cash') ? accounts.find((a) => a.kind === 'cash').id : accounts[0].id;
@@ -516,45 +549,6 @@ function sanitizeState(raw) {
     closedPeriods.push(p);
   }
   closedPeriods.sort();
-
-  // ── custody: money held for someone else ────────────────────
-  // 'given' = the user handed it over and it is no longer theirs.
-  // 'held'  = someone handed it to the user to keep. Neither is counted in the
-  // balance; the only fields the balance ever reads are transactions.
-  const custody = [];
-  const custodyIds = new Set();
-  const rawCustody = Array.isArray(raw.custody) ? raw.custody : [];
-  for (const c of rawCustody) {
-    if (!isObject(c)) { note('skipped a malformed amanat entry'); continue; }
-    const person = cleanText(c.person, NAME_LIMIT);
-    const amount = toPositiveNumber(c.amount);
-    if (!person) { note('dropped an amanat entry with no person name'); continue; }
-    if (amount === null) { note('dropped an amanat entry with an unusable amount'); continue; }
-
-    let id = typeof c.id === 'string' && c.id.trim() ? c.id.trim() : newId();
-    if (custodyIds.has(id)) { note('gave a duplicated amanat id a fresh one'); id = newId(); }
-    custodyIds.add(id);
-
-    // A partial return is normal, so returned is allowed to be 0 or partial but
-    // never more than was handed over.
-    let returned = c.returned === 0 ? 0 : toPositiveNumber(c.returned);
-    if (returned === null) returned = 0;
-    if (returned > amount) { note('capped a return that was larger than the original amount'); returned = amount; }
-
-    const date = parseDate(c.date);
-    const returnedDate = returned > 0 ? (parseDate(c.returnedDate) || date || new Date()) : null;
-
-    custody.push({
-      id,
-      person,
-      direction: c.direction === 'given' ? 'given' : 'held',
-      amount,
-      returned,
-      note: cleanText(c.note, COMMENT_LIMIT),
-      date: toLocalStamp(date || new Date()),
-      returnedDate: returnedDate ? toLocalStamp(returnedDate) : null
-    });
-  }
 
   // ── transactions ────────────────────────────────────────────
   const transactions = [];
@@ -609,7 +603,8 @@ function sanitizeState(raw) {
       date: toLocalStamp(date || new Date()),
       accountId,
       toAccountId: isTransfer ? toAccountId : null,
-      source: typeof t.source === 'string' ? t.source : undefined
+      source: typeof t.source === 'string' ? t.source : undefined,
+      updatedAt: keepStamp(t.updatedAt)
     });
   }
 
@@ -647,7 +642,8 @@ function sanitizeState(raw) {
       date: toLocalStamp(date || new Date()),
       settled,
       settledAt,
-      ledger: d.ledger !== false
+      ledger: d.ledger !== false,
+      updatedAt: keepStamp(d.updatedAt)
     });
   }
 
@@ -675,15 +671,56 @@ function sanitizeState(raw) {
       checkedAt: checked ? toLocalStamp(parseDate(s.checkedAt) || new Date()) : null,
       // A pointer to the expense this item produced, so the row can show it.
       boughtTxId: typeof s.boughtTxId === 'string' && s.boughtTxId ? s.boughtTxId : null,
-      cost: toPositiveNumber(s.cost)
+      cost: toPositiveNumber(s.cost),
+      updatedAt: keepStamp(s.updatedAt)
+    });
+  }
+
+  // ── custody / amanat: money held for someone else ──────────
+  // 'given' = the user handed it over and it is no longer theirs.
+  // 'held'  = someone handed it to the user to keep. Neither is ever counted
+  // in the balance; the only fields the balance reads are transactions.
+  const custody = [];
+  const custodyIds = new Set();
+  const rawCustody = Array.isArray(raw.custody) ? raw.custody : [];
+  for (const c of rawCustody) {
+    if (!isObject(c)) { note('skipped a malformed amanat entry'); continue; }
+    const person = cleanText(c.person, NAME_LIMIT);
+    const amount = toPositiveNumber(c.amount);
+    if (!person) { note('dropped an amanat entry with no person name'); continue; }
+    if (amount === null) { note('dropped an amanat entry with an unusable amount'); continue; }
+
+    let id = typeof c.id === 'string' && c.id.trim() ? c.id.trim() : newId();
+    if (custodyIds.has(id)) { note('gave a duplicated amanat id a fresh one'); id = newId(); }
+    custodyIds.add(id);
+
+    // A partial return is normal, so 0 and partial are both fine — but never
+    // more than what was handed over.
+    let returned = c.returned === 0 ? 0 : toPositiveNumber(c.returned);
+    if (returned === null) returned = 0;
+    if (returned > amount) { note('capped an amanat return that was larger than the original amount'); returned = amount; }
+
+    const date = parseDate(c.date);
+    const returnedDate = returned > 0 ? (parseDate(c.returnedDate) || date || new Date()) : null;
+
+    custody.push({
+      id,
+      person,
+      direction: c.direction === 'given' ? 'given' : 'held',
+      amount,
+      returned,
+      note: cleanText(c.note, COMMENT_LIMIT),
+      date: toLocalStamp(date || new Date()),
+      returnedDate: returnedDate ? toLocalStamp(returnedDate) : null,
+      updatedAt: keepStamp(c.updatedAt)
     });
   }
 
   return {
     state: {
       version: SCHEMA_VERSION,
-      transactions, debts, budgets, categories, shopping,
-      custody, accounts,
+      transactions, debts, budgets, categories, shopping, custody,
+      accounts,
       settings: { budgetOffset, lastAccountId },
       closedPeriods
     },
@@ -1011,6 +1048,93 @@ function toast(msg) {
    Tabs
    ============================================================ */
 
+/* ---------- build marker ----------
+
+   Which version is actually running, and is it the newest one.
+
+   A service worker keeps the last few builds and can hand any of them back, so
+   "I deployed the fix and nothing changed" has a mundane explanation that is
+   invisible from the inside — the page looks identical either way. This was
+   reported more than once during development, and the answer was always "you are
+   on the previous build". The check is deliberately passive: it fetches the
+   current index.html, reads only the version out of it, and never touches the
+   app's data, so it is safe to run on every load. */
+
+const BUILD_KEY = 'cashflow:buildSeen';
+
+function numericBuild(v) {
+  const n = parseInt(String(v || '').replace(/^v/i, ''), 10);
+  return Number.isFinite(n) ? n : -1;
+}
+
+function renderBuildBadge(state, text) {
+  const badge = $('buildBadge');
+  const out = $('buildText');
+  const cfg = window.CASHFLOW_CONFIG || {};
+  if (!badge || !out) return;
+  if (state) badge.classList.add(state);
+  badge.classList.remove('stale', 'checking');
+  out.textContent = text || ('CashFlow OS ' + (cfg.appBuild || '?'));
+  badge.title = state === 'stale'
+    ? 'A newer version is deployed. Press to reload and get it.'
+    : 'Version ' + (cfg.appBuild || '?') + ' — press to check for a newer one';
+}
+
+async function checkForNewerBuild(manual) {
+  const badge = $('buildBadge');
+  const cfg = window.CASHFLOW_CONFIG || {};
+  if (badge) { badge.classList.add('checking'); badge.classList.remove('stale'); }
+  if (manual) renderBuildBadge('', 'Checking…');
+  try {
+    /* No-store, and a cache-buster, because the whole question is whether the
+       network has something newer than what the service worker is holding. A
+       cached answer would report the build already running. */
+    const res = await fetch('index.html?build=' + Date.now(), {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    const html = await res.text();
+    const m = /<meta name="app-build" content="([^"]+)">/.exec(html);
+    const latest = m ? m[1] : null;
+    const mine = cfg.appBuild;
+
+    if (latest && numericBuild(latest) > numericBuild(mine)) {
+      renderBuildBadge('stale', 'Newer version available · ' + latest);
+      rememberSeenBuild(latest);
+      if (manual) toast('A newer version (' + latest + ') is deployed. Reload to get it.');
+      return true;
+    }
+    if (latest && latest !== mine) {
+      /* Newer-looking but not numerically newer: a branch, or a rollback. Say
+         so rather than calling it up to date. */
+      renderBuildBadge('stale', 'Deployed: ' + latest + ' · running ' + mine);
+      if (manual) toast('The deployed version is ' + latest + ', not ' + mine + '.');
+      return true;
+    }
+    renderBuildBadge('', 'CashFlow OS ' + (mine || '?'));
+    if (manual) toast('You are on the latest version (' + (mine || '?') + ').');
+    return false;
+  } catch (err) {
+    renderBuildBadge('', 'CashFlow OS ' + (cfg.appBuild || '?'));
+    if (manual) toast('Could not check for a newer version — you appear to be offline.');
+    return false;
+  }
+}
+
+function rememberSeenBuild(v) {
+  try { localStorage.setItem(BUILD_KEY, v); } catch (err) { /* ignore */ }
+}
+
+/* Shown once per browser, the first time a new build is found, so it does not
+   become a nagging habit — the badge itself is always there to look at. */
+function announceNewBuildOnce(latest) {
+  let seen = null;
+  try { seen = localStorage.getItem(BUILD_KEY); } catch (err) { seen = null; }
+  if (seen === latest) return;
+  rememberSeenBuild(latest);
+  if (seen) toast('Updated to ' + latest);
+}
+
 function showTab(name, opts) {
   const o = opts || {};
   if (!TABS.some((t) => t.id === name)) name = 'home';
@@ -1029,6 +1153,12 @@ function showTab(name, opts) {
 
   // Only the visible panel is worth measuring, so charts render once they show.
   renderAll();
+
+  // The email tabs are the only ones that need the network, and most sessions
+  // never open them. Fetching on every page load spent two requests to fill
+  // panels nobody looked at, on a connection that may not even exist.
+  if (name === 'email') loadEmailRouteStatus();
+  if (name === 'pending') loadPendingTransactions();
 
   if (!o.silent && typeof location !== 'undefined') {
     const hash = '#/' + name;
@@ -1219,16 +1349,6 @@ function deleteAccount(id) {
   if (state.settings.lastAccountId === id) state.settings.lastAccountId = cashAccountId();
   save();
   toast('Deleted "' + acc.name + '"');
-}
-
-/** Point a transaction at a different account without opening the edit modal —
- *  this is the fast path for fixing the records migrated to Cash. */
-function reassignTransaction(id, newAccountId) {
-  const t = state.transactions.find((x) => x.id === id);
-  if (!t) { toast('That record no longer exists'); return; }
-  const from = accountName(t.accountId);
-  t.accountId = newAccountId;
-  if (save()) toast('Moved ' + formatMoney(t.amount) + ' from ' + from + ' to ' + accountName(newAccountId));
 }
 
 /* ============================================================
@@ -1423,6 +1543,22 @@ function readAmountField(input, label) {
 /** Build a transaction from the Home form. Also used by the edit modal, so the
  *  validation lives in one place and a saved record can never be shaped
  *  differently depending on which form it came through. */
+/** What a `source` marker means, in words.
+ *
+ *  There are three kinds and only one of them is an udhaar entry, so the old
+ *  two-way test labelled every non-list source "linked to an udhaar entry" — a
+ *  bank payment arrived labelled as one. A wrong claim about where a record came
+ *  from is worse than no claim: it sends someone looking for an udhaar entry
+ *  that does not exist, and hides the one thing that is actually true, which is
+ *  that this was read out of an email. */
+function sourceLabel(source) {
+  const s = String(source || '');
+  if (s.indexOf('list:') === 0) return 'bought from your list';
+  if (s.indexOf('email:') === 0) return 'read from your bank’s email';
+  if (s.indexOf('udhaar:') === 0) return 'linked to an udhaar entry';
+  return 'added another way';
+}
+
 function buildTransaction(type, amount, category, comment, date, fromId, toId) {
   if (type === 'transfer') {
     if (fromId === toId) return { error: 'Pick two different accounts to move money between' };
@@ -1585,7 +1721,24 @@ function saveEdit() {
     return;
   }
 
-  const wasTransfer = tx.type === 'transfer';
+  // A record generated from a settled udhaar entry must be changed at the
+  // udhaar entry, not here: syncLedgerForDebt() deletes and regenerates it on
+  // every settlement change, so an edit made here would be silently discarded
+  // the next time that debt is touched.
+  //
+  // Checked BEFORE any mutation. This used to sit after the assignments below,
+  // where the early return left the live object half-edited in memory — the
+  // next unrelated save() would then write the "rejected" edit to disk anyway.
+  //
+  // Only 'debt:' is guarded. 'list:' and 'email:' records are ordinary
+  // standalone entries that nothing regenerates, so refusing to edit them would
+  // just be an obstacle.
+  if (typeof tx.source === 'string' && tx.source.indexOf('debt:') === 0) {
+    closeModal('editModal');
+    toast('This one came from a udhaar settlement. Change the udhaar entry, so the two stay in step.');
+    return;
+  }
+
   tx.type = type;
   tx.amount = amount.value;
   tx.category = type === 'transfer' ? '' : $('editCategory').value;
@@ -1593,11 +1746,7 @@ function saveEdit() {
   tx.date = inputToStamp($('editDate').value);
   tx.accountId = $('editAccount').value;
   tx.toAccountId = type === 'transfer' ? $('editToAccount').value : null;
-  // A record that was auto-generated from a udhaar settlement or a list
-  // purchase must not be re-filed by hand and leave the original out of step.
-  if (wasTransfer === false && type !== 'transfer' && tx.source) {
-    toast('This record came from ' + (tx.source.split(':')[0]) + '. Change it there, not here.');
-  }
+  touch(tx);
 
   closeModal('editModal');
   if (save()) toast('Transaction updated');
@@ -2425,14 +2574,14 @@ function renderCustody() {
   const list = $('custodyList');
 
   mount($('custodySummary'), h('div', { class: 'custody-box given' },
-      h('div', { class: 'custody-box-label' }, 'You are holding'),
+      h('div', { class: 'custody-box-label' }, 'Others are holding'),
       h('div', { class: 'custody-box-value' }, formatMoney(t.given)),
-      h('div', { class: 'custody-box-hint' }, "other people's money, in your hand")
+      h('div', { class: 'custody-box-hint' }, 'your money, in their hand')
     ),
     h('div', { class: 'custody-box held' },
-      h('div', { class: 'custody-box-label' }, 'Others are holding'),
+      h('div', { class: 'custody-box-label' }, 'You are holding'),
       h('div', { class: 'custody-box-value' }, formatMoney(t.held)),
-      h('div', { class: 'custody-box-hint' }, 'your money, in their hand')
+      h('div', { class: 'custody-box-hint' }, "other people's money, in your hand")
     )
   );
 
@@ -2617,7 +2766,7 @@ function renderTransactions() {
         h('span', { class: 'tx-amount ' + t.type }, (isIncome ? '+' : '−') + ' ' + formatMoney(t.amount))
       ),
       t.comment ? h('div', { class: 'tx-detail' }, t.comment) : null,
-      t.source ? h('div', { class: 'tx-detail tx-linked' }, t.source.indexOf('list:') === 0 ? 'bought from your list' : 'linked to an udhaar entry') : null,
+      t.source ? h('div', { class: 'tx-detail tx-linked' }, sourceLabel(t.source)) : null,
       h('div', { class: 'tx-detail' }, formatDate(t.date)),
       h('div', { class: 'tx-actions' },
         button('Edit', 'tx-edit', { id: t.id }),
@@ -2858,26 +3007,130 @@ function renderSyncPanel() {
       h('div', { class: 'btn-row mt-10' },
         button('Sync now', 'sync-now'),
         button('Sign out', 'sync-signout')
+      ),
+      h('details', { class: 'sync-repair' },
+        h('summary', {}, 'Cloud copy looks wrong?'),
+        h('p', { class: 'field-hint' },
+          'If the cloud database was reset, emptied or rebuilt, this device still ' +
+          'has your records but the app believes they were already sent, so nothing ' +
+          'uploads and no error appears. This compares the two and re-sends whatever ' +
+          'is missing.'),
+        h('div', { class: 'btn-row' },
+          button('Check and re-upload', 'sync-repair')
+        ),
+        repairReport ? h('pre', { class: 'sync-repair-out' }, repairReport) : null
       )
     );
     return;
   }
 
-  mount(box,
-    h('form', { id: 'authForm', novalidate: true },
+  mount(box, ...(resetMode === 'newpw'
+    ? [newPasswordForm(S)]
+    : resetMode === 'code'
+      ? [resetCodeForm(S)]
+      : [signInForm(S)]));
+}
+
+/* The signed-out panel has three states, in order of how far through the
+   reset the user is. Kept as separate builders so each one is short enough to
+   read, rather than one form with a dozen hidden fields. */
+
+function signInForm(S) {
+  return h('form', { id: 'authForm', novalidate: true },
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label', for: 'authEmail' }, 'Email'),
+      // Pre-filled after a reset attempt, so going Back to this form does not
+      // make the user retype an address they have already typed twice.
+      h('input', {
+        id: 'authEmail', type: 'email', inputmode: 'email',
+        placeholder: 'you@example.com', autocomplete: 'username',
+        value: resetEmail || ''
+      })
+    ),
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label', for: 'authPassword' }, 'Password'),
+      h('input', {
+        id: 'authPassword', type: 'password',
+        placeholder: 'At least ' + S.MIN_PASSWORD + ' characters',
+        autocomplete: 'current-password'
+      }),
+      h('p', { class: 'field-hint' },
+        'This app works offline without an account. Sign in only if you want your data on more than one device.')
+    ),
+    h('div', { class: 'btn-row' },
+      h('button', { class: 'btn btn-primary', type: 'submit', dataset: { act: 'auth-in' } }, 'Sign in'),
+      h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'auth-up' } }, 'Create account')
+    ),
+    h('p', { class: 'auth-alt' },
+      h('button', { class: 'linkish', type: 'button', dataset: { act: 'auth-forgot' } }, 'Forgot your password?')
+    )
+  );
+}
+
+/** Shown after the reset email was sent. The code is the only way through.
+ *  Both ways in are offered, because which one is available depends on how the
+ *  project is set up and the user cannot be expected to know which:
+ *
+ *    - The LINK works with no extra setup at all, as long as the project's
+ *      redirect URL is configured. Clicking it opens this app with a token in
+ *      the address, and pickRecoveryFromUrl() picks it up. It was briefly
+ *      removed because a project with no redirect URL sends the link to
+ *      localhost:3000 instead — a dead page saying "This site can't be
+ *      reached", which looks like the app is broken. With the redirect URL set,
+ *      the link is the simpler path and it is first.
+ *
+ *    - The CODE needs the email template edited, and Supabase only allows
+ *      that once custom SMTP is configured. Until then the template is fixed and
+ *      the email carries no code, so this box is a fallback rather than the
+ *      main event. */
+function resetCodeForm(S) {
+  return h('form', { id: 'resetCodeForm', novalidate: true },
+    h('p', { class: 'sync-msg' },
+      'If that email exists, a link is on its way to ',
+      h('strong', {}, resetEmail || 'it'),
+      '. It can take a minute or two, and it may land in spam.'),
+    h('p', { class: 'field-hint' },
+      'Open the link in the email on this device and it brings you straight back here to set a new password.'),
+    h('details', { class: 'reset-code-alt' },
+      h('summary', {}, 'My email shows a code instead of a link'),
       h('div', { class: 'form-group' },
-        h('label', { class: 'field-label', for: 'authEmail' }, 'Email'),
-        h('input', { id: 'authEmail', type: 'email', inputmode: 'email', placeholder: 'you@example.com', autocomplete: 'username' })
-      ),
-      h('div', { class: 'form-group' },
-        h('label', { class: 'field-label', for: 'authPin' }, 'PIN'),
-        h('input', { id: 'authPin', type: 'password', placeholder: 'At least ' + S.MIN_PIN + ' characters', autocomplete: 'current-password' }),
-        h('p', { class: 'field-hint' }, 'A short PIN can be guessed by someone who has your publishable key. Use a longer one, and a real email so the account can be recovered.')
+        h('label', { class: 'field-label', for: 'resetCode' }, 'Code from the email'),
+        h('input', {
+          id: 'resetCode', type: 'text', inputmode: 'numeric',
+          autocomplete: 'one-time-code', placeholder: '6-digit code'
+        })
       ),
       h('div', { class: 'btn-row' },
-        h('button', { class: 'btn btn-primary', type: 'submit', dataset: { act: 'auth-in' } }, 'Sign in'),
-        h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'auth-up' } }, 'Create account')
+        h('button', { class: 'btn btn-primary', type: 'submit' }, 'Continue')
       )
+    ),
+    h('div', { class: 'btn-row mt-10' },
+      h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'reset-cancel' } }, 'Back'),
+      h('button', { class: 'btn btn-dark', type: 'button', dataset: { act: 'reset-resend' } }, 'Send it again')
+    )
+  );
+}
+
+/** Shown once a recovery token is in hand. */
+function newPasswordForm(S) {
+  return h('form', { id: 'newPwForm', novalidate: true },
+    h('p', { class: 'sync-msg' }, 'That code checked out. Choose a new password.'),
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label', for: 'newPw1' }, 'New password'),
+      h('input', {
+        id: 'newPw1', type: 'password', autocomplete: 'new-password',
+        placeholder: 'At least ' + S.MIN_PASSWORD + ' characters'
+      })
+    ),
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label', for: 'newPw2' }, 'Type it again'),
+      h('input', { id: 'newPw2', type: 'password', autocomplete: 'new-password', placeholder: 'Same password' })
+    ),
+    h('p', { class: 'auth-alt' },
+      h('button', { class: 'linkish', type: 'button', dataset: { act: 'reset-cancel' } }, 'Start over')
+    ),
+    h('div', { class: 'btn-row' },
+      h('button', { class: 'btn btn-primary', type: 'submit' }, 'Save new password')
     )
   );
 }
@@ -2886,17 +3139,17 @@ async function handleAuth(mode) {
   const S = window.CashFlowSync;
   if (!S) { toast('Sync is unavailable'); return; }
   const email = $('authEmail').value;
-  const pin = $('authPin').value;
+  const password = $('authPassword').value;
 
-  const bad = S.validateCredentials(email, pin);
+  const bad = S.validateCredentials(email, password);
   if (bad) { toast(bad); return; }
 
   const btn = document.querySelector('[data-act="auth-' + (mode === 'up' ? 'up' : 'in') + '"]');
   if (btn) btn.disabled = true;
-  $('authPin').value = '';
+  $('authPassword').value = '';
   toast(mode === 'up' ? 'Creating your account…' : 'Signing in…');
 
-  const res = mode === 'up' ? await S.signUp(email, pin) : await S.signIn(email, pin);
+  const res = mode === 'up' ? await S.signUp(email, password) : await S.signIn(email, password);
 
   if (btn) btn.disabled = false;
 
@@ -2916,6 +3169,104 @@ async function handleAuth(mode) {
   toast(mode === 'up' ? 'Account created — your data is now backed up' : 'Signed in — syncing');
 }
 
+/* ---------- forgot password ---------- */
+
+/* The reset flow lives in the same panel as sign-in, so it is a mode on that
+   panel rather than a separate screen. `resetMode` is the only state: what the
+   user is looking at is fully determined by it, so it cannot fall out of step
+   with the DOM the way a pile of hidden inputs would. */
+let resetMode = null;   // null | 'code' | 'newpw'
+let resetEmail = null;
+
+async function beginPasswordReset() {
+  const S = window.CashFlowSync;
+  if (!S) return;
+  /* Two ways in: the "Forgot your password?" link on the sign-in form, which
+     has an email field, and "Send it again" on the code form, which does not —
+     the panel only shows a code box at that point. Reading the field alone made
+     resending dead on arrival with "type your email first", on a screen where
+     there is nowhere to type one. */
+  const field = $('authEmail');
+  const email = (field && field.value.trim()) || resetEmail || '';
+  if (!email) { toast('Type your email first, then press Forgot'); return; }
+  // Only clear the password if it is on screen. Resending starts from the code
+  // panel, which has no password field, and reading it blindly threw and killed
+  // the resend outright.
+  const pw = $('authPassword');
+  if (pw) pw.value = '';
+  toast('Sending…');
+  const res = await S.requestPasswordReset(email);
+  if (res.error) { toast(res.error); return; }
+  resetEmail = res.email;
+  resetMode = 'code';
+  renderSyncPanel();
+  toast('If that address has an account, a code is on its way');
+}
+
+async function submitResetCode() {
+  const S = window.CashFlowSync;
+  if (!S) return;
+  const code = $('resetCode').value;
+  const email = resetEmail || S.resetEmail || '';
+  const btn = $('resetCodeForm').querySelector('button[type="submit"]');
+  if (btn) btn.disabled = true;
+  const res = await S.verifyResetCode(email, code);
+  if (btn) btn.disabled = false;
+  if (res.error) { toast(res.error); return; }
+  resetMode = 'newpw';
+  renderSyncPanel();
+  const first = $('newPw1');
+  if (first) first.focus();
+}
+
+async function submitNewPassword() {
+  const S = window.CashFlowSync;
+  if (!S) return;
+  const a = $('newPw1').value;
+  const b = $('newPw2').value;
+  // Checked here as well as server-side, so a typo does not cost a round trip.
+  if (a !== b) { toast('The two passwords are not the same'); return; }
+  const btn = $('newPwForm').querySelector('button[type="submit"]');
+  if (btn) btn.disabled = true;
+  const res = await S.setNewPassword(a);
+  if (btn) btn.disabled = false;
+  if (res.error) { toast(res.error); renderSyncPanel(); return; }
+
+  resetMode = null;
+  resetEmail = null;
+  $('newPw1').value = '';
+  $('newPw2').value = '';
+  renderSyncPanel();
+  /* The password is already changed by this point, so the sign-in that follows
+     is a convenience. If the address could not be recovered, saying "enter a
+     valid email address" is both wrong and alarming — the user did nothing
+     wrong, and their new password works. Say what actually happened instead. */
+  if (!res.email) {
+    toast('Password changed. Sign in with your email address.');
+    renderSyncPanel();
+    const f = $('authEmail');
+    if (f) f.focus();
+    return;
+  }
+  // Signed in automatically: the recovery token proves who they are, and
+  // making them type the new password a second time helps nobody.
+  $('authEmail').value = res.email;
+  $('authPassword').value = a;
+  await handleAuth('in');
+}
+
+/** Abandon the reset and go back to the sign-in form.
+ *
+ *  resetEmail is deliberately kept. The address is the one thing the user has
+ *  already typed and does not want to type a third time, and throwing it away
+ *  here is what made "Send it again" fail on a panel with no email field. It is
+ *  cleared once the password is actually changed, and typing a different
+ *  address always wins over it. */
+function cancelPasswordReset() {
+  resetMode = null;
+  renderSyncPanel();
+}
+
 function signOut() {
   const S = window.CashFlowSync;
   if (!S) return;
@@ -2923,6 +3274,35 @@ function signOut() {
   S.signOut();
   renderAll();
   toast('Signed out. Everything still works here.');
+}
+
+/* Compare what the cloud actually holds against what this device holds, and
+   re-send anything the cloud is missing. The push cursor is local state, so it
+   can claim records were uploaded when the server was wiped or rebuilt — and
+   then the app uploads nothing, forever, while cheerfully reporting "synced". */
+async function repairCloud() {
+  const S = window.CashFlowSync;
+  if (!S) { toast('Sync is unavailable'); return; }
+  toast('Checking…');
+  let res;
+  try {
+    res = await S.repairCloudCopy(state);
+  } catch (err) {
+    repairReport = 'Could not check: ' + (err && err.message ? err.message : 'unknown error');
+    renderAll();
+    return;
+  }
+  if (res.error) { toast(res.error); return; }
+
+  repairReport = res.report.join('\n');
+  renderAll();
+
+  if (res.reset) {
+    renderSyncPanel();
+    toast('Re-uploaded ' + res.totalRows + ' record(s) from this device');
+  } else {
+    toast('Everything is already in step');
+  }
 }
 
 function renderAll() {
@@ -2958,18 +3338,25 @@ const ACTIONS = {
   'item-toggle': (el) => toggleListItem(el.dataset.id),
   'item-delete': (el) => deleteListItem(el.dataset.id),
   'item-clear': clearCheckedItems,
-  'acct-add': () => addAccount($('accountName'), $('accountKind')),
   'acct-rename': (el) => renameAccount(el.dataset.id),
   'acct-opening': (el) => setOpeningBalance(el.dataset.id),
   'acct-archive': (el) => toggleArchiveAccount(el.dataset.id),
   'acct-delete': (el) => deleteAccount(el.dataset.id),
-  'tx-reassign': (el) => reassignTransaction(el.dataset.id, el.dataset.arg),
   'custody-return': (el) => returnCustody(el.dataset.id),
   'custody-delete': (el) => deleteCustody(el.dataset.id),
   'auth-in': () => handleAuth('in'),
   'auth-up': () => handleAuth('up'),
+  'auth-forgot': () => beginPasswordReset(),
+  'reset-cancel': () => cancelPasswordReset(),
+  'reset-resend': () => beginPasswordReset(),
   'sync-now': () => { if (window.CashFlowSync) window.CashFlowSync.cycle(state).then(() => renderAll()); },
   'sync-signout': signOut,
+  'sync-repair': repairCloud,
+  'email-save': () => saveEmailRoute(),
+  'email-check': () => checkEmailFunction(),
+  'email-test': () => runEmailSelfTest(),
+  'email-copy-url': () => copyEmailWebhookUrl(),
+  'build-check': () => checkForNewerBuild(true),
   'month-close': closePeriod,
   'month-reopen': (el) => reopenPeriod(el.dataset.arg),
   'month-report': (el) => showReport('custom', {
@@ -3028,6 +3415,25 @@ function wireEvents() {
     }
   });
 
+  // The sign-in and reset forms are built by renderSyncPanel(), which runs on
+  // every save() and so replaces the element. A listener bound to the element
+  // would be thrown away each time, and it could not be bound at all the first
+  // time because the form does not exist yet when wireEvents() runs.
+  // Delegating survives both problems. Pressing Enter in a field used to fall
+  // through to an implicit form GET, which reloaded the page.
+  const AUTH_FORMS = {
+    authForm: () => handleAuth('in'),
+    resetCodeForm: () => submitResetCode(),
+    newPwForm: () => submitNewPassword()
+  };
+  document.addEventListener('submit', (e) => {
+    if (!(e.target instanceof Element)) return;
+    const fn = AUTH_FORMS[e.target.id];
+    if (!fn) return;
+    e.preventDefault();
+    fn();
+  });
+
   // forms give us Enter-to-submit for free
   const forms = [
     ['txForm', addTransaction],
@@ -3039,7 +3445,6 @@ function wireEvents() {
     ['buyForm', saveListPurchase],
     ['accountForm', (e) => addAccount($('accountName'), $('accountKind'))],
     ['custodyForm', addCustody],
-    ['authForm', (e) => handleAuth('in')],
     ['editForm', saveEdit],
     ['editDebtForm', saveDebtEdit]
   ];
@@ -3181,6 +3586,15 @@ async function recoverFromStaleAssets(reason) {
 }
 
 function init() {
+  /* A password-reset link carries its token in the URL fragment, and this app
+     routes tabs through that same fragment. showTab() overwrites the fragment
+     on the first render, which would destroy the token before it was read, so
+     it has to be picked up here — before anything touches the hash. */
+  let recovered = null;
+  if (window.CashFlowSync && typeof window.CashFlowSync.pickRecoveryFromUrl === 'function') {
+    try { recovered = window.CashFlowSync.pickRecoveryFromUrl(); } catch (err) { /* ignore */ }
+  }
+
   // Checked first: nothing should render until we know the files agree.
   const stale = staleAssetReason();
   if (stale) {
@@ -3202,6 +3616,33 @@ function init() {
 
   wireEvents();
 
+  /* Decide what the sync panel should show, before the first render paints it.
+     Two ways to arrive here with a valid recovery token: a link the user just
+     clicked, or a reload in the middle of the flow. Both mean "show the new
+     password form", and both must land the user on the panel that has it. */
+  if (recovered && recovered.ok && window.CashFlowSync && window.CashFlowSync.hasResetToken) {
+    resetMode = 'newpw';
+    resetEmail = window.CashFlowSync.resetEmail;
+  } else if (recovered && recovered.error) {
+    /* Only reachable if a link was clicked. Two quite different causes, and
+       they want different actions, so they are named apart rather than folded
+       into "invalid or expired" — which sends people looking for a security
+       problem that is not there.
+
+       otp_expired is almost always the second request's fault: asking for a
+       reset again invalidates the link already sitting in the inbox, and a
+       mail scanner that opens links to check them can do the same. The token
+       being single-use is the point, so the fix is a new email, not a retry. */
+    const expired = /otp_expired|expired|invalid/i.test(String(recovered.error));
+    toast(expired
+      ? 'That email link has already been used — asking for a reset again makes a new one and kills the old. Use the newest email, and open it once.'
+      : 'That link could not be opened. Press Forgot your password? to have a new one sent.');
+  } else if (resetMode === null && window.CashFlowSync && window.CashFlowSync.hasResetToken) {
+    // Reloaded part-way through: the token survived in storage.
+    resetMode = 'newpw';
+    resetEmail = window.CashFlowSync.resetEmail;
+  }
+
   // Default the date fields to now, so a new entry is "right now" until changed.
   if ($('txDate')) $('txDate').value = stampToInput(nowStamp());
   if ($('custodyDate')) $('custodyDate').value = stampToInput(nowStamp());
@@ -3209,6 +3650,17 @@ function init() {
   // Show only the fields that apply to the selected transaction type.
   if ($('txType')) setTxTypeFields();
   refreshAccountSelects();
+
+  /* Show which build is running straight away, then look for a newer one.
+     Passive: no data is touched, so it is safe on every load, and it turns
+     "my fix did nothing" from a mystery into a glance at the badge. */
+  renderBuildBadge();
+  try { rememberSeenBuild((window.CASHFLOW_CONFIG || {}).appBuild); } catch (err) { /* ignore */ }
+  setTimeout(function () {
+    checkForNewerBuild(false).then(function (newer) {
+      if (newer) announceNewBuildOnce(((window.CASHFLOW_CONFIG || {}).appBuild));
+    });
+  }, 1200);
 
   // Build the tab bar from TABS so markup and logic cannot drift apart.
   const bar = $('tabBar');
@@ -3227,7 +3679,9 @@ function init() {
     ));
   }
 
-  showTab(tabFromHash(), { silent: true });
+  // Someone arriving from a reset link wants the form, not the dashboard. The
+  // link's fragment is not a tab route, so tabFromHash() would send them home.
+  showTab(resetMode ? 'settings' : tabFromHash(), { silent: true });
 
   // If anything had to be repaired, write the clean state straight back so the
   // bad data does not linger on disk (and does not re-report itself next load).
@@ -3252,109 +3706,455 @@ function init() {
     navigator.serviceWorker.register('service-worker.js').catch((err) => console.warn('Service worker registration failed:', err));
   }
 
-  // ── Email Connect & Pending Queue ──
-  wireEmailConnect();
-  loadPendingTransactions();
+  // The email tabs fetch their data when they are first opened (see showTab),
+  // not here, so an ordinary page load makes no email requests at all.
+  renderEmailConnectStatus();
+  renderPendingQueue();
 }
 
 /* ============================================================
    Email Connect & Pending Queue
+   ------------------------------------------------------------
+   Uses the same plain-fetch REST approach as sync.js — no
+   Supabase SDK. The session token comes from CashFlowSync.
    ============================================================ */
 
 let pendingTransactions = [];
 let emailConnected = false;
+let pendingQueueError = null;
 
-function getSupabaseClient() {
-  if (!window.CASHFLOW_CONFIG) return null;
-  // Use the global supabase client from sync.js if available
-  if (window.CashFlowSync && window.CashFlowSync.supabase) {
-    return window.CashFlowSync.supabase;
+/** Build Supabase REST headers using the current session token. */
+function sbHeaders() {
+  const cfg = window.CASHFLOW_CONFIG || {};
+  // Named `headers`, not `h`: h() is this file's element builder, and shadowing
+  // it inside a helper is the kind of thing that gets "fixed" wrongly later.
+  const headers = {
+    'apikey': cfg.publishableKey,
+    'Content-Type': 'application/json'
+  };
+  // Reuse the session token from sync.js
+  try {
+    const raw = localStorage.getItem('cashflow:session');
+    if (raw) {
+      const session = JSON.parse(raw);
+      if (session && session.accessToken) {
+        headers['Authorization'] = 'Bearer ' + session.accessToken;
+      }
+    }
+  } catch (err) { /* ignore */ }
+  return headers;
+}
+
+/** Make a Supabase REST API call using plain fetch. */
+async function sbFetch(path, opts) {
+  const cfg = window.CASHFLOW_CONFIG || {};
+  const url = cfg.url + '/rest/v1/' + path;
+  const res = await fetch(url, Object.assign({
+    headers: sbHeaders()
+  }, opts || {}));
+  const text = await res.text();
+  let body = null;
+  if (text) { try { body = JSON.parse(text); } catch (err) { body = text; } }
+  if (!res.ok) {
+    const msg = (body && (body.msg || body.message || body.error_description)) ||
+      (body && body.error) || ('HTTP ' + res.status);
+    throw new Error(msg);
   }
+  return body;
+}
+
+/** Get current user ID from the session. */
+function getCurrentUserId() {
+  try {
+    const raw = localStorage.getItem('cashflow:session');
+    if (raw) {
+      const session = JSON.parse(raw);
+      if (session && session.userId) return session.userId;
+    }
+  } catch (err) { /* ignore */ }
   return null;
 }
 
-function wireEmailConnect() {
-  const form = $('emailConnectForm');
-  if (!form) return;
+/* This app deliberately collects no email credentials. An earlier version
+   posted a base64 "encrypted" password to `user_email_credentials`, where the
+   signed-in user could read it straight back. The forwarding model needs no
+   secret from the mail account at all, so the whole path was removed rather
+   than merely hidden. The status panel below only reports whether a forwarding
+   route is registered for this account. */
 
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const email = $('emailAddress').value.trim();
-    const password = $('emailPassword').value;
+async function loadEmailRouteStatus() {
+  const userId = getCurrentUserId();
+  restoreEmailSetup();
+  wireEmailSetupFields();
+  if (!userId) { renderEmailConnectStatus(); return; }
 
-    if (!email || !password) {
-      toast('Please enter both email and password');
-      return;
-    }
-
-    try {
-      const supabase = getSupabaseClient();
-      if (!supabase) {
-        toast('Sync not available. Please sign in first.');
-        return;
-      }
-
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        toast('Please sign in first');
-        return;
-      }
-
-      // Encrypt password (base64 for now — replace with AES-256 in production)
-      const encryptedPassword = btoa(password);
-
-      const { error } = await supabase
-        .from('user_email_credentials')
-        .upsert({
-          user_id: user.id,
-          email_address: email,
-          imap_host: 'imap.gmail.com',
-          imap_port: 993,
-          encrypted_password: encryptedPassword,
-          is_active: true,
-          updated_at: new Date().toISOString(),
-        });
-
-      if (error) throw error;
-
-      emailConnected = true;
-      renderEmailConnectStatus();
-      toast('Email connected! Transactions will appear in Pending Queue.');
-      form.reset();
-
-    } catch (err) {
-      console.error('Email connect error:', err);
-      toast('Failed to connect email: ' + err.message);
-    }
-  });
-
-  // Load existing connection status
-  loadEmailConnectionStatus();
-}
-
-async function loadEmailConnectionStatus() {
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    const { data, error } = await supabase
-      .from('user_email_credentials')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('is_active', true)
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (data) {
+    const data = await sbFetch('email_routes?user_id=eq.' + encodeURIComponent(userId) + '&is_active=eq.true');
+    if (data && data.length) {
       emailConnected = true;
-      renderEmailConnectStatus();
+      const known = data[0].address || '';
+      const box = $('emailForwardAddress');
+      if (box && !box.value) box.value = known;
+    } else {
+      emailConnected = false;
     }
   } catch (err) {
-    console.error('Load email status error:', err);
+    // A missing table or a policy gap must not break the app; the panel just
+    // reports that forwarding is not confirmed.
+    console.warn('Could not read the forwarding route:', err && err.message);
+    emailConnected = false;
+  }
+  renderEmailConnectStatus();
+}
+
+/* The webhook URL carries the shared secret, so it is held in this browser and
+   nowhere else — never in the repository, never in the database. It is not a
+   credential of the mail account, so losing it costs nothing but the ability to
+   run the test and paste the URL again. */
+const EMAIL_SETUP_KEY = 'cashflow:emailSetup';
+
+/** Fill in everything about the webhook URL that is already known.
+ *
+ *  Only the secret is left blank. Asking someone to assemble a URL from a
+ *  function name and a project reference in a dashboard is a step that
+ *  produces a wrong URL, and a wrong URL fails silently — no error anywhere,
+ *  just no transactions, which is the failure mode that gets a feature
+ *  abandoned rather than fixed. */
+function prefillWebhookUrl() {
+  const box = $('emailWebhookUrl');
+  if (!box) return;
+  if (box.value && box.value.indexOf('?k=') !== -1) return;   // already done
+  const base = (window.CASHFLOW_CONFIG || {}).emailWebhookBase;
+  if (!base) return;
+  box.value = base + '?k=';
+  box.setAttribute('placeholder', base + '?k= then your secret');
+}
+
+function restoreEmailSetup() {
+  prefillWebhookUrl();
+  try {
+    const saved = JSON.parse(localStorage.getItem(EMAIL_SETUP_KEY) || '{}');
+    const urlBox = $('emailWebhookUrl');
+    if (urlBox && saved.webhookUrl) urlBox.value = saved.webhookUrl;
+    const addrBox = $('emailForwardAddress');
+    if (addrBox && saved.address && !addrBox.value) addrBox.value = saved.address;
+  } catch (err) { /* a corrupt value is not worth reporting */ }
+}
+
+function rememberEmailSetup(patch) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(EMAIL_SETUP_KEY) || '{}'); } catch (err) { saved = {}; }
+  try { localStorage.setItem(EMAIL_SETUP_KEY, JSON.stringify(Object.assign(saved, patch))); } catch (err) { /* ignore */ }
+}
+
+/* Keep both fields as they are typed.
+ *
+ *  They were only written to storage when a button was pressed, so pasting the
+ *  secret and then reloading the page — which a service worker update does on
+ *  its own — silently emptied the field. The user then copied a half-finished
+ *  URL somewhere, and the symptom was the provider rejecting a URL that had
+ *  been correct a moment earlier. */
+function wireEmailSetupFields() {
+  const url = $('emailWebhookUrl');
+  if (url) {
+    url.addEventListener('change', function () {
+      rememberEmailSetup({ webhookUrl: url.value.trim() });
+    });
+  }
+  const addr = $('emailForwardAddress');
+  if (addr) {
+    addr.addEventListener('change', function () {
+      rememberEmailSetup({ address: addr.value.trim().toLowerCase() });
+    });
+  }
+}
+
+/** Register the forwarding address against the signed-in account.
+ *
+ *  This used to be a manual SQL insert, and that is a step that looks optional
+ *  and is not: without it the function has nobody to file messages against, and
+ *  the app says "not set up" with nothing the user can act on. */
+async function saveEmailRoute() {
+  const userId = getCurrentUserId();
+  if (!userId) { toast('Sign in first'); return; }
+  const box = $('emailForwardAddress');
+  const address = box ? box.value.trim().toLowerCase() : '';
+  if (!address || address.indexOf('@') === -1 || address.indexOf('.') === -1) {
+    toast('Type the forwarding address, like cashflow@agentmail.to');
+    return;
+  }
+  try {
+    const q = 'email_routes?user_id=eq.' + encodeURIComponent(userId);
+    const existing = await sbFetch(q + '&select=id,address,is_active');
+
+    /* Update rather than insert-and-insert. The address column is unique, so
+       saving the same address twice — which is the normal thing to do while
+       setting this up — would fail on the constraint and report a problem the
+       user cannot act on. */
+    if (existing && existing.length) {
+      const mine = existing.filter((r) => r.address === address)[0] ||
+                   existing.filter((r) => r.is_active)[0] || existing[0];
+      await sbFetch(q + '&id=eq.' + encodeURIComponent(mine.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ address, is_active: true }),
+      });
+      /* Retire any other rows for this account. Two live rows make the server
+         refuse to choose between them, and messages stop arriving with nothing
+         visible to explain why. */
+      for (const r of existing) {
+        if (r.id !== mine.id) {
+          await sbFetch(q + '&id=eq.' + encodeURIComponent(r.id), {
+            method: 'PATCH', body: JSON.stringify({ is_active: false }),
+          });
+        }
+      }
+    } else {
+      await sbFetch('email_routes', {
+        method: 'POST',
+        body: JSON.stringify({ user_id: userId, address, is_active: true }),
+      });
+    }
+    emailConnected = true;
+    rememberEmailSetup({ address });
+    renderEmailConnectStatus();
+    showEmailTest('ok', 'Saved. Messages sent to ' + address + ' will be filed for this account.');
+  } catch (err) {
+    const msg = (err && err.message) || 'failed';
+    showEmailTest('bad', /duplicate|unique/i.test(msg)
+      ? 'That address is already registered to another account. Each address can belong to only one.'
+      : 'Could not save: ' + msg);
+  }
+}
+
+function emailWebhookUrl() {
+  const box = $('emailWebhookUrl');
+  return box ? box.value.trim() : '';
+}
+
+/** Does the function exist, and is its secret set?
+ *
+ *  The secret travels with the request. Stripping the query string to make a
+ *  "harmless" check sent an unauthenticated GET at a function that refuses
+ *  every unauthenticated request, so the check answered 401 — indistinguishable
+ *  from a wrong secret, which is the one thing the user needed to be told.
+ *  The whole point of this button is to distinguish those cases, so it has to
+ *  send the credential it is checking. */
+/* Supabase's gateway rejects a call to a function that carries no `apikey`
+   before the function's own code runs at all, so every request from here needs
+   the publishable key. It is public by design — it ships in this file — and
+   knowing it grants nothing, because the function's shared secret is a separate
+   thing. Two different credentials, two different jobs:
+   the apikey gets past the gateway, the secret proves the caller is the mail
+   provider. */
+/* Supabase's gateway refuses a function call that carries no apikey before the
+   function's own code runs, so one has to be sent. Sending it as a header is
+   what introduced a second failure: a header the browser did not expect makes it
+   preflight, and if the function's allowed-headers list is even slightly out of
+   date the browser refuses the call without sending it — "Failed to fetch", with
+   no status code and nothing in the function's logs because it was never
+   dialled. The CORS list was fixed, and the app still could not reach the
+   function, which is the part that made this so hard to see.
+
+   Putting the key in the query string, and sending the body as text/plain,
+   makes both requests "simple" by the browser's definition: no custom header, no
+   non-safelisted content type, therefore no preflight at all. The function reads
+   its body with json() either way, so the content type is only ever a label.
+
+   This is deliberately not a workaround for a missing CORS entry — the function
+   still declares a full set. It is so that a stale list, a cached preflight, or
+   a proxy in between cannot stop the one request the user is relying on to tell
+   them whether the feature works. */
+function emailRequestUrl(url) {
+  const cfg = window.CASHFLOW_CONFIG || {};
+  if (!cfg.publishableKey) return url;
+  return url + (url.indexOf('?') === -1 ? '?' : '&') + 'apikey=' + encodeURIComponent(cfg.publishableKey);
+}
+
+/* Deliberately not application/json: that is not a CORS-safelisted content type
+   and would bring the preflight back. The body is still JSON; nothing reads this
+   header. */
+function emailFetchHeaders(extra) {
+  return Object.assign({ 'Content-Type': 'text/plain;charset=UTF-8' }, extra || {});
+}
+
+/** "Failed to fetch" is what the browser says when it never sent the request.
+ *
+ *  Almost always the preflight, and almost always because the function's CORS
+ *  list does not name a header this app sends. Worth naming plainly, because
+ *  every other message here implies a server answered, and this is the one case
+ *  where the server was never dialled — so there is nothing in its logs either. */
+function describeUnreachable(err) {
+  const msg = (err && err.message) || '';
+  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+    return 'The browser blocked the request before it left, so the server was never asked. ' +
+      'Nothing is sent from here that needs a preflight, so this is no longer a header the ' +
+      'function forgot to allow — check your connection, and that the function is deployed.';
+  }
+  return 'Could not reach the function: ' + (msg || 'no reply');
+}
+
+/** Turn a gateway refusal into something the user can act on.
+ *
+ *  A 401 from Supabase's own gateway and a 401 from the function's secret check
+ *  are the same status with completely different causes, and the second one
+ *  sends people off to re-copy a secret that was correct all along. The gateway
+ *  names itself in the body, so read it. */
+function describeGatewayProblem(status, body) {
+  const code = (body && (body.code || body.error_code)) || '';
+  if (/NO_AUTH_HEADER|MISSING_AUTH/i.test(code) || /Missing authorization header/i.test(body && body.message || '')) {
+    return 'The request never reached the function — Supabase refused it first. ' +
+      'The apikey header is missing from this app’s request, which is a bug here rather than a setting on your side. ' +
+      'Reopen the app to pull the newest version.';
+  }
+  if (/INVALID_JWT|INVALID_TOKEN/i.test(code)) {
+    return 'Supabase refused the request before it reached the function. ' +
+      'Open Edge Functions → poll-emails → Settings and turn OFF "Verify JWT". ' +
+      'A webhook from a mail provider cannot present a Supabase login token, and while that setting is on, nothing from AgentMail can ever reach the function.';
+  }
+  if (/403|forbidden/i.test(String(status))) {
+    return 'Supabase refused the request. Turn OFF "Verify JWT" in the function’s Settings — a third-party webhook cannot send a login token.';
+  }
+  return 'The server answered ' + status + '. Check the function is deployed from the code in the repository, ' +
+    'and that the value after ?k= matches WEBHOOK_SECRET.';
+}
+
+async function checkEmailFunction() {
+  const url = emailWebhookUrl();
+  if (!url) { showEmailTest('bad', 'The webhook URL is empty above.'); return; }
+  if (/[?&#]k=$/.test(url)) {
+    showEmailTest('bad', 'Paste your WEBHOOK_SECRET after ?k= at the end of the URL first.');
+    return;
+  }
+  try {
+    const res = await fetch(emailRequestUrl(url), { method: 'GET', headers: emailFetchHeaders() });
+    const body = await res.json().catch(function () { return null; });
+
+    if (!res.ok) {
+      showEmailTest('bad', describeGatewayProblem(res.status, body));
+      return;
+    }
+    if (body && body.ok && body.secret_configured) {
+      showEmailTest('ok', 'The function is deployed and the secret matches. Now press "Send a test transaction".');
+      return;
+    }
+    if (body && body.ok) {
+      showEmailTest('bad', 'The function is deployed, but WEBHOOK_SECRET is not set on it. Add it under Edge Functions → Secrets.');
+      return;
+    }
+    showEmailTest('bad', 'The server answered in a way this app does not recognise. ' +
+      'Check the function is deployed from the code in the repository.');
+  } catch (err) {
+    showEmailTest('bad', describeUnreachable(err));
+  }
+}
+
+/** Run a sample alert through the entire chain and report which step it reached.
+ *
+ *  Without this, "no transactions are arriving" has four possible causes —
+ *  wrong URL, missing secret, no registered address, and a parser that does not
+ *  understand the bank's wording — and the app cannot tell them apart. Each of
+ *  those produces the same silence, which is the reason a feature like this
+ *  usually gets abandoned rather than fixed. */
+async function runEmailSelfTest() {
+  const url = emailWebhookUrl();
+  if (!url) { showEmailTest('bad', 'The webhook URL is empty above.'); return; }
+  if (/[?&#]k=$/.test(url)) {
+    showEmailTest('bad', 'Paste your WEBHOOK_SECRET after ?k= at the end of the URL.');
+    return;
+  }
+  const userId = getCurrentUserId();
+  if (!userId) { showEmailTest('bad', 'Sign in first.'); return; }
+
+  showEmailTest('busy', 'Sending a test transaction…');
+  const when = new Date();
+  const stamp = String(when.getDate()).padStart(2, '0') + '/' +
+    String(when.getMonth() + 1).padStart(2, '0') + '/' + when.getFullYear();
+
+  try {
+    const target = emailRequestUrl(url) + '&test=1';
+    const res = await fetch(target, {
+      method: 'POST',
+      headers: emailFetchHeaders(),
+      body: JSON.stringify({
+        event_type: 'message.received',
+        message: {
+          from_: 'no-reply@nayapay.com',
+          to: [($('emailForwardAddress') || {}).value || 'test@agentmail.to'],
+          subject: 'NayaPay: You have received Rs. 1,234 on ' + stamp,
+          text: 'Dear customer, you have received Rs. 1,234 from CashFlow OS test on ' + stamp +
+                '. This is a test message and can be rejected.',
+          message_id: 'self-test-' + Date.now(),
+        },
+      }),
+    });
+    const body = await res.json().catch(function () { return null; });
+
+    if (res.status === 401) {
+      /* A 401 here is ambiguous: the gateway refuses a missing apikey and the
+         function refuses a wrong secret, with the same status. The gateway
+         names itself in the body, so read it before blaming the secret. */
+      const fromGateway = body && (body.code || body.error_code);
+      showEmailTest('bad', fromGateway
+        ? describeGatewayProblem(res.status, body)
+        : 'The server rejected the secret. The value after ?k= must exactly match WEBHOOK_SECRET.');
+      return;
+    }
+    if (res.status === 500 && body && /not configured/i.test(body.error || '')) {
+      showEmailTest('bad', 'WEBHOOK_SECRET is not set on the server. Add it under Edge Functions → Secrets.');
+      return;
+    }
+    if (res.status === 422 && body && /routing|route/i.test(body.reason || body.error || '')) {
+      showEmailTest('bad', 'No account is registered for the forwarding address. Press "Save address" first.');
+      return;
+    }
+    if (body && body.status === 'failed') {
+      showEmailTest('bad', 'The test reached the server but failed at ' + (body.stage || '?') + ': ' + (body.reason || 'unknown'));
+      return;
+    }
+    if (body && body.status === 'filed') {
+      showEmailTest('ok', 'It worked. ' + body.type + ' of Rs. ' + body.amount +
+        ' was filed — open the Pending tab and you will see it there. Reject it when you are done.');
+      loadPendingTransactions();
+      return;
+    }
+    if (!res.ok) {
+      showEmailTest('bad', describeGatewayProblem(res.status, body));
+      return;
+    }
+    showEmailTest('bad', 'Unexpected answer: ' + JSON.stringify(body || {}).slice(0, 200));
+  } catch (err) {
+    showEmailTest('bad', describeUnreachable(err));
+  }
+}
+
+function showEmailTest(kind, message) {
+  const box = $('emailTestResult');
+  if (!box) return;
+  const cls = kind === 'ok' ? 'email-test ok' : (kind === 'busy' ? 'email-test busy' : 'email-test bad');
+  const mark = kind === 'ok' ? '✓' : (kind === 'busy' ? '…' : '✕');
+  mount(box, h('div', { class: cls }, h('span', { class: 'email-test-icon' }, mark), h('span', {}, message)));
+}
+
+/** Put the webhook URL on the clipboard, so it can be pasted into the mail
+ *  provider without being retyped — a mistyped secret fails in a way that looks
+ *  like the provider is at fault. */
+async function copyEmailWebhookUrl() {
+  const box = $('emailWebhookUrl');
+  const url = box ? box.value.trim() : '';
+  if (!url) { showEmailTest('bad', 'There is no URL to copy yet.'); return; }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      // Older browsers, and any context where clipboard access is refused.
+      box.select();
+      document.execCommand('copy');
+    }
+    rememberEmailSetup({ webhookUrl: url });
+    showEmailTest('ok', 'Copied. Paste it into AgentMail → Settings → Webhooks.');
+  } catch (err) {
+    box.select();
+    showEmailTest('bad', 'Copying was blocked — the URL is selected, press Ctrl+C.');
   }
 }
 
@@ -3363,161 +4163,245 @@ function renderEmailConnectStatus() {
   if (!statusEl) return;
 
   if (emailConnected) {
-    statusEl.innerHTML = '';
-    statusEl.appendChild(h('div', { class: 'email-status connected' },
+    mount(statusEl, h('div', { class: 'email-status connected' },
       h('span', { class: 'email-status-icon' }, '✓'),
-      h('span', {}, 'Email connected — new transactions will appear in Pending Queue')
+      h('span', {}, 'Address saved. Bank emails forwarded to it will appear under Pending once the test below passes.')
     ));
   } else {
-    statusEl.innerHTML = '';
-    statusEl.appendChild(h('div', { class: 'email-status disconnected' },
+    mount(statusEl, h('div', { class: 'email-status disconnected' },
       h('span', { class: 'email-status-icon' }, '○'),
-      h('span', {}, 'Email not connected')
+      h('span', {}, 'Not working yet. Follow the steps below, then press "Send a test transaction" — until that passes, nothing will arrive.')
     ));
   }
 }
 
 async function loadPendingTransactions() {
+  const userId = getCurrentUserId();
+  if (!userId) { renderPendingQueue(); return; }
+
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    const { data, error } = await supabase
-      .from('pending_transactions')
-      .select('*')
-      .eq('user_id', user.id)
-      .eq('status', 'pending')
-      .order('created_at', { ascending: false })
-      .limit(50);
-
-    if (error) throw error;
-
-    pendingTransactions = data || [];
-    renderPendingQueue();
+    const data = await sbFetch(
+      'pending_transactions?user_id=eq.' + encodeURIComponent(userId) +
+      '&status=eq.pending&order=created_at.desc&limit=50');
+    pendingTransactions = Array.isArray(data) ? data : [];
   } catch (err) {
-    console.error('Load pending transactions error:', err);
+    // A missing table or a policy gap must not break the app. Report it in the
+    // panel rather than only the console, because otherwise the user just sees
+    // an empty queue and concludes no transactions arrived.
+    console.warn('Could not read the pending queue:', err && err.message);
+    pendingTransactions = [];
+    pendingQueueError = (err && err.message) || 'Could not load';
   }
+  renderPendingQueue();
 }
 
 function renderPendingQueue() {
   const container = $('pendingQueueList');
   if (!container) return;
 
-  container.innerHTML = '';
+  // mount(), not innerHTML — the app builds every node through h().
+  mount(container);
 
+  if (pendingQueueError) {
+    container.appendChild(h('div', { class: 'pending-empty' },
+      'Could not load the pending queue: ' + pendingQueueError));
+    return;
+  }
   if (pendingTransactions.length === 0) {
-    container.appendChild(h('div', { class: 'pending-empty' }, 'No pending transactions'));
+    container.appendChild(h('div', { class: 'pending-empty' },
+      'Nothing waiting. Transactions parsed from your bank emails land here for approval.'));
     return;
   }
 
-  pendingTransactions.forEach(tx => {
+  for (const tx of pendingTransactions) {
+    // Every one of these comes from the server, so none of it is trusted to be
+    // present or well-typed. It all lands as text, never as markup.
+    const amount = toPositiveNumber(tx.amount);
+    const when = parseDate(tx.transaction_date);
     const item = h('div', { class: 'pending-item' },
       h('div', { class: 'pending-info' },
         h('div', { class: 'pending-amount ' + (tx.type === 'income' ? 'income' : 'expense') },
-          (tx.type === 'income' ? '+ ' : '− ') + CURRENCY + ' ' + formatAmount(tx.amount)
-        ),
-        h('div', { class: 'pending-desc' }, tx.description),
+          /* formatMoney already puts the currency symbol on, so only the sign
+             is added here. Adding CURRENCY as well made every pending row read
+             "Rs Rs 1,234" — the only row in the app a user reads before
+             approving money into their ledger. */
+          (tx.type === 'income' ? '+ ' : '− ') + formatMoney(amount === null ? 0 : amount)),
+        h('div', { class: 'pending-desc' }, cleanText(tx.description, COMMENT_LIMIT) || '(no description)'),
         h('div', { class: 'pending-meta' },
-          tx.bank_name + ' • ' + formatDate(tx.transaction_date)
-        )
+          cleanText(tx.bank_name, NAME_LIMIT) || 'Bank',
+          /* Date only. A bank alert carries a calendar day and no time, so any
+             clock here would be an artefact of how the value was stored — and
+             it read as 05:00, which looked like the payment happened before
+             dawn. The day is what a person checks; the time of day is not
+             information that exists. */
+          when ? ' • ' + formatDayOnly(when) : ' • date unknown')
       ),
       h('div', { class: 'pending-actions' },
         h('button', {
           class: 'btn btn-primary btn-sm',
+          type: 'button',
+          disabled: amount === null,
+          title: amount === null ? 'This row has no usable amount' : null,
           dataset: { act: 'approve-tx', id: tx.id }
         }, 'Approve'),
         h('button', {
           class: 'btn btn-cancel btn-sm',
+          type: 'button',
           dataset: { act: 'reject-tx', id: tx.id }
         }, 'Reject')
       )
     );
     container.appendChild(item);
-  });
+  }
 }
 
 async function approveTransaction(txId) {
+  const userId = getCurrentUserId();
+  if (!userId) return;
+
+  const tx = pendingTransactions.find(t => t.id === txId);
+  if (!tx) return;
+
+  // The row came from the server, so its amount is not trusted to be a number.
+  // Approving a NaN would write a poisoned row straight into the ledger.
+  const amount = toPositiveNumber(tx.amount);
+  if (amount === null) { toast('This row has no usable amount, so it cannot be approved'); return; }
+
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
+    // Built through the same helper the manual form uses, so the record has the
+    // app's field names (date / accountId) rather than the database's column
+    // names. Getting this wrong means accountBalance() never matches the row,
+    // the balance stays wrong, and the push fails on a NOT NULL column.
+    const accId = pendingAccountId(tx);
+    const stamp = pendingDateStamp(tx);
+    const built = buildTransaction(
+      tx.type === 'income' ? 'income' : 'expense',
+      amount,
+      emailCategory(tx.type),
+      cleanText(tx.description, COMMENT_LIMIT),
+      stamp,
+      accId,
+      null
+    );
+    if (built.error) { toast(built.error); return; }
 
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    built.value.source = 'email:' + tx.id;
+    touch(built.value);
 
-    const tx = pendingTransactions.find(t => t.id === txId);
-    if (!tx) return;
-
-    // Create actual transaction
-    const newTx = {
-      id: 'tx-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9),
-      type: tx.type,
-      amount: tx.amount,
-      category: tx.type === 'income' ? 'Bank Transfer' : 'Bank Payment',
-      comment: tx.description,
-      happened_at: new Date().toISOString().slice(0, 16),
-      account_id: 'acc-nayapay',
-      to_account_id: null,
-      source: 'email:' + tx.id
-    };
-
-    // Add to local state
-    state.transactions.push(newTx);
+    // unshift, so an approved transaction appears at the top of the ledger like
+    // every other new entry.
+    state.transactions.unshift(built.value);
     save();
 
-    // Mark as approved in Supabase
-    const { error } = await supabase
-      .from('pending_transactions')
-      .update({ status: 'approved', approved_at: new Date().toISOString() })
-      .eq('id', txId);
+    // Mark as approved in Supabase. Done AFTER the local save: if this call
+    // fails, the transaction is already safely in the ledger and the row will
+    // simply stay pending, which is better than losing the money entry.
+    try {
+      await sbFetch('pending_transactions?id=eq.' + txId, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: 'approved', approved_at: new Date().toISOString() })
+      });
+    } catch (err) {
+      console.warn('Saved locally, but the pending row could not be marked approved:', err && err.message);
+    }
 
-    if (error) throw error;
-
-    // Remove from pending list
     pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
     renderPendingQueue();
 
-    toast('Transaction approved and added to your records');
+    toast('Added ' + formatMoney(amount) + ' to ' + accountName(accId) + ' — dated ' + formatDate(stamp));
   } catch (err) {
     console.error('Approve transaction error:', err);
     toast('Failed to approve: ' + err.message);
   }
 }
 
+/** Where an approved email transaction is filed: the account whose name matches
+ *  the bank the email came from, then the account the user last used, then cash.
+ *  Never a hard-coded id, which would dangle the moment an account is renamed. */
+function pendingAccountId(tx) {
+  // Match the bank named on the row against the user's own account names, so
+  // this works for any bank rather than one hard-coded favourite. findAccount()
+  // takes an ID, not a name — passing a name returns null and used to send every
+  // approved transaction silently to Cash.
+  const bank = cleanText(tx && tx.bank_name, NAME_LIMIT).toLowerCase();
+  if (bank) {
+    const hit = state.accounts.find(
+      (a) => !a.archived && String(a.name).toLowerCase() === bank);
+    if (hit) return hit.id;
+    const loose = state.accounts.find(
+      (a) => !a.archived && String(a.name).toLowerCase().indexOf(bank) !== -1);
+    if (loose) return loose.id;
+  }
+  const last = state.settings && state.settings.lastAccountId;
+  if (last && findAccount(last)) return last;
+  return cashAccountId();
+}
+
+/** Use the date from the EMAIL. Falling back to today would file an old
+ *  payment as a new one, which is the whole point of reading the email.
+ *
+ *  The *time* of day is taken from now, not from the stored value. A bank alert
+ *  carries a date and nothing else, so whatever time arrives with the row is an
+ *  artefact: the function writes midnight UTC, which in Pakistan reads as 05:00
+ *  and in New York as 19:00 the previous day. Keeping it put a 5 a.m. payment on
+ *  a record and, west of UTC, could move the entry to the wrong day entirely.
+ *  The date is what matters for a budget; the time only orders the list. */
+function pendingDateStamp(tx) {
+  const raw = tx.transaction_date || tx.transactionDate || '';
+  const parsed = parseDate(raw);
+  if (parsed) {
+    const now = new Date();
+    return toLocalStamp(new Date(
+      parsed.getFullYear(), parsed.getMonth(), parsed.getDate(),
+      now.getHours(), now.getMinutes()
+    ));
+  }
+  return nowStamp();
+}
+
+/** A category that certainly exists, so an approved email never lands in a
+ *  name the user has to repair later. */
+/** A category that certainly exists, so an approved email never lands in a
+ *  name the user has to repair later.
+ *
+ *  "Other" for both directions, deliberately. The previous version filed income
+ *  under "Salary", which is a claim about the money rather than a place to put
+ *  it: someone being repaid Rs 50 was recorded as having earned a salary, and
+ *  every budget that groups by category inherited the claim. The pending list
+ *  already shows the amount and the name, so the category only has to be a
+ *  bucket — the user can move it in one tap afterwards, and until they do it is
+ *  at least not wrong. */
+function emailCategory(type) {
+  if (findCategory('Other')) return 'Other';
+  return state.categories[0] || 'Other';
+}
+
 async function rejectTransaction(txId) {
+  // Drop it from the list first. Rejecting is about not wanting to see it, so
+  // the row should disappear immediately; if the PATCH then fails, the worst
+  // case is that the same email reappears in the queue and can be rejected
+  // again. The reverse order left the button looking broken on a slow network.
+  pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
+  renderPendingQueue();
+
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-
-    const { error } = await supabase
-      .from('pending_transactions')
-      .update({ status: 'rejected' })
-      .eq('id', txId);
-
-    if (error) throw error;
-
-    // Remove from pending list
-    pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
-    renderPendingQueue();
-
-    toast('Transaction rejected');
+    await sbFetch('pending_transactions?id=eq.' + encodeURIComponent(txId), {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'rejected' })
+    });
+    toast('Rejected');
   } catch (err) {
-    console.error('Reject transaction error:', err);
-    toast('Failed to reject: ' + err.message);
+    console.warn('Removed from the list, but the server was not told:', err && err.message);
+    toast('Removed here, but it may reappear. Check your connection.');
   }
 }
 
-function formatAmount(amount) {
-  return Number(amount).toLocaleString('en-PK', { maximumFractionDigits: 2 });
-}
-
-function formatDate(dateStr) {
-  if (!dateStr) return '';
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('en-PK', { day: 'numeric', month: 'short', year: 'numeric' });
-}
+// NOTE: there is deliberately no second formatDate here, and no second
+// formatAmount. An earlier version of this file declared a formatDate for the
+// email code; because function declarations hoist, it silently replaced the
+// real one near the top of the file and every date in the UI quietly lost its
+// time component. The email code now uses formatMoney, which already existed.
+// A test asserts no function name is declared twice in this file.
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', init, { once: true });

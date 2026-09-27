@@ -9,11 +9,11 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v11">
+  <meta name="app-build" content="v26">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
-  <meta name="app-tabs" content="home,accounts,transactions,budget,udhaar,custody,reports,list,categories,email,pending,settings">
+  <meta name="app-tabs" content="home,accounts,transactions,budget,udhaar,custody,reports,list,categories,pending,settings,email">
   <meta name="description" content="Track income, expenses, budgets, accounts and udhaar — works offline.">
   <title>CashFlow OS</title>
   <link rel="manifest" href="manifest.json">
@@ -315,29 +315,101 @@
     </section>
   </div>
 
-  <!-- ══════════════ EMAIL CONNECT ══════════════ -->
+  <!-- ══════════════ EMAIL (forwarding setup) ══════════════ -->
   <div id="panel-email" data-panel="email" role="tabpanel" aria-labelledby="emailHeading" hidden>
     <section class="card" aria-labelledby="emailHeading">
-      <h2 class="card-title" id="emailHeading">📧 Email Connect</h2>
+      <h2 class="card-title" id="emailHeading">📧 Automatic Transactions</h2>
       <p class="card-subtitle">
-        Connect your Gmail to automatically import NayaPay transactions.
-        You'll receive a notification when new transactions are ready to approve.
+        Already working, most likely. This is the one-time setup and the way to
+        check it — nothing here needs doing again.
       </p>
+
       <div id="emailConnectStatus"></div>
-      <form id="emailConnectForm" class="email-connect-form">
-        <div class="form-group">
-          <label class="field-label" for="emailAddress">Gmail Address</label>
-          <input id="emailAddress" type="email" placeholder="your.email@gmail.com" autocomplete="off">
+
+      <!-- Collapsed by default. The setup is a one-time job, and leaving a page
+           of instructions permanently in the tab bar made it read as part of the
+           daily routine — something still to be done rather than something
+           already finished. -->
+      <details class="setup-block" id="emailSetupDetails">
+        <summary class="setup-title">Setup and troubleshooting</summary>
+        <div class="setup-body">
+
+      <!-- Everything below is done from inside the app. Registering the address
+           used to mean pasting SQL into the Supabase editor, which is a step
+           that silently fails for anyone who has not done it before and then
+           leaves the app saying "not set up" with nothing to act on. -->
+      <div class="setup-block">
+        <h3 class="setup-title">Set this up</h3>
+        <ol class="setup-list">
+          <li>
+            <strong>Create a free inbox at
+              <a href="https://console.agentmail.to/sign-up?plan=free" target="_blank" rel="noopener noreferrer">agentmail.to</a></strong>
+            <p>You get an address like <code>cashflow@agentmail.to</code>. No domain
+              to buy, and it accepts mail from anyone — which is what makes this
+              the one provider that works without one.</p>
+          </li>
+          <li>
+            <strong>Save that address below.</strong> This tells the server the
+              address is yours.
+          </li>
+          <li>
+            <strong>Copy your webhook URL</strong> and paste it into AgentMail
+              under Settings → Webhooks, for the event <code>message.received</code>.
+            </li>
+          <li>
+            <strong>Forward your bank emails</strong> to the address. In Gmail:
+              Settings → Forwarding and POP/IMAP → Add a forwarding address, and
+              tick "Keep a copy" so nothing leaves your inbox.
+          </li>
+          <li>
+            <strong>Run the test below.</strong> It sends a sample alert through
+              the whole chain and a real row should appear under
+              <strong>Pending</strong>. Do this before trusting it with a real
+              transaction.
+          </li>
+        </ol>
+      </div>
+
+      <div class="form-group">
+        <label class="field-label" for="emailForwardAddress">Forwarding address</label>
+        <input id="emailForwardAddress" type="email" inputmode="email"
+               autocomplete="off" placeholder="cashflow@agentmail.to"
+               spellcheck="false">
+        <p class="field-hint">The address your bank emails are forwarded to.</p>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn btn-primary" type="button" data-act="email-save">Save address</button>
+        <button class="btn btn-dark" type="button" data-act="email-check">Check the server</button>
+        <button class="btn btn-dark" type="button" data-act="email-test">Send a test transaction</button>
+      </div>
+
+      <div class="form-group mt-10">
+        <label class="field-label" for="emailWebhookUrl">Your webhook URL</label>
+        <input id="emailWebhookUrl" type="url" inputmode="url" autocomplete="off"
+               placeholder="https://….supabase.co/functions/v1/poll-emails?k=…" spellcheck="false">
+        <div class="btn-row mt-10">
+          <button class="btn btn-dark" type="button" data-act="email-copy-url">Copy webhook URL</button>
         </div>
-        <div class="form-group">
-          <label class="field-label" for="emailPassword">App Password</label>
-          <input id="emailPassword" type="password" placeholder="Enter your Gmail app password" autocomplete="off">
-          <p class="field-hint">
-            <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">How to generate an App Password?</a>
-          </p>
-        </div>
-        <button class="btn btn-primary" type="submit">Connect Email</button>
-      </form>
+        <p class="field-hint">
+          The address is already filled in. Paste your <code>WEBHOOK_SECRET</code>
+          after the <code>?k=</code> — it is the value you added under Edge
+          Functions → Secrets. The finished URL contains a secret, so it is kept
+          in this browser only and never written into the app.
+        </p>
+      </div>
+
+      <div id="emailTestResult"></div>
+
+        </div><!-- /.setup-body -->
+      </details>
+
+      <p class="field-hint">
+        Why not connect a password instead? Because a stored password is a
+        liability: base64 is not encryption, and any bug that exposed the
+        database would expose everyone's mail access. Forwarding needs no secret
+        from your mail account at all.
+      </p>
     </section>
   </div>
 
@@ -466,6 +538,18 @@
 <noscript>
   <p class="storage-warning">This app needs JavaScript to store and show your data.</p>
 </noscript>
+
+<!-- Build marker. Deliberately the last thing in the document and out of the way
+     of every tab: it answers "am I looking at the version I think I am?" — the
+     question behind every report of a fix that did not seem to work, since a
+     service worker can serve any of the last few builds and the difference is
+     not otherwise visible. Pressing it checks for a newer deploy. -->
+<footer class="app-foot">
+  <button type="button" id="buildBadge" class="build-badge" data-act="build-check"
+          title="Check whether a newer version has been deployed">
+    <span id="buildText">…</span>
+  </button>
+</footer>
 
 <script src="config.js"></script>
 <script src="sync.js"></script>
