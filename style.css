@@ -308,6 +308,45 @@ body.modal-open { overflow: hidden; }
   border-radius: 12px;
   background: var(--panel-2, #f7f7f8);
 }
+#emailSetupDetails > .setup-title {
+  cursor: pointer;
+  font-weight: 600;
+  list-style: none;
+  margin: 0;
+}
+#emailSetupDetails > .setup-title::-webkit-details-marker { display: none; }
+#emailSetupDetails > .setup-title::after {
+  content: ' ▾';
+  color: var(--muted, #6b6b70);
+  font-weight: 400;
+}
+#emailSetupDetails[open] > .setup-title::after { content: ' ▴'; }
+.setup-body { padding-top: 4px; }
+
+/* Build marker, bottom of every tab. Small, and never a status light that has
+   to mean something — it says which version is loaded, and the last check. */
+.app-foot {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  padding: 6px 0 10px;
+  pointer-events: none;
+}
+.build-badge {
+  pointer-events: auto;
+  border: 1px solid var(--line, #e3e3e6);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--muted, #6b6b70);
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.build-badge:hover { color: var(--ink, #1a1a1a); border-color: #c9c9ce; }
+.build-badge.stale { color: #8a5a00; border-color: #e0b968; }
+.build-badge.checking { opacity: 0.6; }
+
 .setup-title { margin: 0 0 8px; font-size: 15px; }
 .setup-list { margin: 0; padding-left: 20px; }
 .setup-list li { margin-bottom: 10px; }

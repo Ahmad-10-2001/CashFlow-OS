@@ -9,11 +9,11 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v25">
+  <meta name="app-build" content="v26">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
-  <meta name="app-tabs" content="home,accounts,transactions,budget,udhaar,custody,reports,list,categories,email,pending,settings">
+  <meta name="app-tabs" content="home,accounts,transactions,budget,udhaar,custody,reports,list,categories,pending,settings,email">
   <meta name="description" content="Track income, expenses, budgets, accounts and udhaar — works offline.">
   <title>CashFlow OS</title>
   <link rel="manifest" href="manifest.json">
@@ -320,12 +320,19 @@
     <section class="card" aria-labelledby="emailHeading">
       <h2 class="card-title" id="emailHeading">📧 Automatic Transactions</h2>
       <p class="card-subtitle">
-        This app never asks for, and never stores, your email password.
-        Transactions arrive because you <em>forward</em> your NayaPay emails to
-        a dedicated address, and a small server function reads them.
+        Already working, most likely. This is the one-time setup and the way to
+        check it — nothing here needs doing again.
       </p>
 
       <div id="emailConnectStatus"></div>
+
+      <!-- Collapsed by default. The setup is a one-time job, and leaving a page
+           of instructions permanently in the tab bar made it read as part of the
+           daily routine — something still to be done rather than something
+           already finished. -->
+      <details class="setup-block" id="emailSetupDetails">
+        <summary class="setup-title">Setup and troubleshooting</summary>
+        <div class="setup-body">
 
       <!-- Everything below is done from inside the app. Registering the address
            used to mean pasting SQL into the Supabase editor, which is a step
@@ -393,6 +400,9 @@
       </div>
 
       <div id="emailTestResult"></div>
+
+        </div><!-- /.setup-body -->
+      </details>
 
       <p class="field-hint">
         Why not connect a password instead? Because a stored password is a
@@ -528,6 +538,18 @@
 <noscript>
   <p class="storage-warning">This app needs JavaScript to store and show your data.</p>
 </noscript>
+
+<!-- Build marker. Deliberately the last thing in the document and out of the way
+     of every tab: it answers "am I looking at the version I think I am?" — the
+     question behind every report of a fix that did not seem to work, since a
+     service worker can serve any of the last few builds and the difference is
+     not otherwise visible. Pressing it checks for a newer deploy. -->
+<footer class="app-foot">
+  <button type="button" id="buildBadge" class="build-badge" data-act="build-check"
+          title="Check whether a newer version has been deployed">
+    <span id="buildText">…</span>
+  </button>
+</footer>
 
 <script src="config.js"></script>
 <script src="sync.js"></script>

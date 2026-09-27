@@ -347,6 +347,44 @@ Two things to set up on the Supabase side, or the email never arrives:
    **Authentication → Emails**, and is also what unlocks editing the template so
    the code path works.
 
+### Knowing which version you are looking at
+
+A badge at the bottom of every tab reads `CashFlow OS v26`.
+
+A service worker keeps the last few builds and can serve any of them, so "I
+deployed the fix and nothing happened" has an explanation that is invisible from
+inside the page — the app looks identical either way. During development that was
+the answer to more than one report, and the badge turns it into a glance.
+
+Pressing it checks for a newer deploy: a `no-store` fetch of `index.html`, read
+for the version marker and nothing else. It never touches your data, so it is
+safe to run on every load, which it does — quietly, a second after start-up. A
+newer build turns the badge amber and says which one. Each browser is told about
+a new build once, not on every load.
+
+### What an approved bank email becomes
+
+Three things about it were wrong in ways that only showed up once a real payment
+went through, and all three were claims about the money rather than the money:
+
+- It said **"linked to an udhaar entry"**. There are three kinds of source and
+  only one is an udhaar entry, so a two-way test labelled everything that was not
+  a shopping list as one. A wrong claim about provenance sends someone looking
+  for a record that does not exist, and hides the one thing that is true — this
+  was read out of an email.
+- Money arriving was filed under **"Salary"**. That is a claim that the money was
+  earned, not a place to put it: someone being repaid Rs 50 was recorded as
+  having earned a salary, and every budget grouped by category inherited the
+  claim. Both directions now file under "Other", which is a bucket rather than
+  an assertion, and the user can move it in one tap.
+- The **time of day** was invented. A bank alert carries a calendar day and
+  nothing else, so the 05:00 shown was midnight UTC rendered in Pakistan — and
+  in New York the same value is 19:00 the *previous* day, which would file the
+  payment on the wrong day. The function now anchors the parsed date at midday,
+  which survives every timezone, and the app takes the time from the moment of
+  approval rather than from the artefact. The pending list shows a day, not a
+  clock reading, because the clock was never information that existed.
+
 ### Security
 
 - The **publishable** key (`sb_publishable_…`) is in `config.js` and is *designed*
@@ -585,7 +623,7 @@ type is only ever a label.
 
 ## Testing
 
-1145 assertions across ten suites, all of which run without a browser or a
+1162 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 

@@ -78,9 +78,12 @@ const TABS = [
   { id: 'reports',      label: 'Reports',    glyph: '◔' },
   { id: 'list',         label: 'List',       glyph: '☑' },
   { id: 'categories',   label: 'Categories', glyph: '❑' },
-  { id: 'email',        label: 'Email',      glyph: '📧' },
   { id: 'pending',      label: 'Pending',    glyph: '🔔' },
-  { id: 'settings',     label: 'Backup',     glyph: '⚙' }
+  { id: 'settings',     label: 'Backup',     glyph: '⚙' },
+  /* Last, and marked optional. Email is a one-time setup, not a daily screen,
+     and sitting between Categories and Pending made it read as part of the
+     routine — something still to be done rather than something finished. */
+  { id: 'email',        label: 'Email',      glyph: '📧', optional: true }
 ];
 
 /* Categorical palette. Chosen to stay distinguishable on white and to hold
@@ -133,6 +136,11 @@ function formatMoney(n, opts) {
   const body = Math.abs(v).toLocaleString('en-PK', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   const sign = v < 0 ? '-' : (o.signed && v > 0 ? '+' : '');
   return sign + CURRENCY + ' ' + body;
+}
+
+function formatDayOnly(d) {
+  const p = (x) => String(x).padStart(2, '0');
+  return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear();
 }
 
 function formatDate(iso) {
@@ -1040,6 +1048,93 @@ function toast(msg) {
    Tabs
    ============================================================ */
 
+/* ---------- build marker ----------
+
+   Which version is actually running, and is it the newest one.
+
+   A service worker keeps the last few builds and can hand any of them back, so
+   "I deployed the fix and nothing changed" has a mundane explanation that is
+   invisible from the inside — the page looks identical either way. This was
+   reported more than once during development, and the answer was always "you are
+   on the previous build". The check is deliberately passive: it fetches the
+   current index.html, reads only the version out of it, and never touches the
+   app's data, so it is safe to run on every load. */
+
+const BUILD_KEY = 'cashflow:buildSeen';
+
+function numericBuild(v) {
+  const n = parseInt(String(v || '').replace(/^v/i, ''), 10);
+  return Number.isFinite(n) ? n : -1;
+}
+
+function renderBuildBadge(state, text) {
+  const badge = $('buildBadge');
+  const out = $('buildText');
+  const cfg = window.CASHFLOW_CONFIG || {};
+  if (!badge || !out) return;
+  if (state) badge.classList.add(state);
+  badge.classList.remove('stale', 'checking');
+  out.textContent = text || ('CashFlow OS ' + (cfg.appBuild || '?'));
+  badge.title = state === 'stale'
+    ? 'A newer version is deployed. Press to reload and get it.'
+    : 'Version ' + (cfg.appBuild || '?') + ' — press to check for a newer one';
+}
+
+async function checkForNewerBuild(manual) {
+  const badge = $('buildBadge');
+  const cfg = window.CASHFLOW_CONFIG || {};
+  if (badge) { badge.classList.add('checking'); badge.classList.remove('stale'); }
+  if (manual) renderBuildBadge('', 'Checking…');
+  try {
+    /* No-store, and a cache-buster, because the whole question is whether the
+       network has something newer than what the service worker is holding. A
+       cached answer would report the build already running. */
+    const res = await fetch('index.html?build=' + Date.now(), {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    const html = await res.text();
+    const m = /<meta name="app-build" content="([^"]+)">/.exec(html);
+    const latest = m ? m[1] : null;
+    const mine = cfg.appBuild;
+
+    if (latest && numericBuild(latest) > numericBuild(mine)) {
+      renderBuildBadge('stale', 'Newer version available · ' + latest);
+      rememberSeenBuild(latest);
+      if (manual) toast('A newer version (' + latest + ') is deployed. Reload to get it.');
+      return true;
+    }
+    if (latest && latest !== mine) {
+      /* Newer-looking but not numerically newer: a branch, or a rollback. Say
+         so rather than calling it up to date. */
+      renderBuildBadge('stale', 'Deployed: ' + latest + ' · running ' + mine);
+      if (manual) toast('The deployed version is ' + latest + ', not ' + mine + '.');
+      return true;
+    }
+    renderBuildBadge('', 'CashFlow OS ' + (mine || '?'));
+    if (manual) toast('You are on the latest version (' + (mine || '?') + ').');
+    return false;
+  } catch (err) {
+    renderBuildBadge('', 'CashFlow OS ' + (cfg.appBuild || '?'));
+    if (manual) toast('Could not check for a newer version — you appear to be offline.');
+    return false;
+  }
+}
+
+function rememberSeenBuild(v) {
+  try { localStorage.setItem(BUILD_KEY, v); } catch (err) { /* ignore */ }
+}
+
+/* Shown once per browser, the first time a new build is found, so it does not
+   become a nagging habit — the badge itself is always there to look at. */
+function announceNewBuildOnce(latest) {
+  let seen = null;
+  try { seen = localStorage.getItem(BUILD_KEY); } catch (err) { seen = null; }
+  if (seen === latest) return;
+  rememberSeenBuild(latest);
+  if (seen) toast('Updated to ' + latest);
+}
+
 function showTab(name, opts) {
   const o = opts || {};
   if (!TABS.some((t) => t.id === name)) name = 'home';
@@ -1448,6 +1543,22 @@ function readAmountField(input, label) {
 /** Build a transaction from the Home form. Also used by the edit modal, so the
  *  validation lives in one place and a saved record can never be shaped
  *  differently depending on which form it came through. */
+/** What a `source` marker means, in words.
+ *
+ *  There are three kinds and only one of them is an udhaar entry, so the old
+ *  two-way test labelled every non-list source "linked to an udhaar entry" — a
+ *  bank payment arrived labelled as one. A wrong claim about where a record came
+ *  from is worse than no claim: it sends someone looking for an udhaar entry
+ *  that does not exist, and hides the one thing that is actually true, which is
+ *  that this was read out of an email. */
+function sourceLabel(source) {
+  const s = String(source || '');
+  if (s.indexOf('list:') === 0) return 'bought from your list';
+  if (s.indexOf('email:') === 0) return 'read from your bank’s email';
+  if (s.indexOf('udhaar:') === 0) return 'linked to an udhaar entry';
+  return 'added another way';
+}
+
 function buildTransaction(type, amount, category, comment, date, fromId, toId) {
   if (type === 'transfer') {
     if (fromId === toId) return { error: 'Pick two different accounts to move money between' };
@@ -2655,7 +2766,7 @@ function renderTransactions() {
         h('span', { class: 'tx-amount ' + t.type }, (isIncome ? '+' : '−') + ' ' + formatMoney(t.amount))
       ),
       t.comment ? h('div', { class: 'tx-detail' }, t.comment) : null,
-      t.source ? h('div', { class: 'tx-detail tx-linked' }, t.source.indexOf('list:') === 0 ? 'bought from your list' : 'linked to an udhaar entry') : null,
+      t.source ? h('div', { class: 'tx-detail tx-linked' }, sourceLabel(t.source)) : null,
       h('div', { class: 'tx-detail' }, formatDate(t.date)),
       h('div', { class: 'tx-actions' },
         button('Edit', 'tx-edit', { id: t.id }),
@@ -3245,6 +3356,7 @@ const ACTIONS = {
   'email-check': () => checkEmailFunction(),
   'email-test': () => runEmailSelfTest(),
   'email-copy-url': () => copyEmailWebhookUrl(),
+  'build-check': () => checkForNewerBuild(true),
   'month-close': closePeriod,
   'month-reopen': (el) => reopenPeriod(el.dataset.arg),
   'month-report': (el) => showReport('custom', {
@@ -3538,6 +3650,17 @@ function init() {
   // Show only the fields that apply to the selected transaction type.
   if ($('txType')) setTxTypeFields();
   refreshAccountSelects();
+
+  /* Show which build is running straight away, then look for a newer one.
+     Passive: no data is touched, so it is safe on every load, and it turns
+     "my fix did nothing" from a mystery into a glance at the badge. */
+  renderBuildBadge();
+  try { rememberSeenBuild((window.CASHFLOW_CONFIG || {}).appBuild); } catch (err) { /* ignore */ }
+  setTimeout(function () {
+    checkForNewerBuild(false).then(function (newer) {
+      if (newer) announceNewBuildOnce(((window.CASHFLOW_CONFIG || {}).appBuild));
+    });
+  }, 1200);
 
   // Build the tab bar from TABS so markup and logic cannot drift apart.
   const bar = $('tabBar');
@@ -4106,7 +4229,12 @@ function renderPendingQueue() {
         h('div', { class: 'pending-desc' }, cleanText(tx.description, COMMENT_LIMIT) || '(no description)'),
         h('div', { class: 'pending-meta' },
           cleanText(tx.bank_name, NAME_LIMIT) || 'Bank',
-          when ? ' • ' + formatDate(when.toISOString()) : ' • date unknown')
+          /* Date only. A bank alert carries a calendar day and no time, so any
+             clock here would be an artefact of how the value was stored — and
+             it read as 05:00, which looked like the payment happened before
+             dawn. The day is what a person checks; the time of day is not
+             information that exists. */
+          when ? ' • ' + formatDayOnly(when) : ' • date unknown')
       ),
       h('div', { class: 'pending-actions' },
         h('button', {
@@ -4210,15 +4338,22 @@ function pendingAccountId(tx) {
 }
 
 /** Use the date from the EMAIL. Falling back to today would file an old
- *  payment as a new one, which is the whole point of reading the email. */
+ *  payment as a new one, which is the whole point of reading the email.
+ *
+ *  The *time* of day is taken from now, not from the stored value. A bank alert
+ *  carries a date and nothing else, so whatever time arrives with the row is an
+ *  artefact: the function writes midnight UTC, which in Pakistan reads as 05:00
+ *  and in New York as 19:00 the previous day. Keeping it put a 5 a.m. payment on
+ *  a record and, west of UTC, could move the entry to the wrong day entirely.
+ *  The date is what matters for a budget; the time only orders the list. */
 function pendingDateStamp(tx) {
   const raw = tx.transaction_date || tx.transactionDate || '';
   const parsed = parseDate(raw);
   if (parsed) {
-    // Keep the email's day, but a real time of day for ordering.
+    const now = new Date();
     return toLocalStamp(new Date(
       parsed.getFullYear(), parsed.getMonth(), parsed.getDate(),
-      parsed.getHours() || 12, parsed.getMinutes()
+      now.getHours(), now.getMinutes()
     ));
   }
   return nowStamp();
@@ -4226,9 +4361,17 @@ function pendingDateStamp(tx) {
 
 /** A category that certainly exists, so an approved email never lands in a
  *  name the user has to repair later. */
+/** A category that certainly exists, so an approved email never lands in a
+ *  name the user has to repair later.
+ *
+ *  "Other" for both directions, deliberately. The previous version filed income
+ *  under "Salary", which is a claim about the money rather than a place to put
+ *  it: someone being repaid Rs 50 was recorded as having earned a salary, and
+ *  every budget that groups by category inherited the claim. The pending list
+ *  already shows the amount and the name, so the category only has to be a
+ *  bucket — the user can move it in one tap afterwards, and until they do it is
+ *  at least not wrong. */
 function emailCategory(type) {
-  const wanted = type === 'income' ? 'Salary' : 'Other';
-  if (findCategory(wanted)) return wanted;
   if (findCategory('Other')) return 'Other';
   return state.categories[0] || 'Other';
 }
