@@ -1072,8 +1072,8 @@ function renderBuildBadge(state, text) {
   const out = $('buildText');
   const cfg = window.CASHFLOW_CONFIG || {};
   if (!badge || !out) return;
-  if (state) badge.classList.add(state);
   badge.classList.remove('stale', 'checking');
+  if (state) badge.classList.add(state);
   out.textContent = text || ('CashFlow OS ' + (cfg.appBuild || '?'));
   badge.title = state === 'stale'
     ? 'A newer version is deployed. Press to reload and get it.'
@@ -1100,16 +1100,20 @@ async function checkForNewerBuild(manual) {
 
     if (latest && numericBuild(latest) > numericBuild(mine)) {
       renderBuildBadge('stale', 'Newer version available · ' + latest);
-      rememberSeenBuild(latest);
       if (manual) toast('A newer version (' + latest + ') is deployed. Reload to get it.');
-      return true;
+      // Returns the deployed build so the caller can announce it once.
+      // Storage is left to announceNewBuildOnce: writing it here would mark
+      // the build "seen" before the announcement is decided, and the toast
+      // would never fire.
+      return latest;
     }
     if (latest && latest !== mine) {
       /* Newer-looking but not numerically newer: a branch, or a rollback. Say
-         so rather than calling it up to date. */
+         so rather than calling it up to date. Not announced as an update,
+         because it is not one. */
       renderBuildBadge('stale', 'Deployed: ' + latest + ' · running ' + mine);
       if (manual) toast('The deployed version is ' + latest + ', not ' + mine + '.');
-      return true;
+      return false;
     }
     renderBuildBadge('', 'CashFlow OS ' + (mine || '?'));
     if (manual) toast('You are on the latest version (' + (mine || '?') + ').');
@@ -3655,10 +3659,9 @@ function init() {
      Passive: no data is touched, so it is safe on every load, and it turns
      "my fix did nothing" from a mystery into a glance at the badge. */
   renderBuildBadge();
-  try { rememberSeenBuild((window.CASHFLOW_CONFIG || {}).appBuild); } catch (err) { /* ignore */ }
   setTimeout(function () {
-    checkForNewerBuild(false).then(function (newer) {
-      if (newer) announceNewBuildOnce(((window.CASHFLOW_CONFIG || {}).appBuild));
+    checkForNewerBuild(false).then(function (latest) {
+      if (typeof latest === 'string' && latest) announceNewBuildOnce(latest);
     });
   }, 1200);
 
@@ -3854,16 +3857,25 @@ function rememberEmailSetup(patch) {
  *  its own — silently emptied the field. The user then copied a half-finished
  *  URL somewhere, and the symptom was the provider rejecting a URL that had
  *  been correct a moment earlier. */
+let emailSetupWired = false;
+
 function wireEmailSetupFields() {
+  // loadEmailRouteStatus() runs on every visit to the Email tab, so without
+  // this guard each visit would stack another pair of listeners and every
+  // keystroke would write storage N times.
+  if (emailSetupWired) return;
+  emailSetupWired = true;
   const url = $('emailWebhookUrl');
   if (url) {
-    url.addEventListener('change', function () {
+    // 'input', not 'change': a paste followed by a reload without blurring the
+    // field never fires 'change', and the secret was lost exactly that way.
+    url.addEventListener('input', function () {
       rememberEmailSetup({ webhookUrl: url.value.trim() });
     });
   }
   const addr = $('emailForwardAddress');
   if (addr) {
-    addr.addEventListener('change', function () {
+    addr.addEventListener('input', function () {
       rememberEmailSetup({ address: addr.value.trim().toLowerCase() });
     });
   }

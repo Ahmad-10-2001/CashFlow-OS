@@ -325,6 +325,18 @@ window.CashFlowSync = (function () {
   }
 
   function adopt(out, email) {
+    // The push/pull cursors are claims about a specific account's server copy
+    // ("everything up to T is uploaded"). Reusing account A's cursors after
+    // signing in as B would skip B's rows as "already synced" — or push A's
+    // leftovers under B's name — so a change of owner resets the book and the
+    // next cycle does a full push and pull. Refreshes keep the same user and
+    // are unaffected.
+    const prevUserId = session ? session.userId : null;
+    const nextUserId = out.user && out.user.id;
+    if (prevUserId && nextUserId && prevUserId !== nextUserId) {
+      book = emptyBook();
+      saveBook();
+    }
     session = {
       accessToken: out.access_token,
       refreshToken: out.refresh_token,
@@ -380,13 +392,17 @@ window.CashFlowSync = (function () {
   }
 
   function adoptReset(out, email) {
+    // expires_in arrives as a number from verify/setNewPassword responses but
+    // as a string from the URL fragment, so coerce rather than type-check.
+    const expRaw = typeof out.expires_in === 'number' ? out.expires_in : Number(out.expires_in);
+    const expSecs = Number.isFinite(expRaw) && expRaw > 0 ? expRaw : 3600;
     const r = {
       token: out.access_token,
       userId: out.user && out.user.id,
       email: (out.user && out.user.email) || email || decodeJwtEmail(out.access_token) || null,
       // Recovery links are short-lived by design. A small grace period on top
       // so a form filled in slowly is not rejected at the last moment.
-      expiresAt: Date.now() + ((typeof out.expires_in === 'number' ? out.expires_in : 3600) + 300) * 1000
+      expiresAt: Date.now() + (expSecs + 300) * 1000
     };
     saveReset(r);
     return r;
@@ -528,7 +544,10 @@ window.CashFlowSync = (function () {
     if (token.length < 6) return { error: 'That code looks too short' };
 
     let last = null;
-    for (const type of ['email', 'magiclink']) {
+    // 'recovery' first: requestPasswordReset() asks for a recovery OTP, so that
+    // is what the code in the inbox almost certainly is. The others remain as
+    // fallbacks for GoTrue versions that name the same code differently.
+    for (const type of ['recovery', 'email', 'magiclink']) {
       try {
         const out = await http(authPath('/verify'), {
           method: 'POST', headers: headers(),
@@ -617,6 +636,13 @@ window.CashFlowSync = (function () {
       return { error: p.error_description || p.error || p.error_code };
     }
     if (p.access_token) {
+      // Only a recovery link may become a password-change token. A sign-in,
+      // invite or magiclink fragment pasted here would otherwise silently turn
+      // into a password form instead of a session, which is the opposite of
+      // what its owner expected.
+      if (p.type && p.type !== 'recovery') {
+        return { error: 'This link signs you in rather than resetting a password. Open it normally to sign in, or press Forgot your password? for a reset link.' };
+      }
       adoptReset({ access_token: p.access_token, expires_in: p.expires_in, user: { email: p.email } }, p.email);
       return { ok: true, fromLink: true };
     }

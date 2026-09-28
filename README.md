@@ -75,7 +75,7 @@ Deliberately minimal. There is no framework, no bundler, and no `node_modules`.
 | Layer | What it is | Why |
 |---|---|---|
 | Markup | Plain HTML5 | No build step; the page is the artifact |
-| Logic | Vanilla ES2020, ~2,900 lines in `script.js` | Readable end to end, no toolchain to learn |
+| Logic | Vanilla ES2020, ~4,400 lines in `script.js` | Readable end to end, no toolchain to learn |
 | Styling | Plain CSS with custom properties | Same reason |
 | Charts | Hand-rolled SVG in `script.js` | No 200 KB chart library, stays offline-capable |
 | Database | Supabase (Postgres) over plain REST via `fetch` | No 120 KB SDK, so the service worker precache stays small |
@@ -340,7 +340,7 @@ Two things to set up on the Supabase side, or the email never arrives:
    `otp_expired` is usually an older email, not a fault, and the app says so
    rather than "invalid or expired" — which sends people looking for a security
    problem that is not there, towards the one action that cannot work.
-2. **An email provider**, for the email to be delivered at all. Supabase's
+3. **An email provider**, for the email to be delivered at all. Supabase's
    built-in SMTP is rate-limited to a couple of messages per hour and only goes
    to team members — fine for one person's own address, not for more. A real one
    (Resend, SendGrid, Mailjet all have free tiers) goes under
@@ -349,9 +349,9 @@ Two things to set up on the Supabase side, or the email never arrives:
 
 ### Knowing which version you are looking at
 
-A badge at the bottom of every tab reads `CashFlow OS v26`.
+A badge at the bottom of every tab reads `CashFlow OS` plus the running build number.
 
-A service worker keeps the last few builds and can serve any of them, so "I
+A service worker can serve a previous build after a deploy, so "I
 deployed the fix and nothing happened" has an explanation that is invisible from
 inside the page — the app looks identical either way. During development that was
 the answer to more than one report, and the badge turns it into a glance.
@@ -432,8 +432,13 @@ sync.js               auth, outbox, pull/push, last-write-wins merge
 config.js             Supabase URL, publishable key, and the build number
 service-worker.js     offline cache
 manifest.json         PWA metadata
+site-root-redirect.html
+                      one-file forwarder published at the account root so
+                      password-reset links land in the app, fragment and all
 db/schema.sql         tables, indexes, RLS policies, grants
 db/email-schema.sql   optional: forwarding routes and the approval queue
+db/check-setup.sql    verification query covering every table
+db/revoke-anon.sql    removes the anon role's default privileges
 supabase/functions/poll-emails/index.ts
                       optional: the webhook that parses forwarded bank emails
 README.md             this file
@@ -596,7 +601,6 @@ The words themselves are as expected: `You sent Rs. X to <name>` and
 is taken from the body, not the moment the message arrived.
 
 When a pattern does not match, nothing is written and nothing is lost — the failure is a
-one does not match, nothing is written and nothing is lost — the failure is a
 silent no-op and the raw message is logged to the function's own logs so the
 pattern can be corrected against a real sample. That is the safe direction to fail
 in, but it does mean "no pending transactions" is ambiguous until you have seen
@@ -623,7 +627,7 @@ type is only ever a label.
 
 ## Testing
 
-1162 assertions across ten suites, all of which run without a browser or a
+1175 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
@@ -657,11 +661,10 @@ a test so it cannot come back.
 
 Stated plainly so nothing here is mistaken for finished:
 
-- **The email parser is unverified against a real NayaPay email.** The
-  forwarding pipeline is built and tested, but the amount and date patterns are
-  inferred, not confirmed against a live sample. Until one real message has been
-  parsed successfully, treat automatic import as untested. Easypaisa is
-  deliberately out of scope.
+- **The email parser is verified against real NayaPay alerts** (`You sent Rs. X
+  to <name>`, `You got Rs. X from <name>`), but other banks' wording is still
+  inferred, not confirmed against live samples. Treat automatic import from any
+  other bank as untested. Easypaisa is deliberately out of scope.
 - **Real-time push.** Sync is on a one-minute timer plus on-focus. Live updates
   would need Supabase Realtime, which is more machinery than this needs yet.
 - **Cloud backup history.** The database is the live copy; a corrupt row is not
