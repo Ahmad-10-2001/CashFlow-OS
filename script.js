@@ -3989,20 +3989,41 @@ function emailFetchHeaders(extra) {
   return Object.assign({ 'Content-Type': 'text/plain;charset=UTF-8' }, extra || {});
 }
 
-/** "Failed to fetch" is what the browser says when it never sent the request.
- *
- *  Almost always the preflight, and almost always because the function's CORS
- *  list does not name a header this app sends. Worth naming plainly, because
- *  every other message here implies a server answered, and this is the one case
- *  where the server was never dialled — so there is nothing in its logs either. */
-function describeUnreachable(err) {
-  const msg = (err && err.message) || '';
-  if (/failed to fetch|networkerror|load failed/i.test(msg)) {
-    return 'The browser blocked the request before it left, so the server was never asked. ' +
-      'Nothing is sent from here that needs a preflight, so this is no longer a header the ' +
-      'function forgot to allow — check your connection, and that the function is deployed.';
+/* Fetch with one automatic retry. The failure this exists for is a lost
+   response: the request reaches the server (a test row gets filed) but the
+   reply never comes back, and the browser reports "Failed to fetch". The
+   server-side effect already happened, so reporting failure without retrying
+   is wrong — and retrying a POST is safe here because every attempt reuses the
+   same body, so the same message_id hits the unique constraint and the second
+   attempt can only ever come back "duplicate", never a second row. */
+async function fetchEmailOnce(url, opts, delayMs) {
+  try {
+    return await fetch(url, opts);
+  } catch (err) {
+    await new Promise((r) => setTimeout(r, delayMs || 2000));
+    return await fetch(url, opts);
   }
-  return 'Could not reach the function: ' + (msg || 'no reply');
+}
+
+/** No HTTP status arrived at all — the browser threw instead of answering.
+ *
+ *  This deliberately does NOT blame CORS or the deployment any more: both were
+ *  verified live (the preflight answers, the function answers), and naming them
+ *  sent the owner redeploying a working function. What is actually known is
+ *  only that no response came back, which on a lossy connection happens after
+ *  the server already did the work. So for the POST the message says where to
+ *  look instead of what to rebuild — and the real error detail goes to the
+ *  console, where it belongs, rather than being swallowed into a guess. */
+function describeUnreachable(err, isPost) {
+  let detail = 'no reply';
+  try {
+    if (err) detail = (err.name ? err.name + ': ' : '') + (err.message || String(err));
+    console.error('[email setup] request failed without a response:', err);
+  } catch (e) { /* logging must never break the panel */ }
+  return 'No response was received (' + detail + '). ' +
+    (isPost
+      ? 'The test may still have reached the server — check the Pending tab (and the function’s Invocations) before pressing again, or you may file a duplicate.'
+      : 'Check your connection, VPN or ad-blocker, then try again.');
 }
 
 /** Turn a gateway refusal into something the user can act on.
@@ -4038,7 +4059,7 @@ async function checkEmailFunction() {
     return;
   }
   try {
-    const res = await fetch(emailRequestUrl(url), { method: 'GET', headers: emailFetchHeaders() });
+    const res = await fetchEmailOnce(emailRequestUrl(url), { method: 'GET', headers: emailFetchHeaders() }, 1500);
     const body = await res.json().catch(function () { return null; });
 
     if (!res.ok) {
@@ -4056,7 +4077,7 @@ async function checkEmailFunction() {
     showEmailTest('bad', 'The server answered in a way this app does not recognise. ' +
       'Check the function is deployed from the code in the repository.');
   } catch (err) {
-    showEmailTest('bad', describeUnreachable(err));
+    showEmailTest('bad', describeUnreachable(err, false));
   }
 }
 
@@ -4082,9 +4103,13 @@ async function runEmailSelfTest() {
   const stamp = String(when.getDate()).padStart(2, '0') + '/' +
     String(when.getMonth() + 1).padStart(2, '0') + '/' + when.getFullYear();
 
+  // One id per press, reused by the retry inside fetchEmailOnce: if the first
+  // attempt filed the row and only its reply was lost, the second attempt hits
+  // the unique constraint and comes back "duplicate" instead of filing twice.
+  const messageId = 'self-test-' + Date.now();
   try {
     const target = emailRequestUrl(url) + '&test=1';
-    const res = await fetch(target, {
+    const res = await fetchEmailOnce(target, {
       method: 'POST',
       headers: emailFetchHeaders(),
       body: JSON.stringify({
@@ -4095,7 +4120,7 @@ async function runEmailSelfTest() {
           subject: 'NayaPay: You have received Rs. 1,234 on ' + stamp,
           text: 'Dear customer, you have received Rs. 1,234 from CashFlow OS test on ' + stamp +
                 '. This is a test message and can be rejected.',
-          message_id: 'self-test-' + Date.now(),
+          message_id: messageId,
         },
       }),
     });
@@ -4129,13 +4154,20 @@ async function runEmailSelfTest() {
       loadPendingTransactions();
       return;
     }
+    if (body && body.status === 'duplicate') {
+      // The earlier attempt got through and only its reply was lost — this is
+      // the retry succeeding, not a problem. There is exactly one row.
+      showEmailTest('ok', 'Already filed — an earlier attempt got through and only its reply was lost. Check the Pending tab.');
+      loadPendingTransactions();
+      return;
+    }
     if (!res.ok) {
       showEmailTest('bad', describeGatewayProblem(res.status, body));
       return;
     }
     showEmailTest('bad', 'Unexpected answer: ' + JSON.stringify(body || {}).slice(0, 200));
   } catch (err) {
-    showEmailTest('bad', describeUnreachable(err));
+    showEmailTest('bad', describeUnreachable(err, true));
   }
 }
 

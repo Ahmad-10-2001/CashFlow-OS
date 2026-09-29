@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v27">
+  <meta name="app-build" content="v28">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -392,10 +392,7 @@
           <button class="btn btn-dark" type="button" data-act="email-copy-url">Copy webhook URL</button>
         </div>
         <p class="field-hint">
-          The address is already filled in. Paste your <code>WEBHOOK_SECRET</code>
-          after the <code>?k=</code> — it is the value you added under Edge
-          Functions → Secrets. The finished URL contains a secret, so it is kept
-          in this browser only and never written into the app.
+          This webhook is incomplete. For the complete webhook, contact Ahmed.
         </p>
       </div>
 
@@ -404,12 +401,6 @@
         </div><!-- /.setup-body -->
       </details>
 
-      <p class="field-hint">
-        Why not connect a password instead? Because a stored password is a
-        liability: base64 is not encryption, and any bug that exposed the
-        database would expose everyone's mail access. Forwarding needs no secret
-        from your mail account at all.
-      </p>
     </section>
   </div>
 

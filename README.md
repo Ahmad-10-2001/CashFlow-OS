@@ -504,6 +504,13 @@ simply the cheapest option here, it is the one that works at all.
    ```
    Without it the function refuses every request — that is deliberate, and the
    app's "Check the server" button tells you when it is missing.
+
+   Optional but recommended, as a second secret on the same screen:
+   ```
+   GEMINI_API_KEY = <a key from Google AI Studio, free tier is plenty>
+   ```
+   This enables the AI fallback described below. Without it the function uses
+   the hand-written rules only, exactly as before — nothing else changes.
 3. Open the **Email** tab, sign in, and press **Send a test transaction**. It
    posts a sample alert through the whole chain. When a row appears under
    **Pending**, everything is wired up.
@@ -607,6 +614,35 @@ in, but it does mean "no pending transactions" is ambiguous until you have seen
 one arrive, which is what the self-test is for: it puts a sample message through
 the same path and names the step that failed.
 
+#### When the rules fail: one AI reading
+
+Hand-written patterns end where a new bank's layout begins — every bank formats
+its statements differently, and each new one used to mean a new pattern plus a
+real sample to write it against. That loop never ends, so it is no longer the
+only path.
+
+When the rules cannot parse a message, the function asks Gemini Flash (or
+whatever `GEMINI_MODEL` names) exactly one question, bounded to 200 output
+tokens and 20 seconds: *is this one completed transaction, and if so, how much,
+which way, who, when?* Anything else — marketing, OTP, bill reminder, a summary
+of many transactions — is answered `{"confident": false}` and filed nowhere.
+
+Three things keep this honest:
+
+- **The answer is re-validated like any untrusted input.** Amount by the same
+  `parseAmount` as the rules, direction by exact match, date by shape. Anything
+  off is a null, which files nothing.
+- **It costs nothing by default.** Rules run first and handle everything they
+  understand; the AI is only asked about mail the rules failed on. Personal
+  volume fits the free tier many times over.
+- **The ledger is still human-approved.** An AI filing lands under **Pending**
+  like any other, and the response says which engine filed it.
+
+The tradeoff, stated plainly: the message text is sent to Google. The body is
+never written to a table either way — but with the key set, it does leave the
+project for the duration of one API call. Leave `GEMINI_API_KEY` unset and the
+function is rules-only, with no third party involved at all.
+
 #### Why the app sends no custom header
 
 The app's two calls to the function put the apikey in the query string and send
@@ -627,7 +663,7 @@ type is only ever a label.
 
 ## Testing
 
-1175 assertions across ten suites, all of which run without a browser or a
+1223 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
@@ -664,7 +700,8 @@ Stated plainly so nothing here is mistaken for finished:
 - **The email parser is verified against real NayaPay alerts** (`You sent Rs. X
   to <name>`, `You got Rs. X from <name>`), but other banks' wording is still
   inferred, not confirmed against live samples. Treat automatic import from any
-  other bank as untested. Easypaisa is deliberately out of scope.
+  other bank as untested. New banks are added by name to the function — the
+  amount/date parser itself is bank-agnostic.
 - **Real-time push.** Sync is on a one-minute timer plus on-focus. Live updates
   would need Supabase Realtime, which is more machinery than this needs yet.
 - **Cloud backup history.** The database is the live copy; a corrupt row is not
