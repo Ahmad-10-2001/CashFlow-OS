@@ -663,7 +663,7 @@ type is only ever a label.
 
 ## Testing
 
-1223 assertions across ten suites, all of which run without a browser or a
+1237 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 

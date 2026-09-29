@@ -198,6 +198,19 @@ window.CashFlowSync = (function () {
     shadow[table] = (list || []).map(clone);
   }
 
+  /* Drop tombstones the app knows are bogus. A tombstone for an id this device
+     never deleted — e.g. a factory account id it renamed away after a sync
+     collision — would otherwise be pushed on every cycle forever, and each
+     push re-fails on someone else's row. Returns how many were dropped. */
+  function forgetTombstones(table, ids) {
+    if (!book.tombstones[table] || !Array.isArray(ids) || !ids.length) return 0;
+    const drop = new Set(ids);
+    const before = book.tombstones[table].length;
+    book.tombstones[table] = book.tombstones[table].filter((t) => !drop.has(t.id));
+    if (book.tombstones[table].length !== before) saveBook();
+    return before - book.tombstones[table].length;
+  }
+
   /* ---------- session ---------- */
   const SESSION_KEY = 'cashflow:session';
   let session = null;
@@ -730,6 +743,12 @@ window.CashFlowSync = (function () {
   let persist = function () {};
   function setPersist(fn) { persist = typeof fn === 'function' ? fn : function () {}; }
 
+  /* Called with the live state when an accounts push is refused with an RLS
+     violation, so the app can rename its own ids and let the push be retried.
+     Must return true only if it actually changed something to retry with. */
+  let accountCollisionHandler = null;
+  function setAccountCollisionHandler(fn) { accountCollisionHandler = typeof fn === 'function' ? fn : null; }
+
   /** Push every table. Takes the state explicitly when a caller already has
    *  it, and otherwise asks the provider. Without the parameter this silently
    *  pushed nothing whenever no provider had been registered. */
@@ -744,7 +763,26 @@ window.CashFlowSync = (function () {
       try {
         await pushOneTable(state, t);
       } catch (err) {
-        failures.push(t + ': ' + (err && err.message ? err.message : 'failed'));
+        const msg = err && err.message ? err.message : 'failed';
+        // Factory account ids are identical on every fresh install, so the
+        // second account to sync hits the first one's rows and Postgres refuses
+        // the ON CONFLICT update with an RLS violation. The app can rename its
+        // own ids (they are opaque) and the push retried — turning a permanent
+        // red banner into one silent self-heal. Anything else fails as before.
+        if (t === 'accounts' && /row-level security/i.test(msg) && accountCollisionHandler) {
+          let healed = false;
+          try { healed = await accountCollisionHandler(state); } catch (e) { healed = false; }
+          if (healed) {
+            try {
+              await pushOneTable(state, t);
+              continue;
+            } catch (err2) {
+              failures.push(t + ': ' + (err2 && err2.message ? err2.message : 'failed'));
+              continue;
+            }
+          }
+        }
+        failures.push(t + ': ' + msg);
       }
     }
     try {
@@ -1180,7 +1218,7 @@ window.CashFlowSync = (function () {
     get resetEmail() { const r = loadReset(); return r ? r.email : null; },
     get hasResetToken() { return !!loadReset(); },
     // sync
-    start, stop, cycle, queuePush, setStateProvider, setPersist, pushAll, touch, seedClock, reconcile, absorbShadow, repairCloudCopy,
+    start, stop, cycle, queuePush, setStateProvider, setPersist, setAccountCollisionHandler, forgetTombstones, pushAll, touch, seedClock, reconcile, absorbShadow, repairCloudCopy,
     // bookkeeping used by the app
     markDeleted: function (table, id) {
       if (!book.tombstones[table]) book.tombstones[table] = [];

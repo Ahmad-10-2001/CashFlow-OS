@@ -49,7 +49,12 @@ const DEFAULT_BUDGETS = { Food: 10000, 'Bike/Fuel': 10000, Groceries: 8000, Bill
    renamed, added, archived or deleted from the Accounts tab, so nothing about
    the app is hard-wired to this list. The ids are fixed on purpose: a v3 file
    is migrated by pointing its transactions at CASH_ACCOUNT_ID, and a stable id
-   means that mapping survives a re-import. */
+   means that mapping survives a re-import.
+   The price of fixed ids is paid on sync: every fresh install carries the same
+   three, and the push upserts on the primary key — so the second account to
+   sync hits the first one's rows and Postgres refuses with an RLS violation.
+   That is expected, not corrupt data: remapCollidingAccountIds() gives this
+   device fresh ids and the retry uploads them as new rows. */
 const CASH_ACCOUNT_ID = 'acc-cash';
 const DEFAULT_ACCOUNTS = [
   { id: CASH_ACCOUNT_ID, name: 'Cash',     kind: 'cash',   openingBalance: 0, archived: false },
@@ -858,6 +863,48 @@ function accountName(id) { const a = findAccount(id); return a ? a.name : 'Unkno
 function cashAccountId() {
   const cash = state.accounts.find((a) => a.kind === 'cash');
   return cash ? cash.id : (state.accounts[0] ? state.accounts[0].id : '');
+}
+
+/** Give this device's factory accounts fresh ids after the server refused them.
+ *
+ *  Called from pushAll exactly once per accounts-push RLS failure, only after
+ *  the refusal actually happened — never speculatively. The ids are opaque
+ *  (every lookup is by id at runtime, every display by name), so renaming is
+ *  invisible to the user; only the references have to follow, and they all
+ *  live in transactions plus settings.lastAccountId. save() restamps whatever
+ *  moved, so the retry — and the already-pushed transactions — converge on the
+ *  next cycle. Returns true only when something was renamed to retry with. */
+async function remapCollidingAccountIds() {
+  const factory = new Set(DEFAULT_ACCOUNTS.map((a) => a.id));
+  const map = Object.create(null);
+  for (const a of state.accounts || []) {
+    if (a && factory.has(a.id) && !map[a.id]) map[a.id] = newId();
+  }
+  const ids = Object.keys(map);
+  if (!ids.length) return false;
+  for (const a of state.accounts) {
+    if (a && map[a.id]) a.id = map[a.id];
+  }
+  for (const t of state.transactions || []) {
+    if (!t) continue;
+    if (map[t.accountId]) t.accountId = map[t.accountId];
+    if (map[t.toAccountId]) t.toAccountId = map[t.toAccountId];
+  }
+  if (state.settings && map[state.settings.lastAccountId]) {
+    state.settings.lastAccountId = map[state.settings.lastAccountId];
+  }
+  const S = window.CashFlowSync;
+  if (S) {
+    // Tell the engine's shadow about the rename BEFORE save()'s reconcile runs.
+    // Otherwise it reads the vanished factory ids as deletions, files tombstones
+    // for rows this device never owned, and every future push re-fails on them —
+    // the heal would fix the rows and wedge the tombstones in one move.
+    if (typeof S.absorbShadow === 'function') S.absorbShadow('accounts', state.accounts);
+    if (typeof S.forgetTombstones === 'function') S.forgetTombstones('accounts', ids);
+  }
+  save();
+  toast('Synced your accounts under fresh ids — the defaults were already claimed by another account');
+  return true;
 }
 function accountTint(kind) { return ACCOUNT_TINT[kind] || ACCOUNT_TINT_FALLBACK; }
 
@@ -3701,6 +3748,7 @@ function init() {
     // A pull changes the state without going through save(), so the engine
     // needs a way to write it down and repaint.
     window.CashFlowSync.setPersist(() => { save(); });
+    window.CashFlowSync.setAccountCollisionHandler(remapCollidingAccountIds);
     window.CashFlowSync.onChange(renderSyncPanel);
     if (window.CashFlowSync.isSignedIn) window.CashFlowSync.start(() => state);
   }
