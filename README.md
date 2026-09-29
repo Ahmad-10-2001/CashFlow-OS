@@ -503,7 +503,7 @@ simply the cheapest option here, it is the one that works at all.
    WEBHOOK_SECRET = <a long random string>
    ```
    Without it the function refuses every request — that is deliberate, and the
-   app's "Check the server" button tells you when it is missing.
+   test in step 3 reports a missing secret instead of silence.
 
    Optional but recommended, as a second secret on the same screen:
    ```
@@ -663,7 +663,7 @@ type is only ever a label.
 
 ## Testing
 
-1237 assertions across ten suites, all of which run without a browser or a
+1239 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 

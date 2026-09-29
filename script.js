@@ -3404,7 +3404,6 @@ const ACTIONS = {
   'sync-signout': signOut,
   'sync-repair': repairCloud,
   'email-save': () => saveEmailRoute(),
-  'email-check': () => checkEmailFunction(),
   'email-test': () => runEmailSelfTest(),
   'email-copy-url': () => copyEmailWebhookUrl(),
   'build-check': () => checkForNewerBuild(true),
@@ -4099,36 +4098,6 @@ function describeGatewayProblem(status, body) {
     'and that the value after ?k= matches WEBHOOK_SECRET.';
 }
 
-async function checkEmailFunction() {
-  const url = emailWebhookUrl();
-  if (!url) { showEmailTest('bad', 'The webhook URL is empty above.'); return; }
-  if (/[?&#]k=$/.test(url)) {
-    showEmailTest('bad', 'Paste your WEBHOOK_SECRET after ?k= at the end of the URL first.');
-    return;
-  }
-  try {
-    const res = await fetchEmailOnce(emailRequestUrl(url), { method: 'GET', headers: emailFetchHeaders() }, 1500);
-    const body = await res.json().catch(function () { return null; });
-
-    if (!res.ok) {
-      showEmailTest('bad', describeGatewayProblem(res.status, body));
-      return;
-    }
-    if (body && body.ok && body.secret_configured) {
-      showEmailTest('ok', 'The function is deployed and the secret matches. Now press "Send a test transaction".');
-      return;
-    }
-    if (body && body.ok) {
-      showEmailTest('bad', 'The function is deployed, but WEBHOOK_SECRET is not set on it. Add it under Edge Functions → Secrets.');
-      return;
-    }
-    showEmailTest('bad', 'The server answered in a way this app does not recognise. ' +
-      'Check the function is deployed from the code in the repository.');
-  } catch (err) {
-    showEmailTest('bad', describeUnreachable(err, false));
-  }
-}
-
 /** Run a sample alert through the entire chain and report which step it reached.
  *
  *  Without this, "no transactions are arriving" has four possible causes —
@@ -4197,8 +4166,8 @@ async function runEmailSelfTest() {
       return;
     }
     if (body && body.status === 'filed') {
-      showEmailTest('ok', 'It worked. ' + body.type + ' of Rs. ' + body.amount +
-        ' was filed — open the Pending tab and you will see it there. Reject it when you are done.');
+      showEmailTest('ok', 'Please check the Pending Transactions tab — if a transaction of + Rs ' +
+        body.amount + ' is appearing there, then all things are set and you will get all the bank notifications from now on.');
       loadPendingTransactions();
       return;
     }
