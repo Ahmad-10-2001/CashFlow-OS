@@ -349,8 +349,10 @@
               the one provider that works without one.</p>
           </li>
           <li>
-            <strong>Save that address below.</strong> This tells the server the
-              address is yours.
+            <strong>Save your addresses below — both of them.</strong> The
+              AgentMail inbox <em>and</em> your Gmail address: forwarding keeps
+              the original To header, so the server sees your Gmail address, not
+              the inbox. Either one alone leaves half the mail unmatched.
           </li>
           <li>
             <strong>Copy your webhook URL</strong> and paste it into AgentMail
@@ -382,6 +384,8 @@
         <button class="btn btn-primary" type="button" data-act="email-save">Save address</button>
         <button class="btn btn-dark" type="button" data-act="email-test">Send a test transaction</button>
       </div>
+
+      <div id="emailRouteList"></div>
 
       <div class="form-group mt-10">
         <label class="field-label" for="emailWebhookUrl">Your webhook URL</label>

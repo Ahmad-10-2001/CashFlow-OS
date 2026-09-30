@@ -1046,6 +1046,23 @@ select {
   font-size: 13px;
 }
 
+/* Saved forwarding addresses, each removable. Plain rows: the addresses are
+   identifiers to compare at a glance, not content to admire. */
+.email-route-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line, #e3e3e6);
+}
+.email-route-row:last-child { border-bottom: none; }
+.email-route-addr {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;

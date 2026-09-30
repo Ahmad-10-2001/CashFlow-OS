@@ -551,14 +551,21 @@ app: not deployed, and deployed with no secret set.
 #### How the routing decides whose ledger a message belongs to
 
 The recipient is matched against `email_routes`, tolerating the forms a provider
-sends it in (`bank@x.com`, `<bank@x.com>`, `Bank <bank@x.com>`). With **exactly
-one** active route it is used regardless — one person, one address, and providers
-rewrite the recipient differently often enough that a strict comparison would
-silently file nothing. With **two or more**, an unrecognised recipient is
-refused rather than guessed: an earlier version fell back to a single configured
-user, which meant a message forwarded from any address at all would land in that
-one account's ledger. Someone else's bank email must never reach someone's money
-records.
+sends it in (`bank@x.com`, `<bank@x.com>`, `Bank <bank@x.com>`, or an array of
+address objects). With **exactly one** active route it is used regardless — one
+person, one address, and providers rewrite the recipient differently often
+enough that a strict comparison would silently file nothing. With **two or
+more**, an unrecognised recipient is refused rather than guessed: an earlier
+version fell back to a single configured user, which meant a message forwarded
+from any address at all would land in that one account's ledger. Someone else's
+bank email must never reach someone's money records.
+
+Register **both** addresses on an account: the AgentMail inbox *and* the Gmail
+account. Gmail forwarding preserves the original To header, so the server sees
+`you@gmail.com`, not the inbox — with only the inbox registered, nothing
+matches and every message fails with a 422 the moment a second route exists
+anywhere (with a single route the bypass hides this completely, which is why it
+broke the day the second account was added, not the day forwarding was set up).
 
 #### The parser, and the bug that would have made it silently useless
 
@@ -663,7 +670,7 @@ type is only ever a label.
 
 ## Testing
 
-1239 assertions across ten suites, all of which run without a browser or a
+1251 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 

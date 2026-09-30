@@ -3404,6 +3404,7 @@ const ACTIONS = {
   'sync-signout': signOut,
   'sync-repair': repairCloud,
   'email-save': () => saveEmailRoute(),
+  'email-remove': (el) => removeEmailRoute(el && el.dataset && el.dataset.id),
   'email-test': () => runEmailSelfTest(),
   'email-copy-url': () => copyEmailWebhookUrl(),
   'build-check': () => checkForNewerBuild(true),
@@ -3772,6 +3773,11 @@ function init() {
 let pendingTransactions = [];
 let emailConnected = false;
 let pendingQueueError = null;
+// Every active forwarding address on this account. There is deliberately more
+// than one: Gmail forwarding keeps the original To header, so a forwarded mail
+// arrives addressed to the Gmail account, not to the AgentMail inbox — both
+// have to be registered or the server refuses the message with a 422.
+let emailRoutes = [];
 
 /** Build Supabase REST headers using the current session token. */
 function sbHeaders() {
@@ -3836,13 +3842,20 @@ async function loadEmailRouteStatus() {
   const userId = getCurrentUserId();
   restoreEmailSetup();
   wireEmailSetupFields();
-  if (!userId) { renderEmailConnectStatus(); return; }
+  if (!userId) {
+    emailConnected = false;
+    emailRoutes = [];
+    renderEmailConnectStatus();
+    renderEmailRouteList();
+    return;
+  }
 
   try {
     const data = await sbFetch('email_routes?user_id=eq.' + encodeURIComponent(userId) + '&is_active=eq.true');
-    if (data && data.length) {
+    emailRoutes = Array.isArray(data) ? data : [];
+    if (emailRoutes.length) {
       emailConnected = true;
-      const known = data[0].address || '';
+      const known = emailRoutes[0].address || '';
       const box = $('emailForwardAddress');
       if (box && !box.value) box.value = known;
     } else {
@@ -3853,8 +3866,10 @@ async function loadEmailRouteStatus() {
     // reports that forwarding is not confirmed.
     console.warn('Could not read the forwarding route:', err && err.message);
     emailConnected = false;
+    emailRoutes = [];
   }
   renderEmailConnectStatus();
+  renderEmailRouteList();
 }
 
 /* The webhook URL carries the shared secret, so it is held in this browser and
@@ -3928,11 +3943,17 @@ function wireEmailSetupFields() {
   }
 }
 
-/** Register the forwarding address against the signed-in account.
+/** Register a forwarding address against the signed-in account.
  *
  *  This used to be a manual SQL insert, and that is a step that looks optional
  *  and is not: without it the function has nobody to file messages against, and
- *  the app says "not set up" with nothing the user can act on. */
+ *  the app says "not set up" with nothing the user can act on.
+ *
+ *  One account holds several addresses at once — the AgentMail inbox AND the
+ *  Gmail account, because forwarding preserves the original To header. An
+ *  earlier version retired every other row on save, which silently unregistered
+ *  the Gmail address and stopped all mail with a 422 the moment a second route
+ *  existed anywhere. */
 async function saveEmailRoute() {
   const userId = getCurrentUserId();
   if (!userId) { toast('Sign in first'); return; }
@@ -3946,26 +3967,18 @@ async function saveEmailRoute() {
     const q = 'email_routes?user_id=eq.' + encodeURIComponent(userId);
     const existing = await sbFetch(q + '&select=id,address,is_active');
 
-    /* Update rather than insert-and-insert. The address column is unique, so
-       saving the same address twice — which is the normal thing to do while
-       setting this up — would fail on the constraint and report a problem the
-       user cannot act on. */
-    if (existing && existing.length) {
-      const mine = existing.filter((r) => r.address === address)[0] ||
-                   existing.filter((r) => r.is_active)[0] || existing[0];
-      await sbFetch(q + '&id=eq.' + encodeURIComponent(mine.id), {
-        method: 'PATCH',
-        body: JSON.stringify({ address, is_active: true }),
-      });
-      /* Retire any other rows for this account. Two live rows make the server
-         refuse to choose between them, and messages stop arriving with nothing
-         visible to explain why. */
-      for (const r of existing) {
-        if (r.id !== mine.id) {
-          await sbFetch(q + '&id=eq.' + encodeURIComponent(r.id), {
-            method: 'PATCH', body: JSON.stringify({ is_active: false }),
-          });
-        }
+    /* Add, never replace. The address column is unique, so saving the same
+       address twice — the normal thing to do while setting this up — must
+       reactivate rather than insert, or it fails on the constraint with a
+       problem the user cannot act on. Other addresses stay exactly as they
+       are: each one is a live route, not a superseded draft. */
+    const same = (existing || []).filter((r) => r.address === address)[0];
+    if (same) {
+      if (!same.is_active) {
+        await sbFetch(q + '&id=eq.' + encodeURIComponent(same.id), {
+          method: 'PATCH',
+          body: JSON.stringify({ is_active: true }),
+        });
       }
     } else {
       await sbFetch('email_routes', {
@@ -3975,13 +3988,49 @@ async function saveEmailRoute() {
     }
     emailConnected = true;
     rememberEmailSetup({ address });
-    renderEmailConnectStatus();
+    await loadEmailRouteStatus();
     showEmailTest('ok', 'Saved. Messages sent to ' + address + ' will be filed for this account.');
   } catch (err) {
     const msg = (err && err.message) || 'failed';
     showEmailTest('bad', /duplicate|unique/i.test(msg)
       ? 'That address is already registered to another account. Each address can belong to only one.'
       : 'Could not save: ' + msg);
+  }
+}
+
+/** Retire one of this account's addresses. The row is deactivated, not
+ *  deleted, so a re-add is a reactivation rather than a fight with the unique
+ *  constraint. */
+async function removeEmailRoute(id) {
+  const userId = getCurrentUserId();
+  if (!userId || !id) return;
+  try {
+    await sbFetch('email_routes?user_id=eq.' + encodeURIComponent(userId) +
+      '&id=eq.' + encodeURIComponent(id), {
+      method: 'PATCH', body: JSON.stringify({ is_active: false }),
+    });
+    await loadEmailRouteStatus();
+  } catch (err) {
+    toast('Could not remove: ' + ((err && err.message) || 'failed'));
+  }
+}
+
+/** The saved addresses, each removable. Rendered from the server rows — never
+ *  from the input box — so what is shown is what the server will match. */
+function renderEmailRouteList() {
+  const container = $('emailRouteList');
+  if (!container) return;
+  mount(container);
+  if (!emailRoutes.length) return;
+  container.appendChild(h('div', { class: 'field-label' }, 'Saved addresses'));
+  for (const r of emailRoutes) {
+    container.appendChild(h('div', { class: 'email-route-row' },
+      h('span', { class: 'email-route-addr' }, String(r.address || '')),
+      h('button', {
+        class: 'btn btn-dark btn-sm', type: 'button',
+        dataset: { act: 'email-remove', id: r.id },
+      }, 'Remove')
+    ));
   }
 }
 
@@ -4226,7 +4275,7 @@ function renderEmailConnectStatus() {
   if (emailConnected) {
     mount(statusEl, h('div', { class: 'email-status connected' },
       h('span', { class: 'email-status-icon' }, '✓'),
-      h('span', {}, 'Address saved. Bank emails forwarded to it will appear under Pending once the test below passes.')
+      h('span', {}, 'Addresses saved. Bank emails sent to them will appear under Pending once the test below passes.')
     ));
   } else {
     mount(statusEl, h('div', { class: 'email-status disconnected' },
