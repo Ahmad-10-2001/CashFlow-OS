@@ -629,10 +629,17 @@ real sample to write it against. That loop never ends, so it is no longer the
 only path.
 
 When the rules cannot parse a message, the function asks Gemini Flash (or
-whatever `GEMINI_MODEL` names) exactly one question, bounded to 200 output
-tokens and 20 seconds: *is this one completed transaction, and if so, how much,
-which way, who, when?* Anything else — marketing, OTP, bill reminder, a summary
-of many transactions — is answered `{"confident": false}` and filed nowhere.
+whatever `GEMINI_MODEL` names — a comma-separated list, tried in order) exactly
+one question per model, bounded to 200 output tokens and 20 seconds: *is this
+one completed transaction, and if so, how much, which way, who, when?* Anything
+else — marketing, OTP, bill reminder, a summary of many transactions — is
+answered `{"confident": false}` and filed nowhere.
+
+Google retires model names regularly — `gemini-2.0-flash` died June 2026 and
+took the whole AI path down with a bare HTTP 404 — so a 404 falls through to
+the next name on the list instead of failing the mail. The default list tracks
+the cheapest stable Flash models; overriding it needs only the secret edited,
+no redeploy of the logic.
 
 Three things keep this honest:
 
@@ -670,7 +677,7 @@ type is only ever a label.
 
 ## Testing
 
-1251 assertions across ten suites, all of which run without a browser or a
+1256 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
