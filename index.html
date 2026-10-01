@@ -9,11 +9,11 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v28">
+  <meta name="app-build" content="v29">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
-  <meta name="app-tabs" content="home,accounts,transactions,budget,udhaar,custody,reports,list,categories,pending,settings,email">
+  <meta name="app-tabs" content="home,transactions,budget,udhaar,reports,list,categories,pending,accounts,settings">
   <meta name="description" content="Track income, expenses, budgets, accounts and udhaar — works offline.">
   <title>CashFlow OS</title>
   <link rel="manifest" href="manifest.json">
@@ -50,6 +50,7 @@
           <span id="totalExpense">₨ 0</span>
         </div>
       </div>
+      <div class="balance-period" id="balancePeriod"></div>
       <div class="acct-boxes" id="accountBoxes"></div>
       <div id="udhaarLine"></div>
     </section>
@@ -100,6 +101,10 @@
     <section class="card" aria-labelledby="accountsHeading">
       <h2 class="card-title" id="accountsHeading">Accounts</h2>
       <p class="card-subtitle">Cash, NayaPay, Easypaisa — and any account you add later.</p>
+      <div class="form-group tx-period-row">
+        <label class="field-label" for="acctPeriod">Month</label>
+        <select id="acctPeriod"></select>
+      </div>
       <div class="report-total strong" id="accountTotal"></div>
       <div id="accountList"></div>
     </section>
@@ -132,6 +137,10 @@
   <div id="panel-transactions" data-panel="transactions" role="tabpanel" aria-labelledby="tab-transactions" hidden>
     <section class="card" aria-labelledby="txListHeading">
       <h2 class="card-title" id="txListHeading">Transactions</h2>
+      <div class="form-group tx-period-row">
+        <label class="field-label" for="txPeriod">Month</label>
+        <select id="txPeriod"></select>
+      </div>
       <div class="form-group">
         <label class="sr-only" for="txSearch">Search transactions</label>
         <input id="txSearch" type="search" placeholder="Search by category, comment or amount" autocomplete="off">
@@ -150,6 +159,7 @@
         <select id="budgetPeriod"></select>
       </div>
       <div id="budgetList"></div>
+      <div id="budgetSummary"></div>
       <form class="budget-edit-section" id="budgetForm" novalidate>
         <div class="form-group">
           <label class="sr-only" for="budgetCategory">Budget category</label>
@@ -194,10 +204,9 @@
       <button class="btn btn-dark" type="submit">Add Udhaar</button>
       <div id="debtList"></div>
     </form>
-  </div>
 
-  <!-- ══════════════ CUSTODY / AMANAT ══════════════ -->
-  <div id="panel-custody" data-panel="custody" role="tabpanel" aria-labelledby="custodyHeading" hidden>
+    <!-- ── Amanat lives in this tab now, below Udhaar: one tab for money that
+         is not quite yours either way ── -->
     <form class="card" id="custodyForm" novalidate>
       <h2 class="card-title" id="custodyHeading">Amanat (Held for Others)</h2>
       <p class="card-subtitle">
@@ -315,8 +324,17 @@
     </section>
   </div>
 
-  <!-- ══════════════ EMAIL (forwarding setup) ══════════════ -->
-  <div id="panel-email" data-panel="email" role="tabpanel" aria-labelledby="emailHeading" hidden>
+  <!-- ══════════════ PENDING QUEUE (+ email setup below it) ══════════════ -->
+  <div id="panel-pending" data-panel="pending" role="tabpanel" aria-labelledby="pendingHeading" hidden>
+    <section class="card" aria-labelledby="pendingHeading">
+      <h2 class="card-title" id="pendingHeading">🔔 Pending Transactions</h2>
+      <p class="card-subtitle">
+        Transactions from your bank emails. Approve to add them to your records, or reject if incorrect.
+      </p>
+      <div id="pendingQueueList"></div>
+    </section>
+
+    <!-- ── Email setup lives here now, after the queue: one-time setup, not a tab ── -->
     <section class="card" aria-labelledby="emailHeading">
       <h2 class="card-title" id="emailHeading">📧 Automatic Transactions</h2>
       <p class="card-subtitle">
@@ -325,6 +343,10 @@
       </p>
 
       <div id="emailConnectStatus"></div>
+
+      <!-- Saved addresses stay visible once set up; the setup steps below hide.
+           Paths on display, instructions away — that was the request. -->
+      <div id="emailRouteList"></div>
 
       <!-- Collapsed by default. The setup is a one-time job, and leaving a page
            of instructions permanently in the tab bar made it read as part of the
@@ -385,8 +407,6 @@
         <button class="btn btn-dark" type="button" data-act="email-test">Send a test transaction</button>
       </div>
 
-      <div id="emailRouteList"></div>
-
       <div class="form-group mt-10">
         <label class="field-label" for="emailWebhookUrl">Your webhook URL</label>
         <input id="emailWebhookUrl" type="url" inputmode="url" autocomplete="off"
@@ -404,17 +424,6 @@
         </div><!-- /.setup-body -->
       </details>
 
-    </section>
-  </div>
-
-  <!-- ══════════════ PENDING QUEUE ══════════════ -->
-  <div id="panel-pending" data-panel="pending" role="tabpanel" aria-labelledby="pendingHeading" hidden>
-    <section class="card" aria-labelledby="pendingHeading">
-      <h2 class="card-title" id="pendingHeading">🔔 Pending Transactions</h2>
-      <p class="card-subtitle">
-        Transactions from your bank emails. Approve to add them to your records, or reject if incorrect.
-      </p>
-      <div id="pendingQueueList"></div>
     </section>
   </div>
 

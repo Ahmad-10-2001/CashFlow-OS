@@ -72,23 +72,22 @@ const ACCOUNT_TINT = {
 };
 const ACCOUNT_TINT_FALLBACK = { bg: '#f0f0f0', ink: '#4a4a52' };
 
-/* Tabs, in menu order. Keep in sync with the markup. */
+/* Tab order is the menu order, and the app-tabs meta tag must list the same ids
+   in the same order — that pair is the contract the stale-asset guard reads.
+   Amanat lives inside the Udhaar tab and the email setup inside Pending, so
+   neither has a tab of its own: one-time setup screens kept their own tabs
+   read as daily routine instead of finished business. */
 const TABS = [
   { id: 'home',         label: 'Home',       glyph: '◈' },
-  { id: 'accounts',     label: 'Accounts',   glyph: '▣' },
   { id: 'transactions', label: 'Records',    glyph: '≡' },
   { id: 'budget',       label: 'Budget',     glyph: '◎' },
   { id: 'udhaar',       label: 'Udhaar',     glyph: '⇄' },
-  { id: 'custody',      label: 'Amanat',     glyph: '⚿' },
   { id: 'reports',      label: 'Reports',    glyph: '◔' },
   { id: 'list',         label: 'List',       glyph: '☑' },
   { id: 'categories',   label: 'Categories', glyph: '❑' },
   { id: 'pending',      label: 'Pending',    glyph: '🔔' },
-  { id: 'settings',     label: 'Backup',     glyph: '⚙' },
-  /* Last, and marked optional. Email is a one-time setup, not a daily screen,
-     and sitting between Categories and Pending made it read as part of the
-     routine — something still to be done rather than something finished. */
-  { id: 'email',        label: 'Email',      glyph: '📧', optional: true }
+  { id: 'accounts',     label: 'Accounts',   glyph: '▣' },
+  { id: 'settings',     label: 'Backup',     glyph: '⚙' }
 ];
 
 /* Categorical palette. Chosen to stay distinguishable on white and to hold
@@ -110,6 +109,36 @@ let storageUsable = true;
 let activeTab = 'home';
 let reportRange = { mode: 'month' };
 let budgetPeriod = null;   // null = follow the current calendar month
+/* Viewing months for the ledger tabs. Session-only like budgetPeriod, and for
+   the same reason: a new month must read fresh on every load, so these are
+   never persisted — null always means "this calendar month". Records and
+   Accounts each keep their own, so looking back in one tab never moves the
+   other. Home always shows the current month; it has no picker to go stale. */
+let viewTxPeriod = null;
+let viewAcctPeriod = null;
+/** True when a wall-clock stamp falls inside a YYYY-MM month. */
+function inPeriod(dateStr, period) {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) return false;
+  const b = periodBoundsOf(period);
+  return d >= b.start && d <= b.end;
+}
+function changeTxPeriod(period) {
+  viewTxPeriod = PERIOD_RE.test(String(period)) ? period : null;
+  renderAll();
+}
+function changeAcctPeriod(period) {
+  viewAcctPeriod = PERIOD_RE.test(String(period)) ? period : null;
+  renderAll();
+}
+/** The month a ledger view actually shows: the chosen one, unless it no longer
+ *  exists (everything in it was deleted), in which case this month. Without
+ *  this the picker and the list can disagree — the select falls back to the
+ *  newest option while the list filters by a month with nothing in it. */
+function validViewPeriod(v) {
+  const p = PERIOD_RE.test(String(v)) ? v : currentPeriod();
+  return knownPeriods().indexOf(p) !== -1 ? p : currentPeriod();
+}
 // The last result of "check and re-upload", kept so it survives a re-render of
 // the sync panel (which happens on every save()).
 let repairReport = null;
@@ -1205,11 +1234,10 @@ function showTab(name, opts) {
   // Only the visible panel is worth measuring, so charts render once they show.
   renderAll();
 
-  // The email tabs are the only ones that need the network, and most sessions
-  // never open them. Fetching on every page load spent two requests to fill
-  // panels nobody looked at, on a connection that may not even exist.
-  if (name === 'email') loadEmailRouteStatus();
-  if (name === 'pending') loadPendingTransactions();
+  // Pending is the only tab that needs the network, and most sessions never
+  // open it. Fetching on every page load spent requests to fill a panel nobody
+  // looked at, on a connection that may not even exist.
+  if (name === 'pending') { loadPendingTransactions(); loadEmailRouteStatus(); }
 
   if (!o.silent && typeof location !== 'undefined') {
     const hash = '#/' + name;
@@ -1515,6 +1543,32 @@ function removeCategory(name) {
   save();
   toast('Deleted "' + match + '"');
 }
+
+/** Move a category up or down in Manage Categories. Every dropdown in the app
+ *  is built from state.categories in order, so the order set here is the order
+ *  seen everywhere — new entries land at the end until moved. */
+function moveCategory(name, dir) {
+  const i = state.categories.findIndex((c) => c.toLowerCase() === String(name).toLowerCase());
+  if (i === -1) return;
+  const j = dir < 0 ? i - 1 : i + 1;
+  if (j < 0 || j >= state.categories.length) return;
+  const tmp = state.categories[i];
+  state.categories[i] = state.categories[j];
+  state.categories[j] = tmp;
+  save();
+}
+
+/** Drop a dragged category before another. Same storage, same dropdowns. */
+function moveCategoryBefore(dragged, target) {
+  const from = state.categories.findIndex((c) => c.toLowerCase() === String(dragged).toLowerCase());
+  const to = state.categories.findIndex((c) => c.toLowerCase() === String(target).toLowerCase());
+  if (from === -1 || to === -1 || from === to) return;
+  const item = state.categories.splice(from, 1)[0];
+  state.categories.splice(from < to ? to - 1 : to, 0, item);
+  save();
+}
+
+let dragCatName = null;
 
 /* ============================================================
    Budgets
@@ -2509,9 +2563,15 @@ function handleModalKeys(e) {
    ============================================================ */
 
 function renderBalance() {
-  const all = ledgerTotals(null, null);
+  // Income and Expense are this month's flow; the headline stays lifetime, so
+  // a new month reads fresh zeros up top while the total below it is untouched.
+  const per = currentPeriod();
+  const b = periodBoundsOf(per);
+  const all = ledgerTotals(b.start, b.end);
   const u = udhaarTotals();
   const { rows, total } = allAccountBalances();
+  const pl = $('balancePeriod');
+  if (pl) pl.textContent = periodLabel(per);
 
   // The headline is the sum of the account boxes below it, so the two can never
   // disagree — which is exactly why a transfer, which moves money between the
@@ -2563,6 +2623,15 @@ function renderBalance() {
 function renderAccounts() {
   const { rows, total } = allAccountBalances();
   const list = $('accountList');
+  // Balances stay lifetime — money does not vanish at month end — but the
+  // in/out flow underneath is scoped to the selected month, like everywhere
+  // else. Last month's traffic next to this month's balance is what made the
+  // tab unreadable.
+  const per = validViewPeriod(viewAcctPeriod);
+  viewAcctPeriod = per === currentPeriod() ? null : per;
+  const perSel = $('acctPeriod');
+  if (perSel) fillPeriodSelect(perSel, { selected: per });
+  const b = periodBoundsOf(per);
 
   mount($('accountTotal'), h('span', { class: 'label' }, 'Total across ' + rows.length + ' account(s)'),
     h('span', { class: 'value' }, formatMoney(total)));
@@ -2571,7 +2640,7 @@ function renderAccounts() {
     mount(list, h('div', { class: 'empty-state' }, 'No accounts. Add one below.'));
   } else {
     mount(list, rows.map((r) => {
-      const act = accountActivity(r.account.id, null, null);
+      const act = accountActivity(r.account.id, b.start, b.end);
       const tint = accountTint(r.account.kind);
       return h('div', { class: 'acct-item' + (r.account.archived ? ' is-archived' : '') },
         h('div', { class: 'acct-head' },
@@ -2600,8 +2669,11 @@ function renderAccounts() {
     }));
   }
 
-  const transfers = transferList();
-  mount($('transferList'), transfers.length
+  const allTransfers = transferList();
+  const transfers = allTransfers.filter((t) => inPeriod(t.date, per));
+  mount($('transferList'),
+    h('div', { class: 'tx-detail' }, 'Showing ' + periodLabel(per)),
+    transfers.length
     ? transfers.slice(0, 20).map((t) => h('div', { class: 'transfer-item' },
         h('div', { class: 'transfer-head' },
           h('span', { class: 'transfer-route' },
@@ -2615,7 +2687,9 @@ function renderAccounts() {
           button('Delete', 'tx-delete', { id: t.id, class: 'btn-mini danger' })
         )
       ))
-    : h('div', { class: 'empty-state' }, 'No transfers yet. Use "Move between accounts" on the Home tab.'));
+    : h('div', { class: 'empty-state' }, allTransfers.length
+        ? 'No transfers in ' + periodLabel(per) + '.'
+        : 'No transfers yet. Use "Move between accounts" on the Home tab.'));
 }
 
 /* ---------- custody / amanat tab ---------- */
@@ -2692,6 +2766,33 @@ function renderCustody() {
   mount(list, children);
 }
 
+/** What is left after this month's budgets: total balance minus everything set
+ *  aside, minus anything spent past its limit. Under-spending keeps the limit
+ *  reserved (the money is spoken for); over-spending counts what actually left,
+ *  so Remaining = balance − Σ max(limit, spent). A pure function so the maths
+ *  is testable without rendering. */
+function budgetSummary(period) {
+  const { start, end } = periodBoundsOf(period);
+  const today = endOfToday();
+  const windowEnd = end < today ? end : today;
+  const live = start <= windowEnd;
+  const monthSpend = live ? spendByCategory(start, windowEnd) : new Map();
+  const monthIncome = live ? incomeByCategory(start, windowEnd) : new Map();
+  const limits = budgetsFor(period);
+  let setAside = 0;
+  let overExtra = 0;
+  for (const cat of Object.keys(limits)) {
+    const limit = limits[cat];
+    const gross = monthSpend.get(cat) || 0;
+    const inc = offsetOn(cat) ? (monthIncome.get(cat) || 0) : 0;
+    const used = Math.max(0, round2(gross - inc));
+    setAside = round2(setAside + limit);
+    overExtra = round2(overExtra + Math.max(0, round2(used - limit)));
+  }
+  const available = allAccountBalances().total;
+  return { available, setAside, overExtra, remaining: round2(available - setAside - overExtra) };
+}
+
 function renderBudgets() {
   const period = activeBudgetPeriod();
   const periodPicker = $('budgetPeriod');
@@ -2756,12 +2857,45 @@ function renderBudgets() {
 
   mount($('budgetList'), head, body);
   fillCategorySelect($('budgetCategory'));
+
+  // What is left after this month's budgets. Only shown once at least one
+  // budget exists — an empty month needs no summary.
+  const sumBox = $('budgetSummary');
+  if (sumBox) {
+    if (!cats.length) {
+      mount(sumBox);
+    } else {
+      const sum = budgetSummary(period);
+      mount(sumBox,
+        h('div', { class: 'budget-summary' },
+          h('div', { class: 'budget-sum-row' },
+            h('span', {}, 'Available total'),
+            h('span', {}, formatMoney(sum.available))),
+          h('div', { class: 'budget-sum-row' },
+            h('span', {}, 'Set aside in budgets'),
+            h('span', {}, '− ' + formatMoney(sum.setAside))),
+          sum.overExtra > 0
+            ? h('div', { class: 'budget-sum-row over' },
+              h('span', {}, 'Over budget extra'),
+              h('span', {}, '− ' + formatMoney(sum.overExtra)))
+            : null,
+          h('div', { class: 'budget-sum-row remaining' },
+            h('span', {}, 'Remaining (saving)'),
+            h('span', {}, formatMoney(sum.remaining)))
+        )
+      );
+    }
+  }
 }
 
 function renderTransactions() {
   const input = $('txSearch');
   const search = String((input && input.value) || '').trim().toLowerCase();
   const list = $('txList');
+  const per = validViewPeriod(viewTxPeriod);
+  viewTxPeriod = per === currentPeriod() ? null : per;
+  const perSel = $('txPeriod');
+  if (perSel) fillPeriodSelect(perSel, { selected: per });
 
   // Sorted here rather than with a locale-aware comparator so the order is
   // identical in every browser. The id tiebreak matters because several records
@@ -2771,6 +2905,10 @@ function renderTransactions() {
     const diff = new Date(b.date) - new Date(a.date);
     return diff !== 0 ? diff : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   });
+
+  // The month comes first: searching "salary" in October must not drag in
+  // September's salary as well, or the picker is decoration.
+  rows = rows.filter((t) => inPeriod(t.date, per));
 
   if (search) {
     rows = rows.filter((t) => {
@@ -2788,7 +2926,9 @@ function renderTransactions() {
   }
 
   if (!rows.length) {
-    mount(list, h('div', { class: 'empty-state' }, search ? 'No transactions match "' + search + '"' : 'No transactions yet'));
+    mount(list, h('div', { class: 'empty-state' }, search
+      ? 'No transactions match "' + search + '" in ' + periodLabel(per)
+      : 'No transactions in ' + periodLabel(per)));
     return;
   }
 
@@ -2910,14 +3050,22 @@ function renderCategories() {
       const key = t.category.toLowerCase();
       counts.set(key, (counts.get(key) || 0) + 1);
     }
-    mount(list, state.categories.map((cat) =>
-      h('div', { class: 'category-item' },
+    mount(list, state.categories.map((cat, i) =>
+      h('div', {
+        class: 'category-item', draggable: 'true',
+        dataset: { catRow: cat },
+        'aria-label': cat + ', position ' + (i + 1) + ' of ' + state.categories.length
+      },
         h('div', { class: 'category-info' },
           h('span', { class: 'category-name' }, cat),
           h('span', { class: 'category-count' },
             (counts.get(cat.toLowerCase()) || 0) + ' transaction(s)' + (offsetOn(cat) ? ' · income offsets budget' : ''))
         ),
-        iconButton('✕', 'category-delete', { arg: cat, title: 'Delete category ' + cat })
+        h('div', { class: 'category-move' },
+          iconButton('↑', 'cat-up', { arg: cat, title: 'Move ' + cat + ' up' }),
+          iconButton('↓', 'cat-down', { arg: cat, title: 'Move ' + cat + ' down' }),
+          iconButton('✕', 'category-delete', { arg: cat, title: 'Delete category ' + cat })
+        )
       )
     ));
   }
@@ -3383,6 +3531,8 @@ const ACTIONS = {
   'debt-edit': (el) => openDebtEditModal(el.dataset.id),
   'debt-delete': (el) => deleteDebt(el.dataset.id),
   'category-delete': (el) => removeCategory(el.dataset.arg),
+  'cat-up': (el) => moveCategory(el.dataset.arg, -1),
+  'cat-down': (el) => moveCategory(el.dataset.arg, 1),
   'budget-delete': (el) => removeBudget(el.dataset.arg),
   'report': (el) => showReport(el.dataset.arg),
   'report-custom': applyCustomRange,
@@ -3455,6 +3605,8 @@ function wireEvents() {
     if (!(e.target instanceof Element)) return;
 
     if (e.target.id === 'budgetPeriod') { changeBudgetPeriod(e.target.value); return; }
+    if (e.target.id === 'txPeriod') { changeTxPeriod(e.target.value); return; }
+    if (e.target.id === 'acctPeriod') { changeAcctPeriod(e.target.value); return; }
     if (e.target.id === 'txType') { setTxTypeFields(); return; }
     if (e.target.id === 'editType') { setEditTypeFields(); return; }
 
@@ -3519,6 +3671,34 @@ function wireEvents() {
     const overlay = $(id);
     if (overlay) overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(id); });
   });
+
+  // Drag-and-drop for the category list (desktop; touch uses the ↑ ↓ buttons).
+  // Delegated like everything else, so re-renders cannot orphan the handlers.
+  const catRowOf = (e) => {
+    if (!(e.target instanceof Element) || !e.target.closest) return null;
+    return e.target.closest('[data-cat-row]');
+  };
+  document.addEventListener('dragstart', (e) => {
+    const row = catRowOf(e);
+    if (!row || !row.dataset.catRow) return;
+    dragCatName = row.dataset.catRow;
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', dragCatName);
+    } catch (err) { /* some browsers restrict setData to specific types */ }
+  });
+  document.addEventListener('dragover', (e) => {
+    const row = catRowOf(e);
+    if (row && dragCatName) e.preventDefault();
+  });
+  document.addEventListener('drop', (e) => {
+    const row = catRowOf(e);
+    if (!row || !dragCatName) return;
+    e.preventDefault();
+    moveCategoryBefore(dragCatName, row.dataset.catRow);
+    dragCatName = null;
+  });
+  document.addEventListener('dragend', () => { dragCatName = null; });
 
   document.addEventListener('keydown', handleModalKeys);
 
@@ -4283,6 +4463,11 @@ function renderEmailConnectStatus() {
       h('span', {}, 'Not working yet. Follow the steps below, then press "Send a test transaction" — until that passes, nothing will arrive.')
     ));
   }
+  // The setup steps hide once they have done their job; the saved addresses
+  // above stay visible. If the setup ever breaks, the status flips back and
+  // the steps reappear on their own.
+  const det = $('emailSetupDetails');
+  if (det) det.hidden = emailConnected;
 }
 
 async function loadPendingTransactions() {
@@ -4344,7 +4529,8 @@ function renderPendingQueue() {
              it read as 05:00, which looked like the payment happened before
              dawn. The day is what a person checks; the time of day is not
              information that exists. */
-          when ? ' • ' + formatDayOnly(when) : ' • date unknown')
+          when ? ' • ' + formatDayOnly(when) : ' • date unknown'),
+        pendingCategorySelect(tx)
       ),
       h('div', { class: 'pending-actions' },
         h('button', {
@@ -4363,6 +4549,32 @@ function renderPendingQueue() {
     );
     container.appendChild(item);
   }
+}
+
+/** The category picker on a pending row. Approving used to file everything
+ *  under "Other", which meant a second trip to Records to fix every single
+ *  entry — the approval step should finish the job, not start one. */
+function pendingCategorySelect(tx) {
+  const sel = h('select', {
+    class: 'pending-category',
+    'aria-label': 'Category for this transaction',
+    dataset: { pendingCat: tx.id }
+  });
+  fillCategorySelect(sel, { selected: 'Other' });
+  return h('div', { class: 'form-group pending-cat-row' },
+    h('label', { class: 'field-label' }, 'Category'),
+    sel);
+}
+
+/** Which category an approval files under: what the picker says, or "Other"
+ *  when the picker is gone or names something deleted since. Never Salary by
+ *  default — that claim belongs to the user, not the parser. */
+function pendingChosenCategory(txId, type) {
+  let el = null;
+  try { el = document.querySelector('[data-pending-cat="' + txId + '"]'); } catch (err) { el = null; }
+  const picked = el && typeof el.value === 'string' ? el.value : '';
+  if (picked && findCategory(picked)) return findCategory(picked);
+  return emailCategory(type);
 }
 
 async function approveTransaction(txId) {
@@ -4387,7 +4599,7 @@ async function approveTransaction(txId) {
     const built = buildTransaction(
       tx.type === 'income' ? 'income' : 'expense',
       amount,
-      emailCategory(tx.type),
+      pendingChosenCategory(txId, tx.type),
       cleanText(tx.description, COMMENT_LIMIT),
       stamp,
       accId,

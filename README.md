@@ -11,15 +11,15 @@ Track where your money is, what came in, what went out, and who owes whom.
 
 | Tab | What it is for |
 |---|---|
-| **Home** | Total balance, per-account boxes, and the add-transaction form |
-| **Accounts** | Cash, NayaPay, Easypaisa and anything you add. Opening balances, rename, archive |
-| **Records** | Every transaction, searchable, editable |
-| **Budget** | Monthly spending limits per category, with an optional income offset |
-| **Udhaar** | Money lent and borrowed, with settle tracking |
-| **Amanat** | Money held for someone else — deliberately kept out of your balance |
+| **Home** | Total balance, per-account boxes, this month's income and expense, and the add-transaction form |
+| **Records** | Every transaction in the selected month, searchable, editable |
+| **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets |
+| **Udhaar** | Money lent and borrowed with settle tracking, and Amanat below it — money held for someone else, kept out of your balance |
 | **Reports** | Donut and bar charts over any date range |
 | **List** | Shopping list; tick items, then save them as one expense |
-| **Categories** | Add or remove spending categories |
+| **Categories** | Add, remove, and reorder spending categories — the order here is the order in every dropdown |
+| **Pending** | Bank-email transactions waiting for approval (with a category picker), then the one-time email setup |
+| **Accounts** | Cash, NayaPay, Easypaisa and anything you add, with this month's in/out per account. Opening balances, rename, archive |
 | **Backup** | Cloud sync, month archiving, and JSON export/import |
 
 ---
@@ -51,6 +51,17 @@ real life.
 Each month keeps its own limits. Looking back at last month shows *last* month's
 limit, not whatever it happens to be today. Closing a month is non-destructive —
 its budgets and reports stay readable and new entries flow to the new month.
+
+Once budgets exist, the tab also shows what is left: total balance minus
+everything set aside, minus anything spent past its limit. Under-spending keeps
+the limit reserved; over-spending counts what actually left.
+
+### One month on screen at a time
+
+Home shows this month's income and expense under the lifetime total. Records,
+Accounts and Transfers each have a month picker that defaults to this month, so
+a new month reads fresh without deleting history. Pickers are per-tab and never
+persisted — looking back somewhere never moves anything else.
 
 ### Local first, cloud second
 
@@ -511,7 +522,7 @@ simply the cheapest option here, it is the one that works at all.
    ```
    This enables the AI fallback described below. Without it the function uses
    the hand-written rules only, exactly as before — nothing else changes.
-3. Open the **Email** tab, sign in, and press **Send a test transaction**. It
+3. Open **Pending** (the email setup lives at the bottom of that tab), sign in, and press **Send a test transaction**. It
    posts a sample alert through the whole chain. When a row appears under
    **Pending**, everything is wired up.
 4. Create an inbox at [agentmail.to](https://console.agentmail.to/sign-up?plan=free)
@@ -677,7 +688,7 @@ type is only ever a label.
 
 ## Testing
 
-1256 assertions across ten suites, all of which run without a browser or a
+1305 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
