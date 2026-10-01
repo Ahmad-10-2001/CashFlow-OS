@@ -1430,6 +1430,67 @@ function deleteAccount(id) {
   toast('Deleted "' + acc.name + '"');
 }
 
+/** Merge accounts that share a name (case-insensitive) into one.
+ *
+ *  How the duplicates in the screenshot happened: a fresh device starts with
+ *  the same factory accounts (Cash, NayaPay, Easypaisa) as every other fresh
+ *  device. When the laptop signed in, its empty factory rows were stamped as
+ *  "new" before the first pull, so the pull kept both copies — the empty local
+ *  ones and the real server ones — under different ids but the same names.
+ *  sanitizeState() merges same-name accounts on load from disk, but a sync
+ *  pull bypasses it, so the pair survived on screen.
+ *
+ *  The survivor is the account with the most transactions (ties broken by the
+ *  higher balance, so an empty shell never eats the real wallet). Losers have
+ *  their transactions repointed, their opening balances folded in, and are
+ *  removed via dropRecord so the delete tombstones to the server too — the
+ *  other device converges on the next cycle instead of re-adding them.
+ *  Returns true when something merged. */
+function mergeDuplicateAccounts(opts) {
+  const o = opts || {};
+  const groups = new Map();
+  for (const a of state.accounts || []) {
+    if (!a || typeof a.name !== 'string') continue;
+    const key = a.name.trim().toLowerCase();
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(a);
+  }
+  let merged = 0;
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    let survivor = list[0];
+    let bestTx = -1;
+    for (const a of list) {
+      const n = countTransactionsForAccount(a.id);
+      if (n > bestTx) { bestTx = n; survivor = a; }
+    }
+    const tied = list.filter((a) => countTransactionsForAccount(a.id) === bestTx);
+    if (tied.length > 1) {
+      tied.sort((x, y) => accountBalance(y.id) - accountBalance(x.id));
+      survivor = tied[0];
+    }
+    for (const a of list) {
+      if (a.id === survivor.id) continue;
+      for (const t of state.transactions || []) {
+        if (!t) continue;
+        if (t.accountId === a.id) t.accountId = survivor.id;
+        if (t.toAccountId === a.id) t.toAccountId = survivor.id;
+      }
+      survivor.openingBalance = round2(
+        (Number(survivor.openingBalance) || 0) + (Number(a.openingBalance) || 0));
+      if (state.settings && state.settings.lastAccountId === a.id) {
+        state.settings.lastAccountId = survivor.id;
+      }
+      dropRecord('accounts', a.id);
+      merged++;
+    }
+    if (!o.silent && merged) toast('Merged the duplicate "' + survivor.name + '" accounts — nothing was lost');
+  }
+  if (merged) { save(); return true; }
+  return false;
+}
+
 /* ============================================================
    Custody / Amanat
    ============================================================ */
@@ -2584,6 +2645,22 @@ function renderBalance() {
   $('totalIncome').textContent = formatMoney(all.income);
   $('totalExpense').textContent = formatMoney(all.expense);
 
+  // Last month's net in the same row: answers "purani amount kitni thi" without
+  // leaving Home. Parallel to the two cards above it — this month's flow —
+  // this one is last month's (income minus expense), labelled with its month.
+  try {
+    const prev = previousPeriod(per);
+    const pb = periodBoundsOf(prev);
+    const pt = ledgerTotals(pb.start, pb.end);
+    const plabel = $('prevLabel');
+    const pval = $('totalPrev');
+    if (plabel) plabel.textContent = periodLabel(prev) + ' net';
+    if (pval) {
+      pval.textContent = formatMoney(round2(pt.income - pt.expense), { signed: true });
+      pval.title = 'In ' + formatMoney(pt.income) + ' · out ' + formatMoney(pt.expense);
+    }
+  } catch (err) { /* a bad date must never blank the whole card */ }
+
   mount($('accountBoxes'), rows.map((r) => {
     const tint = accountTint(r.account.kind);
     return h('div', {
@@ -3361,7 +3438,9 @@ async function handleAuth(mode) {
   // The debounced push needs a way to reach the live state, and the poll loop
   // has to start now that there is a session.
   S.setStateProvider(() => state);
-  S.setPersist(() => { save(); });
+  // A pull can deliver same-name accounts under different ids; fold them
+  // before painting so the pair never reaches the screen.
+  S.setPersist(() => { try { if (!mergeDuplicateAccounts({ silent: true })) save(); } catch (err) { save(); } });
   await S.cycle(state, { silent: true });
   S.start(() => state);
   renderAll();
@@ -3845,6 +3924,12 @@ function init() {
   const loaded = loadState();
   state = loaded.state;
 
+  // A second device can arrive with same-name accounts under different ids
+  // (its factory rows plus the server's real ones). Fold them before the first
+  // paint so the user never sees the pair. Silent: the repair notice already
+  // covers "we fixed something on load".
+  try { mergeDuplicateAccounts({ silent: true }); } catch (err) { /* never block boot */ }
+
   wireEvents();
 
   /* Decide what the sync panel should show, before the first render paints it.
@@ -3926,8 +4011,13 @@ function init() {
     window.CashFlowSync.seedClock(state);
     window.CashFlowSync.setStateProvider(() => state);
     // A pull changes the state without going through save(), so the engine
-    // needs a way to write it down and repaint.
-    window.CashFlowSync.setPersist(() => { save(); });
+    // needs a way to write it down and repaint. Merged first: a pull can
+    // deliver same-name accounts under different ids, and painting the pair
+    // is exactly the bug being fixed.
+    window.CashFlowSync.setPersist(() => {
+      try { if (!mergeDuplicateAccounts({ silent: true })) save(); }
+      catch (err) { save(); }
+    });
     window.CashFlowSync.setAccountCollisionHandler(remapCollidingAccountIds);
     window.CashFlowSync.onChange(renderSyncPanel);
     if (window.CashFlowSync.isSignedIn) window.CashFlowSync.start(() => state);

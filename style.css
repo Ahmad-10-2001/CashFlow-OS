@@ -118,15 +118,17 @@ body.modal-open { overflow: hidden; }
 .balance-amount.positive { color: var(--pos-dark); }
 .balance-amount.negative { color: var(--neg-dark); }
 
-.balance-row { display: flex; gap: 10px; }
+.balance-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .balance-sub {
-  flex: 1;
+  flex: 1 1 110px;
+  min-width: 0;
   padding: 10px;
   border-radius: 12px;
   text-align: center;
   font-weight: 700;
   font-size: 15px;
   font-variant-numeric: tabular-nums;
+  border: 1px solid transparent;
 }
 .balance-sub-label {
   display: block;
@@ -137,8 +139,21 @@ body.modal-open { overflow: hidden; }
   color: #dcdce1;
   margin-bottom: 2px;
 }
-.income-bg { background: rgba(74, 222, 128, 0.2); color: var(--pos-dark); }
-.expense-bg { background: rgba(255, 163, 155, 0.2); color: var(--neg-dark); }
+.income-bg {
+  background: linear-gradient(135deg, #0d5a34, #16a05c);
+  color: #dcffe9;
+  border-color: rgba(74, 222, 128, 0.45);
+}
+.expense-bg {
+  background: linear-gradient(135deg, #6d1e18, #c04536);
+  color: #ffe2dc;
+  border-color: rgba(255, 163, 155, 0.45);
+}
+.prev-bg {
+  background: linear-gradient(135deg, #2b3a58, #4d648f);
+  color: #e6ecfa;
+  border-color: rgba(147, 170, 220, 0.45);
+}
 
 .udhaar-line {
   display: block;

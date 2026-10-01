@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v29">
+  <meta name="app-build" content="v30">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -48,6 +48,10 @@
         <div class="balance-sub expense-bg">
           <span class="balance-sub-label">Expense</span>
           <span id="totalExpense">₨ 0</span>
+        </div>
+        <div class="balance-sub prev-bg">
+          <span class="balance-sub-label" id="prevLabel">Last month net</span>
+          <span id="totalPrev">₨ 0</span>
         </div>
       </div>
       <div class="balance-period" id="balancePeriod"></div>

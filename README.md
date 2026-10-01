@@ -11,7 +11,7 @@ Track where your money is, what came in, what went out, and who owes whom.
 
 | Tab | What it is for |
 |---|---|
-| **Home** | Total balance, per-account boxes, this month's income and expense, and the add-transaction form |
+| **Home** | Total balance, per-account boxes, this month's income and expense plus last month's net, and the add-transaction form |
 | **Records** | Every transaction in the selected month, searchable, editable |
 | **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets |
 | **Udhaar** | Money lent and borrowed with settle tracking, and Amanat below it — money held for someone else, kept out of your balance |
@@ -688,7 +688,7 @@ type is only ever a label.
 
 ## Testing
 
-1305 assertions across ten suites, all of which run without a browser or a
+1318 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
