@@ -661,7 +661,9 @@ Three things keep this honest:
   understand; the AI is only asked about mail the rules failed on. Personal
   volume fits the free tier many times over.
 - **The ledger is still human-approved.** An AI filing lands under **Pending**
-  like any other, and the response says which engine filed it.
+  like any other, and the response says which engine filed it. The function can
+  only write the Pending queue — never the ledger — and approving re-checks the
+  row first, so a transaction handled on your other device is never filed twice.
 
 The tradeoff, stated plainly: the message text is sent to Google. The body is
 never written to a table either way — but with the key set, it does leave the
@@ -688,7 +690,7 @@ type is only ever a label.
 
 ## Testing
 
-1318 assertions across ten suites, all of which run without a browser or a
+1323 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 

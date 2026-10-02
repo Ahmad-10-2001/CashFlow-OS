@@ -4679,6 +4679,27 @@ async function approveTransaction(txId) {
   const amount = toPositiveNumber(tx.amount);
   if (amount === null) { toast('This row has no usable amount, so it cannot be approved'); return; }
 
+  // Two devices, one queue: if this same row was already approved or rejected
+  // on the other device, filing it here would write it a second time — and a
+  // second copy appearing by itself looks exactly like an "auto" approval. So
+  // the server is asked first, and a row that is no longer pending is dropped
+  // locally instead of filed. An offline device cannot ask, so it files as
+  // before; the worst case there is unchanged, not new.
+  try {
+    const fresh = await sbFetch('pending_transactions?id=eq.' + encodeURIComponent(txId) + '&select=status');
+    const rowState = Array.isArray(fresh)
+      ? (fresh[0] && fresh[0].status)
+      : (fresh && fresh.status);
+    if (rowState && rowState !== 'pending') {
+      pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
+      renderPendingQueue();
+      toast(rowState === 'approved'
+        ? 'Already approved — probably on your other device. Nothing filed twice.'
+        : 'Already handled on your other device. Nothing filed.');
+      return;
+    }
+  } catch (err) { /* offline: fall through and file locally, as before */ }
+
   try {
     // Built through the same helper the manual form uses, so the record has the
     // app's field names (date / accountId) rather than the database's column
