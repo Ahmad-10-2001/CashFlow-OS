@@ -11,16 +11,17 @@ Track where your money is, what came in, what went out, and who owes whom.
 
 | Tab | What it is for |
 |---|---|
-| **Home** | Total balance, per-account boxes, this month's income and expense plus last month's net, and the add-transaction form |
+| **Home** | Total balance, per-account boxes, this month's income and expense plus last month's figure (hidden when there is none), and the add-transaction form |
 | **Records** | Every transaction in the selected month, searchable, editable |
 | **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets |
-| **Udhaar** | Money lent and borrowed with settle tracking, and Amanat below it — money held for someone else, kept out of your balance |
+| **Udhaar** | Money lent and borrowed, with full settle or part return ("Return some") |
 | **Reports** | Donut and bar charts over any date range |
-| **List** | Shopping list; tick items, then save them as one expense |
+| **List** | A standing shopping list — entered once, unticked automatically every new month; tick what you bought, then save it as one expense |
+| **Notes** | Personal notes, each with its own count-up timer showing how long ago something happened |
 | **Categories** | Add, remove, and reorder spending categories — the order here is the order in every dropdown |
 | **Pending** | Bank-email transactions waiting for approval (with a category picker), then the one-time email setup |
 | **Accounts** | Cash, NayaPay, Easypaisa and anything you add, with this month's in/out per account. Opening balances, rename, archive |
-| **Backup** | Cloud sync, month archiving, and JSON export/import |
+| **Backup** | Cloud sync, month archiving, and JSON export/import (import merges — nothing already here is ever deleted) |
 
 ---
 
@@ -38,13 +39,17 @@ category budgets. Treating a transfer as income would inflate your income figure
 and burn your Food budget for no reason. This is the single easiest mistake in
 this kind of app, so it is excluded in the calculation and covered by tests.
 
-### Amanat is not yours
+### Udhaar takes part returns
 
-Money you gave a relative to keep, or that someone left with you, is tracked in
-its own collection and **never touches the balance**. It cannot inflate your
-total even by accident, because the balance calculation only ever reads
-transactions. Partial returns are supported, because that is how it happens in
-real life.
+Settling is all-or-nothing, but real life is not: "Return some" records a
+slice coming back (or paid back). The entry keeps the remainder, only the
+slice is written to the ledger when the entry is balance-tracked, and
+returning the rest settles through the normal flow. Over-returning is
+refused.
+
+(Amanat was removed from the app. Its old rows stay valid in storage,
+backups and sync, so nothing was destroyed — they are simply no longer
+shown.)
 
 ### Budgets belong to a month, not to the app
 
@@ -58,10 +63,33 @@ the limit reserved; over-spending counts what actually left.
 
 ### One month on screen at a time
 
-Home shows this month's income and expense under the lifetime total. Records,
-Accounts and Transfers each have a month picker that defaults to this month, so
-a new month reads fresh without deleting history. Pickers are per-tab and never
-persisted — looking back somewhere never moves anything else.
+Home shows this month's income and expense under the lifetime total, plus last
+month's figure — hidden when last month holds nothing, so it never shows a
+meaningless zero. Records, Accounts and Transfers each have a month picker
+that defaults to this month, so a new month reads fresh without deleting
+history. Pickers are per-tab and never persisted — looking back somewhere
+never moves anything else. Approving a bank email jumps Records to the
+email's month, so the entry can never look "vanished".
+
+### Import adds, never replaces
+
+A backup file is merged in by id: rows already here win every conflict, and
+only genuinely new rows arrive. Categories keep their order with new ones
+appended, budgets fill what is missing, and your settings stay yours. The
+confirm dialog says exactly what is new before anything happens.
+
+### The shopping list renews itself
+
+Items are entered once and act as a standing list: when the month changes,
+everything comes back unticked — no re-typing, nothing deleted. Old expense
+entries stay exactly where they were.
+
+### Notes count the time
+
+Each note carries its own timer counting up from a moment you choose ("when I
+last left home"), ticking live while the app is open, pausable and
+resettable. Notes sync with everything else, so both devices see the same
+timers.
 
 ### Local first, cloud second
 
@@ -690,7 +718,7 @@ type is only ever a label.
 
 ## Testing
 
-1323 assertions across ten suites, all of which run without a browser or a
+1356 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 

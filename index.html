@@ -9,11 +9,11 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v31">
+  <meta name="app-build" content="v32">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
-  <meta name="app-tabs" content="home,transactions,budget,udhaar,reports,list,categories,pending,accounts,settings">
+  <meta name="app-tabs" content="home,transactions,budget,udhaar,reports,list,notes,categories,pending,accounts,settings">
   <meta name="description" content="Track income, expenses, budgets, accounts and udhaar — works offline.">
   <title>CashFlow OS</title>
   <link rel="manifest" href="manifest.json">
@@ -49,8 +49,8 @@
           <span class="balance-sub-label">Expense</span>
           <span id="totalExpense">₨ 0</span>
         </div>
-        <div class="balance-sub prev-bg">
-          <span class="balance-sub-label" id="prevLabel">Last month net</span>
+        <div class="balance-sub prev-bg" id="prevCard">
+          <span class="balance-sub-label">Last month</span>
           <span id="totalPrev">₨ 0</span>
         </div>
       </div>
@@ -208,46 +208,6 @@
       <button class="btn btn-dark" type="submit">Add Udhaar</button>
       <div id="debtList"></div>
     </form>
-
-    <!-- ── Amanat lives in this tab now, below Udhaar: one tab for money that
-         is not quite yours either way ── -->
-    <form class="card" id="custodyForm" novalidate>
-      <h2 class="card-title" id="custodyHeading">Amanat (Held for Others)</h2>
-      <p class="card-subtitle">
-        Money that is not yours — you gave it to someone to keep, or someone gave it to you to keep.
-        <strong>This never touches your balance.</strong>
-      </p>
-      <div class="form-group">
-        <label class="sr-only" for="custodyDirection">Direction</label>
-        <select id="custodyDirection">
-          <option value="given">I gave this — it is theirs now</option>
-          <option value="held">They gave this — I am keeping it</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="field-label" for="custodyPerson">Person</label>
-        <input id="custodyPerson" type="text" placeholder="Who is it for?" maxlength="40" autocomplete="off">
-      </div>
-      <div class="form-group">
-        <label class="sr-only" for="custodyAmount">Amount</label>
-        <input id="custodyAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
-      </div>
-      <div class="form-group">
-        <label class="field-label" for="custodyDate">Date given</label>
-        <input id="custodyDate" type="datetime-local">
-      </div>
-      <div class="form-group">
-        <label class="sr-only" for="custodyNote">Note</label>
-        <input id="custodyNote" type="text" placeholder="Note (optional)" maxlength="300" autocomplete="off">
-      </div>
-      <button class="btn btn-dark" type="submit">Save to amanat</button>
-    </form>
-
-    <section class="card" aria-label="Amanat entries">
-      <h2 class="card-title">Kept apart from your balance</h2>
-      <div class="custody-summary" id="custodySummary"></div>
-      <div id="custodyList"></div>
-    </section>
   </div>
 
   <!-- ══════════════ REPORTS ══════════════ -->
@@ -309,6 +269,34 @@
         </div>
         <button class="btn btn-primary" type="submit">Save as expense</button>
       </form>
+    </section>
+  </div>
+
+  <!-- ══════════════ NOTES ══════════════ -->
+  <div id="panel-notes" data-panel="notes" role="tabpanel" aria-labelledby="notesHeading" hidden>
+    <form class="card" id="notesForm" novalidate>
+      <h2 class="card-title" id="notesHeading">Notes</h2>
+      <p class="card-subtitle">Things to remember — each with its own count-up timer, so you can see how long ago something happened.</p>
+      <div class="form-group">
+        <label class="sr-only" for="noteTitle">Note title</label>
+        <input id="noteTitle" type="text" placeholder="Title (e.g. Returned from home)" maxlength="80" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="sr-only" for="noteBody">Details</label>
+        <textarea id="noteBody" placeholder="Details (optional)" maxlength="1000" rows="3"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="field-label" for="noteStart">Timer counts from (leave empty for now)</label>
+        <input id="noteStart" type="datetime-local">
+      </div>
+      <label class="check">
+        <input id="noteRunning" type="checkbox" checked>
+        <span>Timer running</span>
+      </label>
+      <button class="btn btn-dark" type="submit">Add Note</button>
+    </form>
+    <section class="card" aria-label="Notes list">
+      <div id="notesList"></div>
     </section>
   </div>
 

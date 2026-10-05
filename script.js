@@ -38,6 +38,8 @@ const MAX_AMOUNT = 1e12;
 const NAME_LIMIT = 40;
 const COMMENT_LIMIT = 300;
 const ITEM_LIMIT = 80;
+const NOTE_TITLE_LIMIT = 80;
+const NOTE_BODY_LIMIT = 1000;
 const QTY_LIMIT = 24;
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 const STAMP_RE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?/;
@@ -74,9 +76,9 @@ const ACCOUNT_TINT_FALLBACK = { bg: '#f0f0f0', ink: '#4a4a52' };
 
 /* Tab order is the menu order, and the app-tabs meta tag must list the same ids
    in the same order — that pair is the contract the stale-asset guard reads.
-   Amanat lives inside the Udhaar tab and the email setup inside Pending, so
-   neither has a tab of its own: one-time setup screens kept their own tabs
-   read as daily routine instead of finished business. */
+   The email setup lives inside Pending, so it has no tab of its own: a
+   one-time setup screen kept its own tab read as daily routine instead of
+   finished business. */
 const TABS = [
   { id: 'home',         label: 'Home',       glyph: '◈' },
   { id: 'transactions', label: 'Records',    glyph: '≡' },
@@ -84,6 +86,7 @@ const TABS = [
   { id: 'udhaar',       label: 'Udhaar',     glyph: '⇄' },
   { id: 'reports',      label: 'Reports',    glyph: '◔' },
   { id: 'list',         label: 'List',       glyph: '☑' },
+  { id: 'notes',        label: 'Notes',      glyph: '✎' },
   { id: 'categories',   label: 'Categories', glyph: '❑' },
   { id: 'pending',      label: 'Pending',    glyph: '🔔' },
   { id: 'accounts',     label: 'Accounts',   glyph: '▣' },
@@ -405,9 +408,16 @@ function blankState() {
     shopping: [],
     // Money the user holds for someone else. Deliberately NOT part of the
     // balance: it is tracked apart so it can never inflate the total.
+    // The Amanat UI was removed (no longer needed), but the data stays right
+    // here so old backups and the other device lose nothing.
     custody: [],
     accounts: blankAccounts(),
-    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID },
+    // notes live inside settings — not in their own table — so they ride the
+    // already-synced prefs document to the other device with no new server
+    // table, no migration and no RLS to configure. Whole-document
+    // last-write-wins applies, same as budgets: fine at family scale.
+    // shoppingPeriod remembers which month the list was last prepared for.
+    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, notes: [] },
     closedPeriods: []
   };
 }
@@ -571,6 +581,41 @@ function sanitizeState(raw) {
   const lastAccountId = typeof rawSettings.lastAccountId === 'string' && accountIdSet.has(rawSettings.lastAccountId)
     ? rawSettings.lastAccountId
     : cashId;
+
+  // Which month the shopping list was last prepared for. Missing on files from
+  // before this existed — treated as "this month, no reset" on the way in, so
+  // upgrading never wipes the current ticks (see maybeResetShopping).
+  const shoppingPeriod = typeof rawSettings.shoppingPeriod === 'string' && PERIOD_RE.test(rawSettings.shoppingPeriod)
+    ? rawSettings.shoppingPeriod
+    : null;
+
+  // Personal notes with count-up timers. Validated field by field: a bad note
+  // is skipped, never allowed to poison the whole list.
+  const notes = [];
+  const noteIds = new Set();
+  const rawNotes = Array.isArray(rawSettings.notes) ? rawSettings.notes : [];
+  for (const n of rawNotes) {
+    if (!isObject(n)) { note('skipped a malformed note'); continue; }
+    const title = cleanText(n.title, NOTE_TITLE_LIMIT);
+    if (!title) { note('dropped a note with no title'); continue; }
+    let id = typeof n.id === 'string' && n.id.trim() ? n.id.trim() : newId();
+    if (noteIds.has(id)) id = newId();
+    noteIds.add(id);
+    const startedAt = typeof n.startedAt === 'number' && Number.isFinite(n.startedAt) && n.startedAt > 0 ? n.startedAt : null;
+    const elapsedBase = typeof n.elapsedBase === 'number' && Number.isFinite(n.elapsedBase) && n.elapsedBase >= 0
+      ? Math.min(n.elapsedBase, 100 * 365 * 86400000)
+      : 0;
+    notes.push({
+      id,
+      title,
+      body: cleanText(n.body, NOTE_BODY_LIMIT),
+      createdAt: toLocalStamp(parseDate(n.createdAt) || new Date()),
+      startedAt,
+      elapsedBase,
+      running: n.running === true && startedAt !== null,
+      updatedAt: keepStamp(n.updatedAt)
+    });
+  }
 
   // ── closedPeriods ───────────────────────────────────────────
   const closedPeriods = [];
@@ -755,7 +800,7 @@ function sanitizeState(raw) {
       version: SCHEMA_VERSION,
       transactions, debts, budgets, categories, shopping, custody,
       accounts,
-      settings: { budgetOffset, lastAccountId },
+      settings: { budgetOffset, lastAccountId, shoppingPeriod, notes },
       closedPeriods
     },
     problems
@@ -1000,23 +1045,6 @@ function transferList() {
 function countTransactionsForAccount(id) {
   return state.transactions.filter((t) => t.accountId === id || t.toAccountId === id).length;
 }
-
-/* ---------- custody (amanat) ---------- */
-
-/** What is still held out for other people. Nothing here touches the balance. */
-function custodyTotals() {
-  let given = 0;
-  let held = 0;
-  for (const c of state.custody) {
-    const out = round2(c.amount - c.returned);
-    if (out <= 0) continue;
-    if (c.direction === 'given') given += out;
-    else held += out;
-  }
-  return { given: round2(given), held: round2(held) };
-}
-
-function custodyOutstanding(c) { return round2(c.amount - c.returned); }
 
 function udhaarTotals() {
   let receive = 0;
@@ -1492,44 +1520,27 @@ function mergeDuplicateAccounts(opts) {
 }
 
 /* ============================================================
-   Custody / Amanat
+   Udhaar partial returns
    ============================================================ */
 
-function addCustody() {
-  const person = cleanText($('custodyPerson').value, NAME_LIMIT);
-  if (!person) { toast('Enter the person’s name'); return; }
-  const amount = readAmountField($('custodyAmount'), 'Amount');
-  if (amount.error) { toast(amount.error); return; }
-
-  state.custody.push({
-    id: newId(),
-    person,
-    direction: $('custodyDirection').value === 'held' ? 'held' : 'given',
-    amount: amount.value,
-    returned: 0,
-    note: cleanText($('custodyNote').value, COMMENT_LIMIT),
-    date: inputToStamp($('custodyDate').value),
-    returnedDate: null
-  });
-
-  $('custodyPerson').value = '';
-  $('custodyAmount').value = '';
-  $('custodyNote').value = '';
-  $('custodyPerson').focus();
-  save();
-  toast('Amanat saved. It stays out of your balance.');
-}
-
-function returnCustody(id) {
-  const c = state.custody.find((x) => x.id === id);
-  if (!c) { toast('That entry no longer exists'); return; }
-  const out = custodyOutstanding(c);
-  if (out <= 0) return;
+/** Record that part of an udhaar came back (or was paid back) — the "Return
+ *  some" button, working like a part payment rather than an all-or-nothing
+ *  settle. The entry keeps the remainder; only the returned slice is written
+ *  to the ledger, and only when the entry is balance-tracked. A full return
+ *  goes through the normal settle flow so its confirm and ledger link stay
+ *  identical. Partial slices carry their own source marker, so settle /
+ *  unsettle — which rebuilds only the 'debt:<id>' link — never touches them,
+ *  and deleting the entry leaves the real money movements it recorded. */
+function returnDebtSome(id) {
+  const d = state.debts.find((x) => x.id === id);
+  if (!d) { toast('That entry is already gone'); return; }
+  if (d.settled) { toast('That entry is already settled'); return; }
+  const out = d.amount;
 
   const input = window.prompt(
-    c.direction === 'given'
-      ? 'How much of the ' + formatMoney(out) + ' you gave ' + c.person + ' have come back?\n\nEnter the full amount to close it, or less to record a part return.'
-      : 'How much of the ' + formatMoney(out) + ' ' + c.person + ' left with you has been returned?\n\nEnter the full amount to close it, or less to record a part return.',
+    d.type === 'receive'
+      ? 'How much of the ' + formatMoney(out) + ' ' + d.person + ' owes you came back?\n\nEnter less for a part return, or the full amount to settle.'
+      : 'How much of the ' + formatMoney(out) + ' you owe ' + d.person + ' are you paying back?\n\nEnter less for a part return, or the full amount to settle.',
     String(out)
   );
   if (input === null) return;
@@ -1538,21 +1549,26 @@ function returnCustody(id) {
   if (amount === null) amount = out;   // blank means "all of it"
   if (amount > out) { toast('That is more than the ' + formatMoney(out) + ' still outstanding'); return; }
 
-  const before = c.returned;
-  c.returned = round2(before + amount);
-  c.returnedDate = c.returned >= c.amount ? nowStamp() : c.returnedDate;
-  save();
-  toast(c.returned >= c.amount
-    ? c.person + ' settled — nothing outstanding'
-    : 'Recorded ' + formatMoney(amount) + ' back. ' + formatMoney(custodyOutstanding(c)) + ' still out.');
-}
+  if (amount >= out) { settleDebt(id); return; }
 
-function deleteCustody(id) {
-  const c = state.custody.find((x) => x.id === id);
-  if (!c) { toast('That entry is already gone'); return; }
-  if (!confirm('Delete the amanat entry for ' + c.person + ' (' + formatMoney(c.amount) + ')?')) return;
-  dropRecord('custody', id);
-  if (save()) toast('Amanat entry deleted');
+  d.amount = round2(out - amount);
+  if (d.ledger) {
+    const accId = state.settings.lastAccountId && findAccount(state.settings.lastAccountId)
+      ? state.settings.lastAccountId
+      : cashAccountId();
+    state.transactions.unshift({
+      id: newId(),
+      type: d.type === 'receive' ? 'income' : 'expense',
+      amount,
+      category: findCategory('Other') ? 'Other' : state.categories[0],
+      comment: ('Udhaar part return — ' + (d.type === 'receive' ? d.person + ' paid back ' : 'paid ' + d.person + ' ') + formatMoney(amount)).slice(0, COMMENT_LIMIT),
+      date: nowStamp(),
+      accountId: accId,
+      toAccountId: null,
+      source: 'debtpart:' + d.id
+    });
+  }
+  if (save()) toast('Recorded ' + formatMoney(amount) + '. ' + formatMoney(d.amount) + ' still outstanding with ' + d.person + '.');
 }
 
 /* ============================================================
@@ -1721,7 +1737,9 @@ function sourceLabel(source) {
   const s = String(source || '');
   if (s.indexOf('list:') === 0) return 'bought from your list';
   if (s.indexOf('email:') === 0) return 'read from your bank’s email';
+  if (s.indexOf('debtpart:') === 0) return 'udhaar part return';
   if (s.indexOf('udhaar:') === 0) return 'linked to an udhaar entry';
+  if (s.indexOf('debt:') === 0) return 'linked to an udhaar entry';
   return 'added another way';
 }
 
@@ -2142,6 +2160,178 @@ function clearCheckedItems() {
   if (save()) toast('Cleared ' + n + ' item(s)');
 }
 
+/** Bring the shopping list into a new month.
+ *
+ *  Items are entered once and act as a standing list: when the calendar month
+ *  changes, every item comes back unticked — bought flags, costs and expense
+ *  links are cleared, the items themselves stay. Nothing is deleted (so the
+ *  old expense entries in Records are untouched) and nothing has to be typed
+ *  again. Returns true when anything changed, so callers know to persist.
+ *  A file from before this existed carries no period and is stamped silently
+ *  instead of wiped — upgrading must never clear the current ticks. */
+function maybeResetShopping() {
+  if (!state.settings) return false;
+  const cur = currentPeriod();
+  const last = state.settings.shoppingPeriod;
+  if (last === cur) return false;
+  const rollover = typeof last === 'string' && PERIOD_RE.test(last) && last < cur;
+  if (rollover) {
+    for (const s of state.shopping || []) {
+      s.checked = false;
+      s.checkedAt = null;
+      s.boughtTxId = null;
+      s.cost = null;
+    }
+  }
+  state.settings.shoppingPeriod = cur;
+  return true;
+}
+
+/* ============================================================
+   Notes with count-up timers
+   ============================================================ */
+
+/** Milliseconds shown on a note's timer: what it banked while paused plus
+ *  what has passed since it was (re)started. Pure in the inputs, so tests can
+ *  pin the maths without waiting on a clock. */
+function noteElapsed(n, nowMs) {
+  const now = typeof nowMs === 'number' ? nowMs : Date.now();
+  const base = Number(n.elapsedBase) || 0;
+  if (n.running && n.startedAt) return base + Math.max(0, now - n.startedAt);
+  return base;
+}
+
+/** 90061000 -> "1d 01:01:01". Days are shown only past the first 24 hours,
+ *  so a fresh timer reads like a stopwatch, not a calendar. */
+function formatElapsed(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(s / 86400);
+  const p = (x) => String(x).padStart(2, '0');
+  const clock = p(Math.floor((s % 86400) / 3600)) + ':' + p(Math.floor((s % 3600) / 60)) + ':' + p(s % 60);
+  return (days > 0 ? days + 'd ' : '') + clock;
+}
+
+function findNote(id) { return (state.settings.notes || []).find((x) => x.id === id) || null; }
+
+function addNote() {
+  const title = cleanText($('noteTitle').value, NOTE_TITLE_LIMIT);
+  if (!title) { toast('Give the note a title'); return; }
+  const body = cleanText($('noteBody').value, NOTE_BODY_LIMIT);
+  // Optional "timer starts at": backdate the moment being counted from (e.g.
+  // "when I last left home"), defaulting to right now.
+  let start = Date.now();
+  const rawStart = $('noteStart') && $('noteStart').value;
+  if (rawStart) {
+    const d = new Date(rawStart);
+    if (!Number.isNaN(d.getTime())) start = Math.min(d.getTime(), Date.now());
+  }
+  const running = $('noteRunning') ? $('noteRunning').checked !== false : true;
+  state.settings.notes.push({
+    id: newId(),
+    title,
+    body,
+    createdAt: nowStamp(),
+    startedAt: running ? start : null,
+    elapsedBase: 0,
+    running
+  });
+  $('noteTitle').value = '';
+  $('noteBody').value = '';
+  if ($('noteStart')) $('noteStart').value = '';
+  $('noteTitle').focus();
+  if (save()) { tickNoteTimers(); toast('Note saved'); }
+}
+
+function deleteNote(id) {
+  const n = findNote(id);
+  if (!n) { toast('That note is already gone'); return; }
+  if (!confirm('Delete the note "' + n.title + '"? The timer goes with it.')) return;
+  state.settings.notes = state.settings.notes.filter((x) => x.id !== id);
+  if (save()) toast('Note deleted');
+}
+
+function toggleNoteTimer(id) {
+  const n = findNote(id);
+  if (!n) { toast('That note is already gone'); return; }
+  if (n.running) {
+    n.elapsedBase = noteElapsed(n);
+    n.running = false;
+    n.startedAt = null;
+    toast('Timer paused at ' + formatElapsed(n.elapsedBase));
+  } else {
+    n.startedAt = Date.now();
+    n.running = true;
+    toast('Timer running');
+  }
+  save();
+  tickNoteTimers();
+}
+
+function resetNoteTimer(id) {
+  const n = findNote(id);
+  if (!n) { toast('That note is already gone'); return; }
+  n.elapsedBase = 0;
+  n.startedAt = n.running ? Date.now() : null;
+  if (save()) { tickNoteTimers(); toast('Timer reset'); }
+}
+
+function renderNotes() {
+  const list = $('notesList');
+  if (!list) return;
+  const notes = state.settings.notes || [];
+  if (!notes.length) {
+    mount(list, h('div', { class: 'empty-state' }, 'No notes yet. Reminders, dates worth counting from — each with its own timer.'));
+    return;
+  }
+  const sorted = notes.slice().sort((a, b) =>
+    (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : (a.id < b.id ? -1 : 1)));
+  mount(list, sorted.map((n) => {
+    const ms = noteElapsed(n);
+    const days = (ms / 86400000).toFixed(1);
+    return h('div', { class: 'note-item' },
+      h('div', { class: 'note-head' },
+        h('span', { class: 'note-title' }, n.title),
+        h('span', {
+          class: 'note-elapsed' + (n.running ? ' is-running' : ''),
+          dataset: { noteElapsed: n.id },
+          title: '≈ ' + days + ' days'
+        }, formatElapsed(ms))
+      ),
+      n.body ? h('div', { class: 'note-body' }, n.body) : null,
+      h('div', { class: 'note-meta' },
+        'Added ' + formatDate(n.createdAt) + (n.running ? ' · running' : (ms > 0 ? ' · paused' : ' · timer off'))),
+      h('div', { class: 'note-actions' },
+        button(n.running ? 'Pause' : 'Resume', 'note-timer', { id: n.id }),
+        button('Reset timer', 'note-reset', { id: n.id }),
+        button('Delete', 'note-delete', { id: n.id, class: 'btn-mini danger' })
+      )
+    );
+  }));
+}
+
+/** Refresh every visible timer. Called once a second while the app is open;
+ *  each call is a text update on a handful of rows, nothing more. */
+function tickNoteTimers() {
+  try {
+    if (typeof document === 'undefined' || !document.querySelectorAll) return;
+    const els = document.querySelectorAll('[data-note-elapsed]');
+    for (const el of els) {
+      const n = findNote(el.dataset && el.dataset.noteElapsed);
+      if (!n) continue;
+      const ms = noteElapsed(n);
+      el.textContent = formatElapsed(ms);
+      el.title = '≈ ' + (ms / 86400000).toFixed(1) + ' days';
+      el.classList.toggle('is-running', !!n.running);
+    }
+  } catch (err) { /* timers must never break rendering */ }
+}
+
+let noteTickTimer = null;
+function startNoteTicker() {
+  if (noteTickTimer) return;
+  try { noteTickTimer = setInterval(tickNoteTimers, 1000); } catch (err) { /* ignore */ }
+}
+
 /* ============================================================
    Charts (hand-rolled SVG — no library, so the app stays offline-static)
    ============================================================ */
@@ -2538,30 +2728,142 @@ async function importBackup() {
   }
 
   const { state: incoming, problems } = sanitizeState(parsed);
-  const nTx = incoming.transactions.length;
-  const nDebt = incoming.debts.length;
-  const nItem = incoming.shopping.length;
-  const nCust = incoming.custody.length;
+  const { state: merged, added } = mergeIncomingState(state, incoming);
+
+  const newBits = [];
+  if (added.transactions) newBits.push(added.transactions + ' transaction(s)');
+  if (added.debts) newBits.push(added.debts + ' udhaar entr(y/ies)');
+  if (added.shopping) newBits.push(added.shopping + ' list item(s)');
+  if (added.notes) newBits.push(added.notes + ' note(s)');
+  if (added.accounts) newBits.push(added.accounts + ' account(s)');
+  if (added.categories) newBits.push(added.categories + ' categor(y/ies)');
 
   if (!confirm(
-    'Replace everything in this browser with the contents of "' + file.name + '"?\n\n' +
-    'Incoming: ' + nTx + ' transaction(s), ' + nDebt + ' udhaar entr(y/ies), ' +
-    nItem + ' list item(s), ' + nCust + ' amanat entr(y/ies), ' +
-    incoming.accounts.length + ' account(s), ' + Object.keys(incoming.budgets).length + ' month(s) of budgets, ' +
-    incoming.categories.length + ' categor(y/ies).\n\n' +
-    'Current: ' + state.transactions.length + ' transaction(s), ' + state.debts.length + ' udhaar entr(y/ies), ' +
-    state.custody.length + ' amanat entr(y/ies), ' + state.accounts.length + ' account(s).\n\n' +
-    'This cannot be undone.'
+    'Merge "' + file.name + '" into this browser?\n\n' +
+    (newBits.length ? 'New: ' + newBits.join(', ') + '.\n\n' : 'Nothing in it is new — everything it holds is already here.\n\n') +
+    'What is already here is never touched or deleted; only genuinely new rows are added.\n\n' +
+    (problems.length ? 'Note: the file needed ' + problems.length + ' repair(s) on the way in.\n\n' : '') +
+    'Continue?'
   )) return;
 
-  state = incoming;
+  state = merged;
   reportRange = { mode: 'month' };
   budgetPeriod = null;
-  const ok = save();
-  if (!ok) return;
-  toast(problems.length
-    ? 'Backup imported — repaired ' + problems.length + ' issue(s): ' + problems[0]
-    : 'Backup imported');
+  // A shared file can carry same-name accounts under different ids; fold them
+  // the same way a sync pull is folded. mergeDuplicateAccounts saves itself
+  // when it merges, so save() below runs only when there was nothing to fold.
+  if (!mergeDuplicateAccounts({ silent: true })) save();
+  toast(newBits.length
+    ? 'Merged in ' + newBits.join(', ') + ' — nothing already here was touched'
+    : 'Nothing new to merge — everything is already here');
+}
+
+/** Merge a backup file INTO the current state instead of replacing it.
+ *
+ *  Hand-carried files (someone shares their shopping items, a backup from the
+ *  other device) must add, never delete: every collection is unioned by id,
+ *  and on any conflict the row already here wins. Categories keep their order
+ *  with new ones appended; budgets fill months and categories that are
+ *  missing while existing limits stand; settings stay this device's own with
+ *  only gaps filled. Returns the merged state plus how many rows were new, so
+ *  the caller can say exactly what arrived. Pure in its inputs — the two
+ *  states are only read — which is what makes it unit-testable. */
+function mergeIncomingState(current, incoming) {
+  const unionById = (cur, inc) => {
+    const seen = new Set();
+    const out = [];
+    for (const r of cur || []) {
+      if (!r || typeof r.id !== 'string') continue;
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push(r);
+    }
+    let added = 0;
+    for (const r of inc || []) {
+      if (!r || typeof r.id !== 'string') continue;
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      out.push(r);
+      added++;
+    }
+    return { rows: out, added };
+  };
+
+  const tx = unionById(current.transactions, incoming.transactions);
+  const debts = unionById(current.debts, incoming.debts);
+  const shopping = unionById(current.shopping, incoming.shopping);
+  const custody = unionById(current.custody, incoming.custody);
+  const accounts = unionById(current.accounts, incoming.accounts);
+
+  const categories = (current.categories || []).slice();
+  const haveCat = new Set(categories.map((c) => String(c).toLowerCase()));
+  let addedCats = 0;
+  for (const c of incoming.categories || []) {
+    if (typeof c !== 'string') continue;
+    if (haveCat.has(c.toLowerCase())) continue;
+    haveCat.add(c.toLowerCase());
+    categories.push(c);
+    addedCats++;
+  }
+
+  const budgets = Object.create(null);
+  for (const p of Object.keys((current && current.budgets) || {})) {
+    budgets[p] = Object.assign(Object.create(null), current.budgets[p]);
+  }
+  for (const p of Object.keys((incoming && incoming.budgets) || {})) {
+    if (!PERIOD_RE.test(p) || !isObject(incoming.budgets[p])) continue;
+    if (!budgets[p]) budgets[p] = Object.create(null);
+    for (const cat of Object.keys(incoming.budgets[p])) {
+      if (!Object.prototype.hasOwnProperty.call(budgets[p], cat)) budgets[p][cat] = incoming.budgets[p][cat];
+    }
+  }
+
+  const cp = new Set();
+  for (const p of (current.closedPeriods || []).concat(incoming.closedPeriods || [])) {
+    if (typeof p === 'string' && PERIOD_RE.test(p)) cp.add(p);
+  }
+
+  const accountIds = new Set(accounts.rows.map((a) => a && a.id));
+  const curS = (current && current.settings) || {};
+  const incS = (incoming && incoming.settings) || {};
+  const offset = Object.assign(Object.create(null), curS.budgetOffset || {});
+  for (const k of Object.keys(incS.budgetOffset || {})) {
+    if (!offset[k] && incS.budgetOffset[k] === true) offset[k] = true;
+  }
+  const cash = accounts.rows.find((a) => a && a.kind === 'cash') || accounts.rows[0];
+  const notes = unionById(curS.notes, incS.notes);
+
+  return {
+    state: {
+      version: SCHEMA_VERSION,
+      transactions: tx.rows,
+      debts: debts.rows,
+      budgets,
+      categories,
+      shopping: shopping.rows,
+      custody: custody.rows,
+      accounts: accounts.rows,
+      settings: {
+        budgetOffset: offset,
+        lastAccountId: (typeof curS.lastAccountId === 'string' && accountIds.has(curS.lastAccountId))
+          ? curS.lastAccountId
+          : (cash ? cash.id : CASH_ACCOUNT_ID),
+        shoppingPeriod: (typeof curS.shoppingPeriod === 'string' && PERIOD_RE.test(curS.shoppingPeriod))
+          ? curS.shoppingPeriod
+          : null,
+        notes: notes.rows
+      },
+      closedPeriods: Array.from(cp).sort()
+    },
+    added: {
+      transactions: tx.added,
+      debts: debts.added,
+      shopping: shopping.added,
+      accounts: accounts.added,
+      notes: notes.added,
+      categories: addedCats
+    }
+  };
 }
 
 /* ============================================================
@@ -2645,19 +2947,24 @@ function renderBalance() {
   $('totalIncome').textContent = formatMoney(all.income);
   $('totalExpense').textContent = formatMoney(all.expense);
 
-  // Last month's net in the same row: answers "purani amount kitni thi" without
-  // leaving Home. Parallel to the two cards above it — this month's flow —
-  // this one is last month's (income minus expense), labelled with its month.
+  // Last month's figure in the same row: answers "purani amount kitni thi"
+  // without leaving Home. This month's flow is above it; this one is last
+  // month's net (income minus expense), under a generic label — no month name
+  // on display. When last month holds nothing, the card hides itself instead
+  // of showing a meaningless zero.
   try {
     const prev = previousPeriod(per);
     const pb = periodBoundsOf(prev);
     const pt = ledgerTotals(pb.start, pb.end);
-    const plabel = $('prevLabel');
-    const pval = $('totalPrev');
-    if (plabel) plabel.textContent = periodLabel(prev) + ' net';
-    if (pval) {
-      pval.textContent = formatMoney(round2(pt.income - pt.expense), { signed: true });
-      pval.title = 'In ' + formatMoney(pt.income) + ' · out ' + formatMoney(pt.expense);
+    const card = $('prevCard');
+    const empty = !(pt.income > 0 || pt.expense > 0);
+    if (card) card.hidden = empty;
+    if (!empty) {
+      const pval = $('totalPrev');
+      if (pval) {
+        pval.textContent = formatMoney(round2(pt.income - pt.expense), { signed: true });
+        pval.title = 'In ' + formatMoney(pt.income) + ' · out ' + formatMoney(pt.expense);
+      }
     }
   } catch (err) { /* a bad date must never blank the whole card */ }
 
@@ -2767,80 +3074,6 @@ function renderAccounts() {
     : h('div', { class: 'empty-state' }, allTransfers.length
         ? 'No transfers in ' + periodLabel(per) + '.'
         : 'No transfers yet. Use "Move between accounts" on the Home tab.'));
-}
-
-/* ---------- custody / amanat tab ---------- */
-
-function renderCustody() {
-  const t = custodyTotals();
-  const list = $('custodyList');
-
-  mount($('custodySummary'), h('div', { class: 'custody-box given' },
-      h('div', { class: 'custody-box-label' }, 'Others are holding'),
-      h('div', { class: 'custody-box-value' }, formatMoney(t.given)),
-      h('div', { class: 'custody-box-hint' }, 'your money, in their hand')
-    ),
-    h('div', { class: 'custody-box held' },
-      h('div', { class: 'custody-box-label' }, 'You are holding'),
-      h('div', { class: 'custody-box-value' }, formatMoney(t.held)),
-      h('div', { class: 'custody-box-hint' }, "other people's money, in your hand")
-    )
-  );
-
-  if (!state.custody.length) {
-    mount(list, h('div', { class: 'empty-state' }, 'Nothing on amanat. Money you give someone to hold — or hold for someone — goes here.'));
-    return;
-  }
-
-  const byDateDesc = (a, b) => {
-    const diff = new Date(b.date) - new Date(a.date);
-    return diff !== 0 ? diff : (a.id < b.id ? -1 : 1);
-  };
-  const open = state.custody.filter((c) => custodyOutstanding(c) > 0).sort(byDateDesc);
-  const done = state.custody.filter((c) => custodyOutstanding(c) <= 0).sort(byDateDesc);
-
-  const children = [];
-  if (open.length) {
-    children.push(h('div', { class: 'list-section-head' }, 'Still out (' + open.length + ')'));
-    open.forEach((c) => {
-      const out = custodyOutstanding(c);
-      children.push(h('div', { class: 'custody-item' },
-        h('div', { class: 'custody-head' },
-          h('span', { class: 'custody-person' }, c.person),
-          h('span', { class: 'custody-amount ' + c.direction },
-            (c.direction === 'given' ? '− ' : '+ ') + formatMoney(out))
-        ),
-        h('div', { class: 'custody-detail' },
-          c.direction === 'given' ? 'you gave this, it is theirs' : 'they gave this, you are keeping it'),
-        c.note ? h('div', { class: 'custody-detail' }, c.note) : null,
-        h('div', { class: 'custody-detail' },
-          'Given ' + formatDate(c.date) +
-          (c.returned ? '  ·  ' + formatMoney(c.returned) + ' back' + (c.returnedDate ? ' on ' + formatDate(c.returnedDate) : '') : '')),
-        h('div', { class: 'custody-actions' },
-          button('Return some', 'custody-return', { id: c.id }),
-          button('Delete', 'custody-delete', { id: c.id, class: 'btn-mini danger' })
-        )
-      ));
-    });
-  }
-
-  if (done.length) {
-    children.push(h('div', { class: 'list-section-head' }, 'Returned in full (' + done.length + ')'));
-    done.forEach((c) => children.push(
-      h('div', { class: 'custody-item is-done' },
-        h('div', { class: 'custody-head' },
-          h('span', { class: 'custody-person' }, c.person),
-          h('span', { class: 'custody-amount' },
-            (c.direction === 'given' ? '− ' : '+ ') + formatMoney(c.amount) + ' · returned')
-        ),
-        h('div', { class: 'custody-detail' }, 'Given ' + formatDate(c.date)),
-        h('div', { class: 'custody-actions' },
-          button('Delete', 'custody-delete', { id: c.id, class: 'btn-mini danger' })
-        )
-      )));
-  }
-
-  mount(list, children);
 }
 
 /** What is left after this month's budgets: total balance minus everything set
@@ -3088,6 +3321,7 @@ function renderDebts() {
       h('div', { class: 'debt-detail' }, 'Added ' + formatDate(d.date)),
       h('div', { class: 'debt-actions' },
         button('Settle', 'debt-settle', { id: d.id, class: 'btn-mini settle' }),
+        button('Return some', 'debt-return', { id: d.id }),
         button('Edit', 'debt-edit', { id: d.id }),
         button('Delete', 'debt-delete', { id: d.id, class: 'btn-mini danger' })
       )
@@ -3150,6 +3384,10 @@ function renderCategories() {
 }
 
 function renderShopping() {
+  // A new month unticks the standing list (see maybeResetShopping). The reset
+  // persists once via save(); the second pass finds nothing to do, so this
+  // cannot loop — one extra render per month change, no more.
+  if (maybeResetShopping()) { save(); return; }
   const list = $('itemList');
   const open = state.shopping.filter((s) => !s.checked);
   const done = state.shopping.filter((s) => s.checked);
@@ -3589,7 +3827,7 @@ function renderAll() {
   renderBudgets();
   renderTransactions();
   renderDebts();
-  renderCustody();
+  renderNotes();
   renderCategories();
   renderShopping();
   renderMonths();
@@ -3607,6 +3845,7 @@ const ACTIONS = {
   'tx-edit': (el) => openEditModal(el.dataset.id),
   'tx-delete': (el) => deleteTransaction(el.dataset.id),
   'debt-settle': (el) => settleDebt(el.dataset.id),
+  'debt-return': (el) => returnDebtSome(el.dataset.id),
   'debt-edit': (el) => openDebtEditModal(el.dataset.id),
   'debt-delete': (el) => deleteDebt(el.dataset.id),
   'category-delete': (el) => removeCategory(el.dataset.arg),
@@ -3618,12 +3857,13 @@ const ACTIONS = {
   'item-toggle': (el) => toggleListItem(el.dataset.id),
   'item-delete': (el) => deleteListItem(el.dataset.id),
   'item-clear': clearCheckedItems,
+  'note-timer': (el) => toggleNoteTimer(el.dataset.id),
+  'note-reset': (el) => resetNoteTimer(el.dataset.id),
+  'note-delete': (el) => deleteNote(el.dataset.id),
   'acct-rename': (el) => renameAccount(el.dataset.id),
   'acct-opening': (el) => setOpeningBalance(el.dataset.id),
   'acct-archive': (el) => toggleArchiveAccount(el.dataset.id),
   'acct-delete': (el) => deleteAccount(el.dataset.id),
-  'custody-return': (el) => returnCustody(el.dataset.id),
-  'custody-delete': (el) => deleteCustody(el.dataset.id),
   'auth-in': () => handleAuth('in'),
   'auth-up': () => handleAuth('up'),
   'auth-forgot': () => beginPasswordReset(),
@@ -3726,7 +3966,7 @@ function wireEvents() {
     ['itemForm', addListItem],
     ['buyForm', saveListPurchase],
     ['accountForm', (e) => addAccount($('accountName'), $('accountKind'))],
-    ['custodyForm', addCustody],
+    ['notesForm', addNote],
     ['editForm', saveEdit],
     ['editDebtForm', saveDebtEdit]
   ];
@@ -3930,6 +4170,14 @@ function init() {
   // covers "we fixed something on load".
   try { mergeDuplicateAccounts({ silent: true }); } catch (err) { /* never block boot */ }
 
+  // A new month unticks the standing shopping list (see maybeResetShopping).
+  // Persisted quietly when it fires: it is a calendar rollover, not an edit.
+  try {
+    if (maybeResetShopping()) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* ignore */ }
+    }
+  } catch (err) { /* never block boot */ }
+
   wireEvents();
 
   /* Decide what the sync panel should show, before the first render paints it.
@@ -3961,11 +4209,13 @@ function init() {
 
   // Default the date fields to now, so a new entry is "right now" until changed.
   if ($('txDate')) $('txDate').value = stampToInput(nowStamp());
-  if ($('custodyDate')) $('custodyDate').value = stampToInput(nowStamp());
 
   // Show only the fields that apply to the selected transaction type.
   if ($('txType')) setTxTypeFields();
   refreshAccountSelects();
+
+  // Note timers tick live while the app is open (see tickNoteTimers).
+  startNoteTicker();
 
   /* Show which build is running straight away, then look for a newer one.
      Passive: no data is touched, so it is safe on every load, and it turns
@@ -4724,6 +4974,12 @@ async function approveTransaction(txId) {
     // unshift, so an approved transaction appears at the top of the ledger like
     // every other new entry.
     state.transactions.unshift(built.value);
+    // The entry is filed under the EMAIL's month, which may not be this one —
+    // and Records shows one month at a time. Without this the approval looks
+    // like it vanished (or "went under another month"): it is there, just on a
+    // month the list is not showing. Jump the view to where it landed.
+    const filedPer = String(stamp).slice(0, 7);
+    viewTxPeriod = (PERIOD_RE.test(filedPer) && filedPer !== currentPeriod()) ? filedPer : null;
     save();
 
     // Mark as approved in Supabase. Done AFTER the local save: if this call

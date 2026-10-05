@@ -686,6 +686,27 @@ select {
   margin-bottom: 4px;
 }
 
+/* A hidden balance card must stay hidden: the class sets flex-item sizing but
+   no display value of its own, and this makes the intent explicit. */
+.balance-sub[hidden] { display: none; }
+
+/* ===== NOTES ===== */
+.note-item { padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
+.note-item:last-child { border-bottom: none; }
+.note-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.note-title { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.note-elapsed {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.note-elapsed.is-running { color: var(--pos); }
+.note-body { font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.note-meta { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
+.note-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
 /* ===== BUDGETS ===== */
 .budget-item { margin-bottom: 16px; }
 .budget-header {
