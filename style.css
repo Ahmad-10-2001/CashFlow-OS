@@ -690,11 +690,41 @@ select {
    no display value of its own, and this makes the intent explicit. */
 .balance-sub[hidden] { display: none; }
 
-/* ===== NOTES ===== */
-.note-item { padding: 14px 0; border-bottom: 1px solid var(--line-soft); }
-.note-item:last-child { border-bottom: none; }
-.note-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-.note-title { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+/* ===== NOTES + TIMERS ===== */
+.timer-item {
+  padding: 16px 4px;
+  border-bottom: 1px solid var(--line-soft);
+  text-align: center;
+}
+.timer-item:last-child { border-bottom: none; }
+.timer-digits {
+  font-size: 32px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--pos);
+  overflow-wrap: anywhere;
+}
+.timer-label { font-size: 13px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
+.timer-item .note-actions { justify-content: center; }
+.note-item {
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line-soft);
+  overflow-wrap: anywhere;
+}
+.note-c-yellow { background: #fff8dc; }
+.note-c-pink { background: #ffe4ec; }
+.note-c-green { background: #e2f4e3; }
+.note-c-blue { background: #e2eefb; }
+.note-c-purple { background: #ece4fb; }
+.note-head { display: flex; align-items: baseline; gap: 8px; }
+.note-icon { font-size: 22px; }
+.note-title { font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
+.note-pin { font-size: 14px; margin-left: auto; }
+.note-body { font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.note-meta { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+.note-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .note-elapsed {
   font-size: 16px;
   font-weight: 700;
@@ -703,9 +733,6 @@ select {
   color: var(--muted);
 }
 .note-elapsed.is-running { color: var(--pos); }
-.note-body { font-size: 14px; margin-top: 4px; overflow-wrap: anywhere; white-space: pre-wrap; }
-.note-meta { font-size: 12.5px; color: var(--muted); margin-top: 4px; }
-.note-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 
 /* ===== BUDGETS ===== */
 .budget-item { margin-bottom: 16px; }

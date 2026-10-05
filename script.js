@@ -40,6 +40,7 @@ const COMMENT_LIMIT = 300;
 const ITEM_LIMIT = 80;
 const NOTE_TITLE_LIMIT = 80;
 const NOTE_BODY_LIMIT = 1000;
+const TIMER_LABEL_LIMIT = 60;
 const QTY_LIMIT = 24;
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 const STAMP_RE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?/;
@@ -417,7 +418,7 @@ function blankState() {
     // table, no migration and no RLS to configure. Whole-document
     // last-write-wins applies, same as budgets: fine at family scale.
     // shoppingPeriod remembers which month the list was last prepared for.
-    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, notes: [] },
+    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, notes: [], timers: [] },
     closedPeriods: []
   };
 }
@@ -589,8 +590,11 @@ function sanitizeState(raw) {
     ? rawSettings.shoppingPeriod
     : null;
 
-  // Personal notes with count-up timers. Validated field by field: a bad note
-  // is skipped, never allowed to poison the whole list.
+  // Personal notes: sticky-note cards with a color, an icon, a pin and an
+  // updated stamp. Timer fields on a note are from before Timers became their
+  // own section — they are lifted into a timer below instead of dropped, so
+  // the upgrade loses nothing.
+  const migratedTimers = [];
   const notes = [];
   const noteIds = new Set();
   const rawNotes = Array.isArray(rawSettings.notes) ? rawSettings.notes : [];
@@ -601,20 +605,50 @@ function sanitizeState(raw) {
     let id = typeof n.id === 'string' && n.id.trim() ? n.id.trim() : newId();
     if (noteIds.has(id)) id = newId();
     noteIds.add(id);
-    const startedAt = typeof n.startedAt === 'number' && Number.isFinite(n.startedAt) && n.startedAt > 0 ? n.startedAt : null;
-    const elapsedBase = typeof n.elapsedBase === 'number' && Number.isFinite(n.elapsedBase) && n.elapsedBase >= 0
+    const oldStart = typeof n.startedAt === 'number' && Number.isFinite(n.startedAt) && n.startedAt > 0 ? n.startedAt : null;
+    const oldBase = typeof n.elapsedBase === 'number' && Number.isFinite(n.elapsedBase) && n.elapsedBase > 0
       ? Math.min(n.elapsedBase, 100 * 365 * 86400000)
       : 0;
+    if (oldStart !== null || oldBase > 0 || n.running === true) {
+      migratedTimers.push({
+        id: newId(),
+        label: title.slice(0, TIMER_LABEL_LIMIT),
+        startedAt: (n.running === true && oldStart !== null) ? oldStart
+          : (oldStart !== null ? oldStart : Date.now() - oldBase)
+      });
+      note('moved the timer on "' + title + '" into Timers');
+    }
+    const created = toLocalStamp(parseDate(n.createdAt) || new Date());
     notes.push({
       id,
       title,
       body: cleanText(n.body, NOTE_BODY_LIMIT),
-      createdAt: toLocalStamp(parseDate(n.createdAt) || new Date()),
-      startedAt,
-      elapsedBase,
-      running: n.running === true && startedAt !== null,
-      updatedAt: keepStamp(n.updatedAt)
+      color: NOTE_COLORS.indexOf(n.color) !== -1 ? n.color : 'yellow',
+      icon: NOTE_ICONS.indexOf(n.icon) !== -1 ? n.icon : '📝',
+      pinned: n.pinned === true,
+      createdAt: created,
+      // Device-local, like every other date in the app.
+      updatedAt: toLocalStamp(parseDate(n.updatedAt) || parseDate(n.createdAt) || new Date())
     });
+  }
+
+  // Count-up timers: a short label plus the moment they count from. The future
+  // is clamped on the way in — a timer starting tomorrow is a typo, and it
+  // would otherwise read as a negative that formatElapsed hides as zero.
+  const timers = [];
+  const timerIds = new Set();
+  const rawTimers = Array.isArray(rawSettings.timers) ? rawSettings.timers : [];
+  for (const t of rawTimers.concat(migratedTimers)) {
+    if (!isObject(t)) { note('skipped a malformed timer'); continue; }
+    const label = cleanText(t.label, TIMER_LABEL_LIMIT);
+    if (!label) { note('dropped a timer with no label'); continue; }
+    let id = typeof t.id === 'string' && t.id.trim() ? t.id.trim() : newId();
+    if (timerIds.has(id)) id = newId();
+    timerIds.add(id);
+    const startedAt = typeof t.startedAt === 'number' && Number.isFinite(t.startedAt) && t.startedAt > 0
+      ? Math.min(t.startedAt, Date.now())
+      : Date.now();
+    timers.push({ id, label, startedAt });
   }
 
   // ── closedPeriods ───────────────────────────────────────────
@@ -800,7 +834,7 @@ function sanitizeState(raw) {
       version: SCHEMA_VERSION,
       transactions, debts, budgets, categories, shopping, custody,
       accounts,
-      settings: { budgetOffset, lastAccountId, shoppingPeriod, notes },
+      settings: { budgetOffset, lastAccountId, shoppingPeriod, notes, timers },
       closedPeriods
     },
     problems
@@ -2188,17 +2222,21 @@ function maybeResetShopping() {
 }
 
 /* ============================================================
-   Notes with count-up timers
+   Notes + Timers (one tab, two sections)
    ============================================================ */
 
-/** Milliseconds shown on a note's timer: what it banked while paused plus
- *  what has passed since it was (re)started. Pure in the inputs, so tests can
- *  pin the maths without waiting on a clock. */
-function noteElapsed(n, nowMs) {
+/* Sticky-note looks. Only the class suffix is stored; anything outside this
+   list falls back to yellow on the way in (see sanitizeState), so a foreign
+   file can never inject an arbitrary class name. */
+const NOTE_COLORS = ['yellow', 'pink', 'green', 'blue', 'purple'];
+const NOTE_ICONS = ['📝', '⏱', '🏠', '💊', '🏋', '📚', '💰', '✈'];
+
+/** ms since a timer started. Timers never pause — there is no paused state to
+ *  keep honest — so this is just now minus start. Pure in its inputs, so tests
+ *  can pin the maths without waiting on a clock. */
+function timerElapsed(t, nowMs) {
   const now = typeof nowMs === 'number' ? nowMs : Date.now();
-  const base = Number(n.elapsedBase) || 0;
-  if (n.running && n.startedAt) return base + Math.max(0, now - n.startedAt);
-  return base;
+  return Math.max(0, now - (Number(t.startedAt) || now));
 }
 
 /** 90061000 -> "1d 01:01:01". Days are shown only past the first 24 hours,
@@ -2212,98 +2250,70 @@ function formatElapsed(ms) {
 }
 
 function findNote(id) { return (state.settings.notes || []).find((x) => x.id === id) || null; }
+function findTimer(id) { return (state.settings.timers || []).find((x) => x.id === id) || null; }
 
-function addNote() {
-  const title = cleanText($('noteTitle').value, NOTE_TITLE_LIMIT);
-  if (!title) { toast('Give the note a title'); return; }
-  const body = cleanText($('noteBody').value, NOTE_BODY_LIMIT);
-  // Optional "timer starts at": backdate the moment being counted from (e.g.
-  // "when I last left home"), defaulting to right now.
+/* ---------- timers ---------- */
+
+function addTimer() {
+  const label = cleanText($('timerLabel').value, TIMER_LABEL_LIMIT);
+  if (!label) { toast('Give the timer a short label'); return; }
+  // Optional "counts from": backdate the moment being counted (e.g. "when I
+  // last left home"), defaulting to right now. The future is clamped, not
+  // trusted — a timer counting down from tomorrow is a bug, not a feature.
   let start = Date.now();
-  const rawStart = $('noteStart') && $('noteStart').value;
-  if (rawStart) {
-    const d = new Date(rawStart);
+  const raw = $('timerStart') && $('timerStart').value;
+  if (raw) {
+    const d = new Date(raw);
     if (!Number.isNaN(d.getTime())) start = Math.min(d.getTime(), Date.now());
   }
-  const running = $('noteRunning') ? $('noteRunning').checked !== false : true;
-  state.settings.notes.push({
-    id: newId(),
-    title,
-    body,
-    createdAt: nowStamp(),
-    startedAt: running ? start : null,
-    elapsedBase: 0,
-    running
-  });
-  $('noteTitle').value = '';
-  $('noteBody').value = '';
-  if ($('noteStart')) $('noteStart').value = '';
-  $('noteTitle').focus();
-  if (save()) { tickNoteTimers(); toast('Note saved'); }
+  state.settings.timers.push({ id: newId(), label, startedAt: start });
+  $('timerLabel').value = '';
+  if ($('timerStart')) $('timerStart').value = '';
+  $('timerLabel').focus();
+  if (save()) { tickTimers(); toast('Timer started'); }
 }
 
-function deleteNote(id) {
-  const n = findNote(id);
-  if (!n) { toast('That note is already gone'); return; }
-  if (!confirm('Delete the note "' + n.title + '"? The timer goes with it.')) return;
-  state.settings.notes = state.settings.notes.filter((x) => x.id !== id);
-  if (save()) toast('Note deleted');
+function resetTimer(id) {
+  const t = findTimer(id);
+  if (!t) { toast('That timer is already gone'); return; }
+  t.startedAt = Date.now();
+  if (save()) { tickTimers(); toast('Timer restarted'); }
 }
 
-function toggleNoteTimer(id) {
-  const n = findNote(id);
-  if (!n) { toast('That note is already gone'); return; }
-  if (n.running) {
-    n.elapsedBase = noteElapsed(n);
-    n.running = false;
-    n.startedAt = null;
-    toast('Timer paused at ' + formatElapsed(n.elapsedBase));
-  } else {
-    n.startedAt = Date.now();
-    n.running = true;
-    toast('Timer running');
-  }
-  save();
-  tickNoteTimers();
+function deleteTimer(id) {
+  const t = findTimer(id);
+  if (!t) { toast('That timer is already gone'); return; }
+  if (!confirm('Delete the timer "' + t.label + '"?')) return;
+  state.settings.timers = state.settings.timers.filter((x) => x.id !== id);
+  if (save()) toast('Timer deleted');
 }
 
-function resetNoteTimer(id) {
-  const n = findNote(id);
-  if (!n) { toast('That note is already gone'); return; }
-  n.elapsedBase = 0;
-  n.startedAt = n.running ? Date.now() : null;
-  if (save()) { tickNoteTimers(); toast('Timer reset'); }
-}
-
-function renderNotes() {
-  const list = $('notesList');
+function renderTimers() {
+  const list = $('timersList');
   if (!list) return;
-  const notes = state.settings.notes || [];
-  if (!notes.length) {
-    mount(list, h('div', { class: 'empty-state' }, 'No notes yet. Reminders, dates worth counting from — each with its own timer.'));
+  const timers = state.settings.timers || [];
+  if (!timers.length) {
+    mount(list, h('div', { class: 'empty-state' }, 'No timers running. Start one above — e.g. the day you left home.'));
     return;
   }
-  const sorted = notes.slice().sort((a, b) =>
-    (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : (a.id < b.id ? -1 : 1)));
-  mount(list, sorted.map((n) => {
-    const ms = noteElapsed(n);
-    const days = (ms / 86400000).toFixed(1);
-    return h('div', { class: 'note-item' },
-      h('div', { class: 'note-head' },
-        h('span', { class: 'note-title' }, n.title),
-        h('span', {
-          class: 'note-elapsed' + (n.running ? ' is-running' : ''),
-          dataset: { noteElapsed: n.id },
-          title: '≈ ' + days + ' days'
-        }, formatElapsed(ms))
-      ),
-      n.body ? h('div', { class: 'note-body' }, n.body) : null,
-      h('div', { class: 'note-meta' },
-        'Added ' + formatDate(n.createdAt) + (n.running ? ' · running' : (ms > 0 ? ' · paused' : ' · timer off'))),
+  // Oldest first: the longest-running moment is the one you check most.
+  const sorted = timers.slice().sort((a, b) =>
+    (a.startedAt - b.startedAt) || (a.id < b.id ? -1 : 1));
+  mount(list, sorted.map((t) => {
+    const ms = timerElapsed(t);
+    return h('div', { class: 'timer-item' },
+      h('div', {
+        class: 'timer-digits',
+        dataset: { timerElapsed: t.id },
+        title: '≈ ' + (ms / 86400000).toFixed(1) + ' days'
+      }, formatElapsed(ms)),
+      h('div', { class: 'timer-label' }, t.label),
+      // Device-local, like every other date in the app: the moment as you
+      // experienced it, not a UTC instant to convert in your head.
+      h('div', { class: 'note-meta' }, 'Counting since ' + formatDate(toLocalStamp(new Date(t.startedAt)))),
       h('div', { class: 'note-actions' },
-        button(n.running ? 'Pause' : 'Resume', 'note-timer', { id: n.id }),
-        button('Reset timer', 'note-reset', { id: n.id }),
-        button('Delete', 'note-delete', { id: n.id, class: 'btn-mini danger' })
+        button('Reset', 'timer-reset', { id: t.id }),
+        button('Delete', 'timer-delete', { id: t.id, class: 'btn-mini danger' })
       )
     );
   }));
@@ -2311,25 +2321,125 @@ function renderNotes() {
 
 /** Refresh every visible timer. Called once a second while the app is open;
  *  each call is a text update on a handful of rows, nothing more. */
-function tickNoteTimers() {
+function tickTimers() {
   try {
     if (typeof document === 'undefined' || !document.querySelectorAll) return;
-    const els = document.querySelectorAll('[data-note-elapsed]');
+    const els = document.querySelectorAll('[data-timer-elapsed]');
     for (const el of els) {
-      const n = findNote(el.dataset && el.dataset.noteElapsed);
-      if (!n) continue;
-      const ms = noteElapsed(n);
+      const t = findTimer(el.dataset && el.dataset.timerElapsed);
+      if (!t) continue;
+      const ms = timerElapsed(t);
       el.textContent = formatElapsed(ms);
       el.title = '≈ ' + (ms / 86400000).toFixed(1) + ' days';
-      el.classList.toggle('is-running', !!n.running);
     }
   } catch (err) { /* timers must never break rendering */ }
 }
 
-let noteTickTimer = null;
-function startNoteTicker() {
-  if (noteTickTimer) return;
-  try { noteTickTimer = setInterval(tickNoteTimers, 1000); } catch (err) { /* ignore */ }
+let timerTickTimer = null;
+function startTimerTicker() {
+  if (timerTickTimer) return;
+  try { timerTickTimer = setInterval(tickTimers, 1000); } catch (err) { /* ignore */ }
+}
+
+/* ---------- notes ---------- */
+
+function noteColorClass(color) {
+  return 'note-c-' + (NOTE_COLORS.indexOf(color) !== -1 ? color : 'yellow');
+}
+
+function addNote() {
+  const title = cleanText($('noteTitle').value, NOTE_TITLE_LIMIT);
+  if (!title) { toast('Give the note a title'); return; }
+  const stamp = nowStamp();
+  state.settings.notes.push({
+    id: newId(),
+    title,
+    body: cleanText($('noteBody').value, NOTE_BODY_LIMIT),
+    color: NOTE_COLORS.indexOf(($('noteColor') || {}).value) !== -1 ? $('noteColor').value : 'yellow',
+    icon: NOTE_ICONS.indexOf(($('noteIcon') || {}).value) !== -1 ? $('noteIcon').value : '📝',
+    pinned: false,
+    createdAt: stamp,
+    updatedAt: stamp
+  });
+  $('noteTitle').value = '';
+  $('noteBody').value = '';
+  $('noteTitle').focus();
+  if (save()) toast('Note saved');
+}
+
+function toggleNotePin(id) {
+  const n = findNote(id);
+  if (!n) { toast('That note is already gone'); return; }
+  n.pinned = !n.pinned;
+  if (save()) toast(n.pinned ? 'Pinned to the top' : 'Unpinned');
+}
+
+function openNoteEdit(id) {
+  const n = findNote(id);
+  if (!n) { toast('That note no longer exists'); return; }
+  $('noteEditId').value = n.id;
+  $('noteEditTitle').value = n.title;
+  $('noteEditBody').value = n.body || '';
+  $('noteEditColor').value = NOTE_COLORS.indexOf(n.color) !== -1 ? n.color : 'yellow';
+  $('noteEditIcon').value = NOTE_ICONS.indexOf(n.icon) !== -1 ? n.icon : '📝';
+  openModal('noteEditModal');
+}
+
+function saveNoteEdit() {
+  const n = findNote($('noteEditId').value);
+  if (!n) { closeModal('noteEditModal'); toast('That note no longer exists'); return; }
+  const title = cleanText($('noteEditTitle').value, NOTE_TITLE_LIMIT);
+  if (!title) { toast('Give the note a title'); return; }
+  n.title = title;
+  n.body = cleanText($('noteEditBody').value, NOTE_BODY_LIMIT);
+  n.color = NOTE_COLORS.indexOf($('noteEditColor').value) !== -1 ? $('noteEditColor').value : 'yellow';
+  n.icon = NOTE_ICONS.indexOf($('noteEditIcon').value) !== -1 ? $('noteEditIcon').value : '📝';
+  // Device-local stamp, like every other date in the app.
+  n.updatedAt = nowStamp();
+  closeModal('noteEditModal');
+  if (save()) toast('Note updated');
+}
+
+function deleteNote(id) {
+  const n = findNote(id);
+  if (!n) { toast('That note is already gone'); return; }
+  if (!confirm('Delete the note "' + n.title + '"?')) return;
+  state.settings.notes = state.settings.notes.filter((x) => x.id !== id);
+  if (save()) toast('Note deleted');
+}
+
+function renderNotes() {
+  const list = $('notesList');
+  if (!list) return;
+  const notes = state.settings.notes || [];
+  const q = String(($('notesSearch') || {}).value || '').trim().toLowerCase();
+  const shown = q
+    ? notes.filter((n) => (n.title + ' ' + (n.body || '')).toLowerCase().indexOf(q) !== -1)
+    : notes.slice();
+  if (!shown.length) {
+    mount(list, h('div', { class: 'empty-state' },
+      q ? 'No notes match "' + q + '"' : 'No notes yet. Anything worth remembering — with a color and an icon, so the list is fun to scan.'));
+    return;
+  }
+  // Pinned first, then most recently updated — the list leads with whatever
+  // matters and whatever moved.
+  const sorted = shown.slice().sort((a, b) =>
+    ((b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)) ||
+    (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : (a.id < b.id ? -1 : 1)));
+  mount(list, sorted.map((n) => h('div', { class: 'note-item ' + noteColorClass(n.color) },
+    h('div', { class: 'note-head' },
+      h('span', { class: 'note-icon', 'aria-hidden': 'true' }, n.icon || '📝'),
+      h('span', { class: 'note-title' }, n.title),
+      n.pinned ? h('span', { class: 'note-pin', title: 'Pinned' }, '📌') : null),
+    n.body ? h('div', { class: 'note-body' }, n.body) : null,
+    h('div', { class: 'note-meta' },
+      'Added ' + formatDate(n.createdAt) + ' · Updated ' + formatDate(n.updatedAt || n.createdAt)),
+    h('div', { class: 'note-actions' },
+      button(n.pinned ? 'Unpin' : 'Pin', 'note-pin', { id: n.id }),
+      button('Edit', 'note-edit', { id: n.id }),
+      button('Delete', 'note-delete', { id: n.id, class: 'btn-mini danger' })
+    )
+  )));
 }
 
 /* ============================================================
@@ -2735,6 +2845,7 @@ async function importBackup() {
   if (added.debts) newBits.push(added.debts + ' udhaar entr(y/ies)');
   if (added.shopping) newBits.push(added.shopping + ' list item(s)');
   if (added.notes) newBits.push(added.notes + ' note(s)');
+  if (added.timers) newBits.push(added.timers + ' timer(s)');
   if (added.accounts) newBits.push(added.accounts + ' account(s)');
   if (added.categories) newBits.push(added.categories + ' categor(y/ies)');
 
@@ -2832,6 +2943,7 @@ function mergeIncomingState(current, incoming) {
   }
   const cash = accounts.rows.find((a) => a && a.kind === 'cash') || accounts.rows[0];
   const notes = unionById(curS.notes, incS.notes);
+  const timers = unionById(curS.timers, incS.timers);
 
   return {
     state: {
@@ -2851,7 +2963,8 @@ function mergeIncomingState(current, incoming) {
         shoppingPeriod: (typeof curS.shoppingPeriod === 'string' && PERIOD_RE.test(curS.shoppingPeriod))
           ? curS.shoppingPeriod
           : null,
-        notes: notes.rows
+        notes: notes.rows,
+        timers: timers.rows
       },
       closedPeriods: Array.from(cp).sort()
     },
@@ -2861,6 +2974,7 @@ function mergeIncomingState(current, incoming) {
       shopping: shopping.added,
       accounts: accounts.added,
       notes: notes.added,
+      timers: timers.added,
       categories: addedCats
     }
   };
@@ -3827,6 +3941,7 @@ function renderAll() {
   renderBudgets();
   renderTransactions();
   renderDebts();
+  renderTimers();
   renderNotes();
   renderCategories();
   renderShopping();
@@ -3857,9 +3972,11 @@ const ACTIONS = {
   'item-toggle': (el) => toggleListItem(el.dataset.id),
   'item-delete': (el) => deleteListItem(el.dataset.id),
   'item-clear': clearCheckedItems,
-  'note-timer': (el) => toggleNoteTimer(el.dataset.id),
-  'note-reset': (el) => resetNoteTimer(el.dataset.id),
+  'note-pin': (el) => toggleNotePin(el.dataset.id),
+  'note-edit': (el) => openNoteEdit(el.dataset.id),
   'note-delete': (el) => deleteNote(el.dataset.id),
+  'timer-reset': (el) => resetTimer(el.dataset.id),
+  'timer-delete': (el) => deleteTimer(el.dataset.id),
   'acct-rename': (el) => renameAccount(el.dataset.id),
   'acct-opening': (el) => setOpeningBalance(el.dataset.id),
   'acct-archive': (el) => toggleArchiveAccount(el.dataset.id),
@@ -3967,8 +4084,10 @@ function wireEvents() {
     ['buyForm', saveListPurchase],
     ['accountForm', (e) => addAccount($('accountName'), $('accountKind'))],
     ['notesForm', addNote],
+    ['timersForm', addTimer],
     ['editForm', saveEdit],
-    ['editDebtForm', saveDebtEdit]
+    ['editDebtForm', saveDebtEdit],
+    ['noteEditForm', saveNoteEdit]
   ];
   forms.forEach(([id, handler]) => {
     const form = $(id);
@@ -3984,9 +4103,16 @@ function wireEvents() {
       timer = setTimeout(renderTransactions, 120);
     });
   }
+  const noteSearch = $('notesSearch');
+  if (noteSearch) {
+    noteSearch.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(renderNotes, 120);
+    });
+  }
 
   // close modals on backdrop click
-  ['editModal', 'editDebtModal'].forEach((id) => {
+  ['editModal', 'editDebtModal', 'noteEditModal'].forEach((id) => {
     const overlay = $(id);
     if (overlay) overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(id); });
   });
@@ -4214,8 +4340,8 @@ function init() {
   if ($('txType')) setTxTypeFields();
   refreshAccountSelects();
 
-  // Note timers tick live while the app is open (see tickNoteTimers).
-  startNoteTicker();
+  // Note timers tick live while the app is open (see tickTimers).
+  startTimerTicker();
 
   /* Show which build is running straight away, then look for a newer one.
      Passive: no data is touched, so it is safe on every load, and it turns

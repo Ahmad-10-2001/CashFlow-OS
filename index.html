@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v32">
+  <meta name="app-build" content="v33">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -272,30 +272,66 @@
     </section>
   </div>
 
-  <!-- ══════════════ NOTES ══════════════ -->
+  <!-- ══════════════ NOTES + TIMERS ══════════════ -->
   <div id="panel-notes" data-panel="notes" role="tabpanel" aria-labelledby="notesHeading" hidden>
+    <form class="card" id="timersForm" novalidate>
+      <h2 class="card-title">⏱ Timers</h2>
+      <p class="card-subtitle">How long since something happened — each timer counts up live. Add a short note so you remember what it is for.</p>
+      <div class="form-group">
+        <label class="sr-only" for="timerLabel">What is this timer for?</label>
+        <input id="timerLabel" type="text" placeholder="Short note (e.g. Returned from home)" maxlength="60" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="field-label" for="timerStart">Counts from (leave empty for now)</label>
+        <input id="timerStart" type="datetime-local">
+      </div>
+      <button class="btn btn-dark" type="submit">Start Timer</button>
+    </form>
+    <section class="card" aria-label="Timers list">
+      <div id="timersList"></div>
+    </section>
+
     <form class="card" id="notesForm" novalidate>
       <h2 class="card-title" id="notesHeading">Notes</h2>
-      <p class="card-subtitle">Things to remember — each with its own count-up timer, so you can see how long ago something happened.</p>
+      <p class="card-subtitle">Things to remember.</p>
       <div class="form-group">
         <label class="sr-only" for="noteTitle">Note title</label>
-        <input id="noteTitle" type="text" placeholder="Title (e.g. Returned from home)" maxlength="80" autocomplete="off">
+        <input id="noteTitle" type="text" placeholder="Title" maxlength="80" autocomplete="off">
       </div>
       <div class="form-group">
         <label class="sr-only" for="noteBody">Details</label>
         <textarea id="noteBody" placeholder="Details (optional)" maxlength="1000" rows="3"></textarea>
       </div>
       <div class="form-group">
-        <label class="field-label" for="noteStart">Timer counts from (leave empty for now)</label>
-        <input id="noteStart" type="datetime-local">
+        <label class="field-label" for="noteColor">Color</label>
+        <select id="noteColor">
+          <option value="yellow" selected>Yellow</option>
+          <option value="pink">Pink</option>
+          <option value="green">Green</option>
+          <option value="blue">Blue</option>
+          <option value="purple">Purple</option>
+        </select>
       </div>
-      <label class="check">
-        <input id="noteRunning" type="checkbox" checked>
-        <span>Timer running</span>
-      </label>
+      <div class="form-group">
+        <label class="field-label" for="noteIcon">Icon</label>
+        <select id="noteIcon">
+          <option value="📝" selected>📝 Note</option>
+          <option value="⏱">⏱ Time</option>
+          <option value="🏠">🏠 Home</option>
+          <option value="💊">💊 Health</option>
+          <option value="🏋">🏋 Workout</option>
+          <option value="📚">📚 Study</option>
+          <option value="💰">💰 Money</option>
+          <option value="✈">✈ Travel</option>
+        </select>
+      </div>
       <button class="btn btn-dark" type="submit">Add Note</button>
     </form>
     <section class="card" aria-label="Notes list">
+      <div class="form-group">
+        <label class="sr-only" for="notesSearch">Search notes</label>
+        <input id="notesSearch" type="search" placeholder="Search notes" autocomplete="off">
+      </div>
       <div id="notesList"></div>
     </section>
   </div>
@@ -527,6 +563,47 @@
     </label>
     <button class="btn btn-primary" type="submit">Update</button>
     <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="editDebtModal">Cancel</button>
+  </form>
+</div>
+
+<!-- ═══ Edit note modal ═══ -->
+<div class="modal-overlay" id="noteEditModal" role="dialog" aria-modal="true" aria-labelledby="noteEditTitle" aria-hidden="true" tabindex="-1">
+  <form class="modal" id="noteEditForm" novalidate>
+    <h2 class="card-title" id="noteEditTitle">Edit Note</h2>
+    <input type="hidden" id="noteEditId">
+    <div class="form-group">
+      <label class="field-label" for="noteEditTitle">Title</label>
+      <input id="noteEditTitle" type="text" maxlength="80" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="field-label" for="noteEditBody">Details</label>
+      <textarea id="noteEditBody" maxlength="1000" rows="3"></textarea>
+    </div>
+    <div class="form-group">
+      <label class="field-label" for="noteEditColor">Color</label>
+      <select id="noteEditColor">
+        <option value="yellow">Yellow</option>
+        <option value="pink">Pink</option>
+        <option value="green">Green</option>
+        <option value="blue">Blue</option>
+        <option value="purple">Purple</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="field-label" for="noteEditIcon">Icon</label>
+      <select id="noteEditIcon">
+        <option value="📝">📝 Note</option>
+        <option value="⏱">⏱ Time</option>
+        <option value="🏠">🏠 Home</option>
+        <option value="💊">💊 Health</option>
+        <option value="🏋">🏋 Workout</option>
+        <option value="📚">📚 Study</option>
+        <option value="💰">💰 Money</option>
+        <option value="✈">✈ Travel</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" type="submit">Update</button>
+    <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="noteEditModal">Cancel</button>
   </form>
 </div>
 

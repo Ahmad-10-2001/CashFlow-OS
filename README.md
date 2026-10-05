@@ -17,7 +17,7 @@ Track where your money is, what came in, what went out, and who owes whom.
 | **Udhaar** | Money lent and borrowed, with full settle or part return ("Return some") |
 | **Reports** | Donut and bar charts over any date range |
 | **List** | A standing shopping list — entered once, unticked automatically every new month; tick what you bought, then save it as one expense |
-| **Notes** | Personal notes, each with its own count-up timer showing how long ago something happened |
+| **Notes** | Personal sticky-note cards (color, icon, pin, search, edit, updated stamp) plus a separate Timers section — each timer counts up live from a moment you choose |
 | **Categories** | Add, remove, and reorder spending categories — the order here is the order in every dropdown |
 | **Pending** | Bank-email transactions waiting for approval (with a category picker), then the one-time email setup |
 | **Accounts** | Cash, NayaPay, Easypaisa and anything you add, with this month's in/out per account. Opening balances, rename, archive |
@@ -86,10 +86,14 @@ entries stay exactly where they were.
 
 ### Notes count the time
 
-Each note carries its own timer counting up from a moment you choose ("when I
-last left home"), ticking live while the app is open, pausable and
-resettable. Notes sync with everything else, so both devices see the same
-timers.
+Timers live in their own section of the Notes tab: a big live figure per
+timer, a short note under it saying what it is for, and the local start
+moment. No pause button by design — a timer that stops is a note, not a
+timer. Reset restarts, delete removes.
+
+Notes themselves are sticky-note cards with a color, an icon, pin-to-top,
+search, edit and an "Updated" stamp. Both ride the synced settings, so both
+devices see the same timers and notes with no extra setup.
 
 ### Local first, cloud second
 
@@ -718,7 +722,7 @@ type is only ever a label.
 
 ## Testing
 
-1356 assertions across ten suites, all of which run without a browser or a
+1385 assertions across ten suites, all of which run without a browser or a
 network. They are not in this repository; they live beside it, and are run with
 `node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
 
