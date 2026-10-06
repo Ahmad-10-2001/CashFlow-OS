@@ -57,9 +57,11 @@ Each month keeps its own limits. Looking back at last month shows *last* month's
 limit, not whatever it happens to be today. Closing a month is non-destructive —
 its budgets and reports stay readable and new entries flow to the new month.
 
-Once budgets exist, the tab also shows what is left: total balance minus
-everything set aside, minus anything spent past its limit. Under-spending keeps
-the limit reserved; over-spending counts what actually left.
+Once budgets exist, the tab also shows what is left: total balance minus what
+is still reserved. What you already spent comes out of its budget first — a
+10,000 budget with 3,000 spent reserves only 7,000 — because the spent money
+already left the balance and must not be subtracted twice. Overspending
+reserves nothing further; it is shown as information, not subtracted again.
 
 ### One month on screen at a time
 

@@ -3190,10 +3190,16 @@ function renderAccounts() {
         : 'No transfers yet. Use "Move between accounts" on the Home tab.'));
 }
 
-/** What is left after this month's budgets: total balance minus everything set
- *  aside, minus anything spent past its limit. Under-spending keeps the limit
- *  reserved (the money is spoken for); over-spending counts what actually left,
- *  so Remaining = balance − Σ max(limit, spent). A pure function so the maths
+/** What is left after this month's budgets.
+ *
+ *  What is already spent comes out of its budget FIRST: a budget of 10,000
+ *  with 3,000 spent still reserves only 7,000. The spent money already left
+ *  the accounts, so reserving the full limit would count it twice — once gone
+ *  from the balance, once more as "set aside". Hence:
+ *  Remaining = balance − Σ max(0, limit − used).
+ *  Overspending reserves nothing further (there is nothing left to reserve);
+ *  it already shrank the balance, so it needs no extra subtraction — it is
+ *  reported separately, purely as information. A pure function so the maths
  *  is testable without rendering. */
 function budgetSummary(period) {
   const { start, end } = periodBoundsOf(period);
@@ -3203,18 +3209,20 @@ function budgetSummary(period) {
   const monthSpend = live ? spendByCategory(start, windowEnd) : new Map();
   const monthIncome = live ? incomeByCategory(start, windowEnd) : new Map();
   const limits = budgetsFor(period);
-  let setAside = 0;
+  let used = 0;
+  let reserved = 0;
   let overExtra = 0;
   for (const cat of Object.keys(limits)) {
     const limit = limits[cat];
     const gross = monthSpend.get(cat) || 0;
     const inc = offsetOn(cat) ? (monthIncome.get(cat) || 0) : 0;
-    const used = Math.max(0, round2(gross - inc));
-    setAside = round2(setAside + limit);
-    overExtra = round2(overExtra + Math.max(0, round2(used - limit)));
+    const catUsed = Math.max(0, round2(gross - inc));
+    used = round2(used + catUsed);
+    reserved = round2(reserved + Math.max(0, round2(limit - catUsed)));
+    overExtra = round2(overExtra + Math.max(0, round2(catUsed - limit)));
   }
   const available = allAccountBalances().total;
-  return { available, setAside, overExtra, remaining: round2(available - setAside - overExtra) };
+  return { available, used, reserved, overExtra, remaining: round2(available - reserved) };
 }
 
 function renderBudgets() {
@@ -3295,13 +3303,19 @@ function renderBudgets() {
           h('div', { class: 'budget-sum-row' },
             h('span', {}, 'Available total'),
             h('span', {}, formatMoney(sum.available))),
+          // Informational only: this money already left the balance above, so
+          // it carries no minus sign — subtracting it again is exactly the
+          // double-count this box used to do.
           h('div', { class: 'budget-sum-row' },
-            h('span', {}, 'Set aside in budgets'),
-            h('span', {}, '− ' + formatMoney(sum.setAside))),
+            h('span', {}, 'Spent from budgets'),
+            h('span', {}, formatMoney(sum.used))),
+          h('div', { class: 'budget-sum-row' },
+            h('span', {}, 'Still reserved in budgets'),
+            h('span', {}, '− ' + formatMoney(sum.reserved))),
           sum.overExtra > 0
             ? h('div', { class: 'budget-sum-row over' },
-              h('span', {}, 'Over budget extra'),
-              h('span', {}, '− ' + formatMoney(sum.overExtra)))
+              h('span', {}, 'Over budget by'),
+              h('span', {}, formatMoney(sum.overExtra)))
             : null,
           h('div', { class: 'budget-sum-row remaining' },
             h('span', {}, 'Remaining (saving)'),
