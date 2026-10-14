@@ -12,7 +12,7 @@ Track where your money is, what came in, what went out, and who owes whom.
 | Tab | What it is for |
 |---|---|
 | **Home** | Total balance, per-account boxes, this month's income and expense plus last month's figure (hidden when there is none), and the add-transaction form |
-| **Records** | Every transaction in the selected month, searchable, editable |
+| **Records** | Every transaction in the selected month, searchable (including by account name) and filterable by account, editable |
 | **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets. Over-budget? Move limit from another category, or repeat last month in one tap — transactions never change |
 | **Udhaar** | Money lent and borrowed through a chosen account, with full settle or part return ("Return some"). Adding moves money immediately; settling moves it back |
 | **Reports** | Donut and bar charts over any date range |
