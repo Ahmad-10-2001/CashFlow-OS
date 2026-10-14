@@ -21,7 +21,7 @@ Track where your money is, what came in, what went out, and who owes whom.
 | **Categories** | Add, remove, and reorder spending categories — the order here is the order in every dropdown. Every row shows this month's spend against its budget |
 | **Pending** | Bank-email transactions waiting for approval. Plain Approve files them; More options files as transfer, links an udhaar repayment, or ticks the bought list items. Repeat mail remembers its category |
 | **Accounts** | Cash, NayaPay, Easypaisa and anything you add, with this month's in/out per account. Opening balances, rename, archive |
-| **Settings** | Appearance (light/dark/sepia, this device only), cloud sync, JSON export/import (import merges — nothing already here is ever deleted), and a password-protected danger zone |
+| **Settings** | Appearance (warm sepia by default, or night dark — this device only), cloud sync, JSON export/import (import merges — nothing already here is ever deleted), and a password-protected danger zone |
 
 ---
 
@@ -122,10 +122,12 @@ in the danger zone — ledger tables only, never the email setup.
 
 ### Appearance is per-device
 
-Light, dark and sepia live under **Settings → Appearance**. The choice is
-kept in its own browser key, not in app state: it never syncs, so the phone
-and the laptop can differ. Charts and pastel note cards keep their own
-colours in every theme.
+Warm sepia is the look, with a night dark beside it, under **Settings →
+Appearance**. Every text/background pair in both is measured at 4.5:1 or
+better, so nothing fades into its background. The choice is kept in its own
+browser key, not in app state: it never syncs, so the phone and the laptop
+can differ. Charts and pastel note cards keep their own colours in every
+theme.
 
 (Month closing was removed: it labelled months without moving anything, and
 the label is what hid entries from view. Old closed months stay readable in
