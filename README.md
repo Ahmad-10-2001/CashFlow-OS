@@ -13,8 +13,8 @@ Track where your money is, what came in, what went out, and who owes whom.
 |---|---|
 | **Home** | Total balance, per-account boxes, this month's income and expense plus last month's figure (hidden when there is none), and the add-transaction form |
 | **Records** | Every transaction in the selected month, searchable (including by account name) and filterable by account, editable |
-| **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets. Over-budget? Move limit from another category, or repeat last month in one tap — transactions never change |
-| **Udhaar** | Money lent and borrowed through a chosen account, with full settle or part return ("Return some"). Adding moves money immediately; settling moves it back |
+| **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets. Over-budget? Adjust moves the spent rows into other categories via dropdowns (limits never change), or repeat last month in one tap |
+| **Udhaar** | Money lent and borrowed with an optional account and category. Picking an account moves money immediately; leaving it empty only records the debt, and settling moves the money then |
 | **Reports** | Donut and bar charts over any date range |
 | **List** | A standing shopping list — entered once, unticked automatically every new month; tick what you bought, then save it as one expense |
 | **Notes** | Personal sticky-note cards (color, icon, pin, search, edit, updated stamp) plus a separate Timers section — each timer counts up live from a moment you choose |
@@ -47,12 +47,15 @@ slice is written to the ledger when the entry is balance-tracked, and
 returning the rest settles through the normal flow. Over-returning is
 refused.
 
-Every udhaar entry goes through the account picked on its form. Adding moves
-the money immediately (lending pays out, borrowing lands in), under a
-dedicated **Udhaar** category created on first use — so no second manual
-entry is ever needed. Settling moves it back into the same account. Old
-entries from before the picker keep working exactly as they did; only new
-entries move money on add.
+Every udhaar entry can carry an account and a category, both optional. Picking
+an account moves the money immediately (lending pays out, borrowing lands
+in) — leaving it empty only records the debt, for old entries or money
+handled outside any account, and the movement happens on settle instead.
+Settling moves it back into the same account. The entry's category (Udhaar
+unless picked otherwise) is what every generated row files under — including
+a bank-email repayment approved with an udhaar link, which files under that
+mail's picked category instead. Old entries from before the pickers keep
+working exactly as they did.
 
 (Amanat was removed from the app. Its old rows stay valid in storage,
 backups and sync, so nothing was destroyed — they are simply no longer

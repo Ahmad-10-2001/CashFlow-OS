@@ -561,6 +561,7 @@ body.modal-open { overflow: hidden; }
   color: var(--muted);
   margin-bottom: 4px;
 }
+.field-opt { font-weight: 400; }
 .field-hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
 
 input, select, textarea {
@@ -880,7 +881,7 @@ select {
   cursor: pointer;
 }
 .budget-remove:hover { background: var(--field-bg); }
-.budget-move {
+.budget-adjust {
   display: block;
   margin-top: 6px;
   padding: 8px 10px;
@@ -894,8 +895,17 @@ select {
   text-decoration: underline;
   cursor: pointer;
 }
-.budget-move:hover { background: var(--field-bg); }
+.budget-adjust:hover { background: var(--field-bg); }
 .budget-repeat-row { margin-top: 10px; }
+
+/* Move-spending dialog rows: amount first, dropdown below — thumb-friendly
+   on a phone, no typing anywhere. */
+.adjust-row { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+.adjust-row:last-child { border-bottom: none; }
+.adjust-info { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.adjust-amount { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.adjust-detail { font-size: 12.5px; color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.adjust-category { width: 100%; }
 .budget-edit-section, .category-add-section {
   margin-top: 16px;
   padding-top: 16px;

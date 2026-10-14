@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v38">
+  <meta name="app-build" content="v40">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -215,8 +215,12 @@
         <span>Move money in my balance now, and again on settle</span>
       </label>
       <div class="form-group">
-        <label class="field-label" for="debtAccount">Account</label>
+        <label class="field-label" for="debtAccount">Account <span class="field-opt">(optional — empty records without moving)</span></label>
         <select id="debtAccount"></select>
+      </div>
+      <div class="form-group">
+        <label class="field-label" for="debtCategory">Category <span class="field-opt">(optional)</span></label>
+        <select id="debtCategory"></select>
       </div>
       <button class="btn btn-dark" type="submit">Add Udhaar</button>
       <div id="debtList"></div>
@@ -628,6 +632,18 @@
     </div>
     <button class="btn btn-primary" type="submit">Update</button>
     <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="noteEditModal">Cancel</button>
+  </form>
+</div>
+
+<!-- ═══ Move spending between categories ═══ -->
+<div class="modal-overlay" id="budgetAdjustModal" role="dialog" aria-modal="true" aria-labelledby="budgetAdjustHeading" aria-hidden="true" tabindex="-1">
+  <form class="modal" id="budgetAdjustForm" novalidate>
+    <h2 class="card-title" id="budgetAdjustHeading">Move spending</h2>
+    <input type="hidden" id="budgetAdjustCat">
+    <p class="card-subtitle" id="budgetAdjustSub"></p>
+    <div id="budgetAdjustList"></div>
+    <button class="btn btn-primary" type="submit">Save changes</button>
+    <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="budgetAdjustModal">Cancel</button>
   </form>
 </div>
 

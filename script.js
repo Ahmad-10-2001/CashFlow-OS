@@ -798,6 +798,9 @@ function sanitizeState(raw) {
       // Which account the money moved through. Old entries predate this and
       // carry nothing — debtAccountId() falls back for them at use time.
       accountId: typeof d.accountId === 'string' && d.accountId.trim() ? d.accountId.trim() : null,
+      // Which bucket its ledger entries file under. Old entries predate this
+      // too and resolve to Udhaar, exactly as they always filed.
+      category: typeof d.category === 'string' && d.category.trim() ? d.category.trim().slice(0, NAME_LIMIT) : 'Udhaar',
       updatedAt: keepStamp(d.updatedAt)
     });
   }
@@ -1514,20 +1517,26 @@ function fillCategorySelect(select, opts) {
 function refreshSelects() {
   fillCategorySelect($('txCategory'));
   fillCategorySelect($('budgetCategory'));
+  fillCategorySelect($('debtCategory'), { selected: 'Udhaar' });
   refreshAccountSelects();
 }
 
 /** Fill an account <select>. Archived accounts are omitted by default so new
  *  entries cannot land in a closed wallet, but a caller can ask for them by
- *  passing the id it needs to keep visible (used when editing a record). */
+ *  passing the id it needs to keep visible (used when editing a record).
+ *  `emptyLabel` prepends a blank "no account" choice — for forms where not
+ *  moving money right now is legitimate (an old udhaar being recorded). */
 function fillAccountSelect(select, opts) {
   if (!select) return;
   const o = opts || {};
   const chosen = typeof o.selected === 'string' ? o.selected : (state.settings.lastAccountId || cashAccountId());
   const list = state.accounts.filter((a) => !a.archived || a.id === chosen);
 
-  mount(select, list.map((a) => h('option', { value: a.id }, a.archived ? a.name + ' (archived)' : a.name)));
-  if (list.some((a) => a.id === chosen)) select.value = chosen;
+  mount(select,
+    o.emptyLabel ? h('option', { value: '' }, o.emptyLabel) : null,
+    list.map((a) => h('option', { value: a.id }, a.archived ? a.name + ' (archived)' : a.name)));
+  if ((o.emptyLabel && chosen === '') || list.some((a) => a.id === chosen)) select.value = chosen;
+  else if (o.emptyLabel) select.value = '';
   else if (list.length) select.value = list[0].id;
 }
 
@@ -1535,7 +1544,7 @@ function refreshAccountSelects() {
   fillAccountSelect($('txAccount'));
   fillAccountSelect($('txToAccount'));
   fillAccountSelect($('itemAccount'));
-  fillAccountSelect($('debtAccount'));
+  fillAccountSelect($('debtAccount'), { emptyLabel: 'No account movement' });
   fillAccountSelect($('editAccount'));
   fillAccountSelect($('editToAccount'));
 }
@@ -1743,28 +1752,31 @@ function returnDebtSome(id) {
 
   if (amount >= out) { settleDebt(id); return; }
 
-  const res = applyDebtPayment(d, amount, debtAccountId(d));
+  const res = applyDebtPayment(d, amount, debtAccountId(d), debtCategory(d));
   if (res === 'ok' && save()) toast('Recorded ' + formatMoney(amount) + '. ' + formatMoney(d.amount) + ' still outstanding with ' + d.person + '.');
 }
 
 /** File a payment against an open udhaar entry without asking anything.
  *
  *  The prompt-and-confirm lives with the callers (Return-some, Pending
- *  approve); this only moves the money. A full payment settles the entry and
+ *  approve); this only moves the money. `category` is where the written rows
+ *  file — the debt's own bucket, or the Pending row's picked one when the
+ *  payment arrives as a bank email. A full payment settles the entry and
  *  writes the link like settleDebt does but into the given account and without
  *  a confirm — the caller already confirmed by pressing its own button. A
  *  partial payment shrinks the entry and writes the slice. Returns 'settled',
  *  'partial', or null when there was nothing to do. */
-function applyDebtPayment(d, amount, accId) {
+function applyDebtPayment(d, amount, accId, category) {
   if (!d || d.settled) return null;
   if (!(amount > 0) || amount > d.amount) return null;
+  const cat = (category && findCategory(category)) ? findCategory(category) : debtCategory(d);
   if (amount >= d.amount) {
     d.settled = true;
     d.settledAt = nowStamp();
     // The money landed here, so the entry now belongs to this account too —
     // the settlement link is written into it by syncLedgerForDebt.
     if (accId && findAccount(accId)) d.accountId = accId;
-    syncLedgerForDebt(d);
+    syncLedgerForDebt(d, { category: cat });
     return 'settled';
   }
   d.amount = round2(d.amount - amount);
@@ -1773,7 +1785,7 @@ function applyDebtPayment(d, amount, accId) {
       id: newId(),
       type: d.type === 'receive' ? 'income' : 'expense',
       amount,
-      category: ensureUdhaarCategory(),
+      category: cat,
       comment: ('Udhaar part return — ' + (d.type === 'receive' ? d.person + ' paid back ' : 'paid ' + d.person + ' ') + formatMoney(amount)).slice(0, COMMENT_LIMIT),
       date: nowStamp(),
       accountId: accId && findAccount(accId) ? accId : debtAccountId(d),
@@ -1799,6 +1811,14 @@ function findCategory(name) {
 function ensureUdhaarCategory() {
   if (!findCategory('Udhaar')) state.categories.push('Udhaar');
   return 'Udhaar';
+}
+
+/** Which bucket an udhaar entry's ledger rows file under: its own category,
+ *  or Udhaar when that is gone (deleted since) or was never set. */
+function debtCategory(d) {
+  const c = d && typeof d.category === 'string' ? findCategory(d.category) : null;
+  if (c) return c;
+  return ensureUdhaarCategory();
 }
 
 /** Which account an udhaar entry moves money through: the one picked when it
@@ -1941,45 +1961,82 @@ function repeatLastMonthBudgets() {
   if (save()) toast('Repeated ' + n + ' budget(s) from ' + periodLabel(prev));
 }
 
-/** Move part of one category's budget into another's, within the same month.
+/** Re-file spending from one category into others, picked per transaction.
  *
- *  This is how an over-budget category is managed without touching a single
- *  transaction: the money already spent stays exactly where it is (reports and
- *  history never change), only the limits are rebalanced. The month's total
- *  across limits never changes, so fixing one category cannot silently inflate
- *  the plan — it borrows from slack elsewhere. Moving everything out removes
- *  the source row. */
-function moveBudget(cat) {
+ *  This is the over-budget fix: when a category ran over because of what was
+ *  spent, the spent rows themselves move — not the limit. Limits, budgets and
+ *  totals never change here, only each row's category. `mapping` is
+ *  {transactionId: newCategory}; unknown ids, transfers and unknown categories
+ *  are skipped, so a stale dialog can never corrupt the ledger. Returns how
+ *  many rows actually moved. `onlyFrom` scopes it to rows currently in one
+ *  category, so a row filed elsewhere since the dialog opened keeps its newer
+ *  category. Pure apart from the state it edits, so tests can pin it without
+ *  a DOM. */
+function applyCategoryRefile(mapping, onlyFrom) {
+  if (!mapping || typeof mapping !== 'object') return 0;
+  let n = 0;
+  for (const id of Object.keys(mapping)) {
+    const t = state.transactions.find((x) => x && x.id === id);
+    if (!t || t.type === 'transfer') continue;
+    if (onlyFrom && t.category !== onlyFrom) continue;
+    const target = findCategory(String(mapping[id] || ''));
+    if (!target) continue;
+    if (t.category === target) continue;
+    t.category = target;
+    touch(t);
+    n++;
+  }
+  return n;
+}
+
+/** Open the move-spending dialog for one budget row: every expense filed
+ *  under that category this month, each with its own dropdown — no typing,
+ *  no names to remember. */
+function openBudgetAdjust(cat) {
   const period = activeBudgetPeriod();
-  const limits = budgetsFor(period);
-  if (!Object.prototype.hasOwnProperty.call(limits, cat)) return;
-  const from = limits[cat];
-  if (!(from > 0)) { toast('"' + cat + '" has nothing to move'); return; }
+  const { start, end } = periodBoundsOf(period);
+  const rows = state.transactions
+    .filter((t) => t.type === 'expense' && t.category === cat && inPeriod(t.date, period))
+    .sort((a, b) => {
+      const diff = new Date(b.date) - new Date(a.date);
+      return diff !== 0 ? diff : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    });
+  if (!rows.length) { toast('No ' + cat + ' spending in ' + periodLabel(period) + ' to move'); return; }
+  $('budgetAdjustCat').value = cat;
+  $('budgetAdjustSub').textContent =
+    'Filed under "' + cat + '" in ' + periodLabel(period) + '. Pick another category per row — the budget limit itself does not change.';
+  mount($('budgetAdjustList'), rows.map((t) =>
+    h('div', { class: 'adjust-row' },
+      h('div', { class: 'adjust-info' },
+        h('span', { class: 'adjust-amount' }, formatMoney(t.amount)),
+        h('span', { class: 'adjust-detail' },
+          (t.comment ? t.comment + ' · ' : '') + formatDate(t.date))),
+      (() => {
+        const sel = h('select', {
+          class: 'adjust-category',
+          'aria-label': 'Category for ' + formatMoney(t.amount),
+          dataset: { adjTx: t.id }
+        });
+        fillCategorySelect(sel, { selected: t.category });
+        return sel;
+      })()
+    )
+  ));
+  openModal('budgetAdjustModal');
+}
 
-  const input = window.prompt(
-    'Move how much of the ' + formatMoney(from) + ' budgeted for "' + cat + '" to another category?\n\nTransactions and reports stay exactly as they are — only the limits move.',
-    String(from)
-  );
-  if (input === null) return;
-  let amount = toPositiveNumber(input);
-  if (amount === null) amount = from;   // blank means "all of it"
-  if (amount > from) { toast('That is more than the ' + formatMoney(from) + ' budgeted for "' + cat + '"'); return; }
-
-  const others = state.categories.filter((c) => c.toLowerCase() !== String(cat).toLowerCase());
-  const target = window.prompt(
-    'Move ' + formatMoney(amount) + ' to which category?' +
-    (others.length ? '\n\n' + others.join(', ') : ''),
-    others[0] || ''
-  );
-  if (target === null) return;
-  const match = findCategory(String(target).trim());
-  if (!match) { toast('No such category — pick one from the list shown'); return; }
-  if (match.toLowerCase() === String(cat).toLowerCase()) { toast('That is the same category'); return; }
-
-  limits[cat] = round2(from - amount);
-  if (limits[cat] <= 0) delete limits[cat];
-  limits[match] = round2((limits[match] || 0) + amount);
-  if (save()) toast('Moved ' + formatMoney(amount) + ' from "' + cat + '" to "' + match + '"');
+/** Apply the move-spending dialog: one Save re-files every changed row. */
+function saveBudgetAdjust() {
+  // Scoped to the category the dialog was opened for: a row filed elsewhere
+  // since (another device, another tab) keeps its newer category instead of
+  // being dragged back by a stale dialog.
+  const mapping = Object.create(null);
+  for (const sel of document.querySelectorAll('#budgetAdjustList [data-adj-tx]')) {
+    mapping[sel.dataset.adjTx] = sel.value;
+  }
+  const n = applyCategoryRefile(mapping, $('budgetAdjustCat').value);
+  closeModal('budgetAdjustModal');
+  if (save()) toast(n ? 'Moved ' + n + ' transaction(s) out of "' + $('budgetAdjustCat').value + '"' : 'Nothing changed');
 }
 
 function changeBudgetPeriod(period) {
@@ -2240,10 +2297,16 @@ function addDebt() {
   const amount = readAmountField($('debtAmount'), 'Amount');
   if (amount.error) { toast(amount.error); return; }
   const type = $('debtType').value === 'pay' ? 'pay' : 'receive';
-  const accId = $('debtAccount').value && findAccount($('debtAccount').value)
-    ? $('debtAccount').value
-    : (state.settings.lastAccountId || cashAccountId());
+  // Account is optional: picked means money moves right now through it, empty
+  // means this only records the debt (an old one, or money handled outside any
+  // account) and the movement happens on settle.
+  const accPick = $('debtAccount').value;
+  const accId = accPick && findAccount(accPick) ? accPick : null;
   const ledger = $('debtLedger').checked;
+  // Category is optional too: whatever the entry — and its later settlement —
+  // files under. Defaults to the Udhaar bucket.
+  const catPick = $('debtCategory') && $('debtCategory').value;
+  const category = (catPick && findCategory(catPick)) ? findCategory(catPick) : ensureUdhaarCategory();
 
   const d = {
     id: newId(),
@@ -2255,19 +2318,21 @@ function addDebt() {
     settled: false,
     settledAt: null,
     ledger,
-    accountId: accId
+    accountId: accId,
+    category
   };
   state.debts.push(d);
 
   // The money moves NOW, not only on settle: lending pays out of the account
   // immediately, borrowing lands in it. Settle later records the reverse, so
-  // the two always net out and no second manual entry is ever needed.
-  if (ledger) {
+  // the two always net out and no second manual entry is ever needed. With no
+  // account picked there is nothing to move through, so only the record lands.
+  if (ledger && accId) {
     state.transactions.unshift({
       id: newId(),
       type: type === 'receive' ? 'expense' : 'income',
       amount: amount.value,
-      category: ensureUdhaarCategory(),
+      category,
       comment: (type === 'receive' ? 'Lent to ' + person : 'Borrowed from ' + person).slice(0, COMMENT_LIMIT),
       date: d.date,
       accountId: accId,
@@ -2282,9 +2347,11 @@ function addDebt() {
   $('debtNote').value = '';
   // No focus() here on purpose — see addTransaction.
 
-  if (save()) toast(ledger
-    ? 'Udhaar added — ' + formatMoney(amount.value) + (type === 'receive' ? ' out of ' : ' into ') + accountName(accId)
-    : 'Udhaar added (not tracked in balance)');
+  if (save()) toast(!ledger
+    ? 'Udhaar added (not tracked in balance)'
+    : accId
+      ? 'Udhaar added — ' + formatMoney(amount.value) + (type === 'receive' ? ' out of ' : ' into ') + accountName(accId)
+      : 'Udhaar added — no money moved yet');
 }
 
 function deleteDebt(id) {
@@ -2328,12 +2395,13 @@ function settleDebt(id) {
  * adding, and any 'debtpart:' slices, are real movements and stay put.
  */
 function syncLedgerForDebt(d, opts) {
+  const o = opts || {};
   const marker = 'debt:' + d.id;
   // Drop the previously linked entry, leaving a tombstone so the removal
   // also reaches other devices rather than the old row reappearing.
   state.transactions.filter((t) => t.source === marker)
     .forEach((t) => dropRecord('transactions', t.id));
-  if (opts && opts.forceRemove) return;
+  if (o.forceRemove) return;
   if (!d.settled || !d.ledger) return;
   // The settlement lands in the SAME account the entry went through — money
   // lent out of NayaPay comes back into NayaPay, not into whatever was used
@@ -2343,7 +2411,7 @@ function syncLedgerForDebt(d, opts) {
     id: newId(),
     type: d.type === 'receive' ? 'income' : 'expense',
     amount: d.amount,
-    category: ensureUdhaarCategory(),
+    category: (o.category && findCategory(o.category)) ? findCategory(o.category) : debtCategory(d),
     comment: ('Udhaar settled — ' + (d.type === 'receive' ? d.person + ' paid me back' : 'I paid ' + d.person)).slice(0, COMMENT_LIMIT),
     date: d.settledAt || nowStamp(),
     accountId: accId,
@@ -3573,7 +3641,9 @@ function renderBudgets() {
             h('input', { type: 'checkbox', checked: offset, dataset: { act: 'budget-offset', arg: cat } }),
             h('span', {}, 'Income in this category reduces the budget')
           ),
-          h('button', { type: 'button', class: 'budget-move', dataset: { act: 'budget-move', arg: cat }, 'aria-label': 'Move budget from ' + cat }, 'Move'),
+          used > 0
+            ? h('button', { type: 'button', class: 'budget-adjust', dataset: { act: 'budget-adjust', arg: cat }, 'aria-label': 'Move spending out of ' + cat }, 'Adjust…')
+            : null,
           h('button', { type: 'button', class: 'budget-remove', dataset: { act: 'budget-delete', arg: cat }, 'aria-label': 'Remove budget for ' + cat }, 'Remove budget')
         );
       }));
@@ -3757,6 +3827,8 @@ function renderDebts() {
         d.note ? ' · ' + d.note : '',
         d.ledger ? '' : ' · not tracked in balance'
       ),
+      h('div', { class: 'debt-detail' },
+        debtCategory(d) + ' · ' + (d.accountId && findAccount(d.accountId) ? accountName(d.accountId) : 'no account movement')),
       h('div', { class: 'debt-detail' }, 'Added ' + formatDate(d.date)),
       h('div', { class: 'debt-actions' },
         button('Settle', 'debt-settle', { id: d.id, class: 'btn-mini settle' }),
@@ -4296,7 +4368,7 @@ const ACTIONS = {
   'cat-down': (el) => moveCategory(el.dataset.arg, 1),
   'budget-delete': (el) => removeBudget(el.dataset.arg),
   'budget-repeat': () => repeatLastMonthBudgets(),
-  'budget-move': (el) => moveBudget(el.dataset.arg),
+  'budget-adjust': (el) => openBudgetAdjust(el.dataset.arg),
   'report': (el) => showReport(el.dataset.arg),
   'report-custom': applyCustomRange,
   'item-toggle': (el) => toggleListItem(el.dataset.id),
@@ -4408,7 +4480,8 @@ function wireEvents() {
     ['timersForm', addTimer],
     ['editForm', saveEdit],
     ['editDebtForm', saveDebtEdit],
-    ['noteEditForm', saveNoteEdit]
+    ['noteEditForm', saveNoteEdit],
+    ['budgetAdjustForm', saveBudgetAdjust]
   ];
   forms.forEach(([id, handler]) => {
     const form = $(id);
@@ -4433,7 +4506,7 @@ function wireEvents() {
   }
 
   // close modals on backdrop click
-  ['editModal', 'editDebtModal', 'noteEditModal'].forEach((id) => {
+  ['editModal', 'editDebtModal', 'noteEditModal', 'budgetAdjustModal'].forEach((id) => {
     const overlay = $(id);
     if (overlay) overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(id); });
   });
@@ -5595,9 +5668,11 @@ async function approveTransaction(txId) {
 
     if (debt) {
       // The email IS the repayment: no separate ledger entry is built, the
-      // amount goes straight onto the udhaar entry. Bought-items are skipped
-      // here — one approval, one meaning.
-      const res = applyDebtPayment(debt, amount, accId);
+      // amount goes straight onto the udhaar entry — filed under this row's
+      // picked category, so a committee repayment lands in Committee, not in
+      // some default bucket. Bought-items are skipped here — one approval,
+      // one meaning.
+      const res = applyDebtPayment(debt, amount, accId, pendingChosenCategory(txId, tx.type));
       if (!res) { toast('That udhaar entry is already settled'); return; }
       state.settings.lastAccountId = accId;
       viewTxPeriod = null;
