@@ -1242,6 +1242,19 @@ select {
 .tx-period-row {
   margin-bottom: 10px;
 }
+/* Records filters: a compact account select beside the search, not a second
+   full-width row — the search stays the primary control. */
+.tx-filter-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  margin-bottom: 10px;
+}
+.tx-filter-row .form-group { margin-bottom: 0; }
+.tx-acct-filter { flex: 0 1 150px; min-width: 0; }
+.tx-acct-filter .field-label { font-size: 12px; margin-bottom: 4px; }
+.tx-acct-filter select { padding: 12px 10px; font-size: 14px; }
+.tx-search-wrap { flex: 1 1 auto; min-width: 0; }
 
 /* Budget remainder: what is left after this month's budgets */
 .budget-summary {

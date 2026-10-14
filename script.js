@@ -124,6 +124,10 @@ let budgetPeriod = null;   // null = follow the current calendar month
    other. Home always shows the current month; it has no picker to go stale. */
 let viewTxPeriod = null;
 let viewAcctPeriod = null;
+/* Records account filter. Session-only like the month pickers: '' means every
+   account ("All transactions"), anything else is an account id. Never
+   persisted, so a new load always starts unfiltered. */
+let viewTxAccount = '';
 /** True when a wall-clock stamp falls inside a YYYY-MM month. */
 function inPeriod(dateStr, period) {
   const d = new Date(dateStr);
@@ -137,6 +141,16 @@ function changeTxPeriod(period) {
 }
 function changeAcctPeriod(period) {
   viewAcctPeriod = PERIOD_RE.test(String(period)) ? period : null;
+  renderAll();
+}
+/** The account the Records list is filtered to: '' (all), or the id when it
+ *  still exists — a deleted account falls back to all instead of a blank
+ *  list under a stale selection. */
+function activeTxAccount() {
+  return (typeof viewTxAccount === 'string' && viewTxAccount && findAccount(viewTxAccount)) ? viewTxAccount : '';
+}
+function changeTxAccount(id) {
+  viewTxAccount = (typeof id === 'string' && id && findAccount(id)) ? id : '';
   renderAll();
 }
 /** The month a ledger view actually shows: the chosen one, unless it no longer
@@ -3611,6 +3625,19 @@ function renderTransactions() {
   viewTxPeriod = per === currentPeriod() ? null : per;
   const perSel = $('txPeriod');
   if (perSel) fillPeriodSelect(perSel, { selected: per });
+  // Account filter: small select beside the search, "All transactions" first.
+  // Rebuilt every render so a renamed account never leaves a stale label, and
+  // the selection is re-validated so a deleted account falls back to all.
+  const acctSel = $('txAcctFilter');
+  const acctId = activeTxAccount();
+  viewTxAccount = acctId;
+  if (acctSel) {
+    mount(acctSel,
+      h('option', { value: '' }, 'All transactions'),
+      state.accounts.map((a) => h('option', { value: a.id },
+        a.archived ? a.name + ' (archived)' : a.name)));
+    acctSel.value = acctId;
+  }
 
   // Sorted here rather than with a locale-aware comparator so the order is
   // identical in every browser. The id tiebreak matters because several records
@@ -3625,25 +3652,32 @@ function renderTransactions() {
   // September's salary as well, or the picker is decoration.
   rows = rows.filter((t) => inPeriod(t.date, per));
 
+  // Then the account: either side of a transfer counts, so moving money
+  // between wallets is found from both ends.
+  if (acctId) rows = rows.filter((t) => t.accountId === acctId || t.toAccountId === acctId);
+
   if (search) {
     rows = rows.filter((t) => {
       const cat = String(t.category || '').toLowerCase();
       const comment = String(t.comment || '').toLowerCase();
       const amount = String(t.amount);
       const grouped = amount.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-      // Transfers carry no category, so the route is searched instead.
+      // Account names count for every row, not just transfers: typing
+      // "NayaPay" must find the salary that landed in NayaPay, or the search
+      // is a trap — it looks like it covers everything and silently misses.
       const route = t.type === 'transfer'
         ? (accountName(t.accountId) + ' ' + accountName(t.toAccountId)).toLowerCase()
-        : '';
+        : accountName(t.accountId).toLowerCase();
       return cat.includes(search) || comment.includes(search) || amount.includes(search) ||
         grouped.includes(search) || route.includes(search);
     });
   }
 
   if (!rows.length) {
+    const scope = acctId ? ' for ' + accountName(acctId) : '';
     mount(list, h('div', { class: 'empty-state' }, search
-      ? 'No transactions match "' + search + '" in ' + periodLabel(per)
-      : 'No transactions in ' + periodLabel(per)));
+      ? 'No transactions match "' + search + '"' + scope + ' in ' + periodLabel(per)
+      : 'No transactions' + scope + ' in ' + periodLabel(per)));
     return;
   }
 
@@ -4328,6 +4362,7 @@ function wireEvents() {
 
     if (e.target.id === 'budgetPeriod') { changeBudgetPeriod(e.target.value); return; }
     if (e.target.id === 'txPeriod') { changeTxPeriod(e.target.value); return; }
+    if (e.target.id === 'txAcctFilter') { changeTxAccount(e.target.value); return; }
     if (e.target.id === 'acctPeriod') { changeAcctPeriod(e.target.value); return; }
     if (e.target.id === 'txType') { setTxTypeFields(); return; }
     if (e.target.id === 'editType') { setEditTypeFields(); return; }
