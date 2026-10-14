@@ -22,6 +22,50 @@
   --line:       #e5e5ea;
   --line-soft:  #f0f0f0;
   --field-bg:   #f9f9fb;
+  --page-bg:    #f2f2f7;
+  --card-bg:    #ffffff;
+  --cancel-bg:  #e5e5ea;
+}
+
+/* Dark theme. Every variable surfaces here so nothing is left showing light:
+   page, cards, fields, text, lines and the status colours all move together.
+   Pastel note cards and chart slices keep their own colours — dark text on a
+   light tint reads in both modes, so they are deliberately untouched. */
+[data-theme="dark"] {
+  --pos:        #4ade80;
+  --neg:        #ffb3aa;
+  --muted:      #a9a9b3;
+  --muted-2:    #bdbdc6;
+  --pos-dark:   #4ade80;
+  --neg-dark:   #ffb3aa;
+  --pos-tint-ink: #0f6b2c;
+  --neg-tint-ink: #a01f18;
+  --accent:     #5b9bff;
+  --ink:        #f2f2f7;
+  --ink-dark:   #ffffff;
+  --line:       #3a3a3f;
+  --line-soft:  #2b2b30;
+  --field-bg:   #232327;
+  --page-bg:    #101012;
+  --card-bg:    #1c1c1f;
+  --cancel-bg:  #3a3a3f;
+}
+
+/* Sepia theme: same mechanism, warm paper instead of night. */
+[data-theme="sepia"] {
+  --pos:        #1e6b34;
+  --neg:        #a3241a;
+  --muted:      #7a6a53;
+  --muted-2:    #6b5c46;
+  --accent:     #8a5a00;
+  --ink:        #433422;
+  --ink-dark:   #2e2318;
+  --line:       #ddd0b6;
+  --line-soft:  #e9dfc9;
+  --field-bg:   #f3ead3;
+  --page-bg:    #efe5cd;
+  --card-bg:    #fffaf0;
+  --cancel-bg:  #e4d7ba;
 }
 
 *, *::before, *::after {
@@ -37,7 +81,7 @@ html {
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-  background: #f2f2f7;
+  background: var(--page-bg);
   color: var(--ink);
   padding: 15px;
   padding-top: max(15px, env(safe-area-inset-top));
@@ -87,7 +131,7 @@ body.modal-open { overflow: hidden; }
 .card {
   display: block;
   width: 100%;
-  background: #fff;
+  background: var(--card-bg);
   padding: 18px;
   border: 1px solid transparent;
   border-radius: 16px;
@@ -468,7 +512,7 @@ body.modal-open { overflow: hidden; }
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: #fff;
+  background: var(--card-bg);
   color: var(--muted);
   font-family: inherit;
   font-size: 11px;
@@ -516,9 +560,21 @@ input, select, textarea {
 
 input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible {
   border-color: var(--accent);
-  background: #fff;
+  background: var(--card-bg);
   box-shadow: 0 0 0 3px rgba(10, 88, 202, 0.28);
   outline: none;
+}
+
+/* Native date/time controls must keep their own chrome. The blanket
+   `appearance: none` above strips the calendar/clock indicator and collapses
+   the field to a sliver on mobile browsers, which is why date fields looked
+   empty and congested. */
+input[type="date"],
+input[type="datetime-local"],
+input[type="time"] {
+  appearance: auto;
+  -webkit-appearance: auto;
+  min-height: 52px;
 }
 
 input[type="file"] { display: block; width: 100%; padding: 10px; font-size: 14px; }
@@ -554,7 +610,7 @@ select {
   padding: 0;
   border: 2px solid #8a8a8f;
   border-radius: 6px;
-  background: #fff;
+  background: var(--card-bg);
   cursor: pointer;
   display: grid;
   place-content: center;
@@ -593,11 +649,16 @@ select {
 
 .btn-primary { background: var(--accent); color: #fff; margin-bottom: 8px; }
 .btn-dark    { background: var(--ink);   color: #fff; margin-bottom: 8px; }
-.btn-danger  { background: #fff; color: #a01f18; border-color: #f0b4ae; margin-top: 4px; }
-.btn-cancel  { background: #e5e5ea; color: var(--ink); }
+.btn-danger  { background: var(--card-bg); color: #a01f18; border-color: #f0b4ae; margin-top: 4px; }
+.btn-cancel  { background: var(--cancel-bg); color: var(--ink); }
+
+/* The delete card: a red frame so it reads as a different kind of action long
+   before anyone reads the words. */
+.danger-zone { border: 1px solid #f0b4ae; }
 
 .btn-row { display: flex; gap: 8px; }
 .btn-row .btn { font-size: 14px; padding: 12px 8px; }
+.theme-btn.is-active { border-color: var(--accent); color: var(--accent); }
 
 /* small inline buttons inside list items */
 .btn-mini {
@@ -605,7 +666,7 @@ select {
   padding: 10px 12px;
   border: 1px solid #d1d1d6;
   border-radius: 10px;
-  background: #fff;
+  background: var(--card-bg);
   color: var(--accent);
   font-family: inherit;
   font-size: 14px;
@@ -626,7 +687,7 @@ select {
   justify-content: center;
   border: 1px solid #f0b4ae;
   border-radius: 50%;
-  background: #fff;
+  background: var(--card-bg);
   color: #a01f18;
   font-family: inherit;
   font-size: 16px;
@@ -667,7 +728,7 @@ select {
 .debt-item:last-child { border-bottom: none; }
 /* Settled rows use a tint + strike-through rather than opacity, because
    opacity would drag the text below its contrast threshold. */
-.debt-item.is-settled { background: #f7f7f9; border-radius: 10px; padding-left: 10px; padding-right: 10px; }
+.debt-item.is-settled { background: var(--field-bg); border-radius: 10px; padding-left: 10px; padding-right: 10px; }
 .debt-header { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
 .debt-person { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
 .debt-item.is-settled .debt-person { text-decoration: line-through; }
@@ -746,7 +807,7 @@ select {
 }
 .budget-spent { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; text-align: right; }
 .progress-bar {
-  background: #e5e5ea;
+  background: var(--cancel-bg);
   border-radius: 6px;
   height: 10px;
   overflow: hidden;
@@ -795,6 +856,22 @@ select {
   cursor: pointer;
 }
 .budget-remove:hover { background: var(--field-bg); }
+.budget-move {
+  display: block;
+  margin-top: 6px;
+  padding: 8px 10px;
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.budget-move:hover { background: var(--field-bg); }
+.budget-repeat-row { margin-top: 10px; }
 .budget-edit-section, .category-add-section {
   margin-top: 16px;
   padding-top: 16px;
@@ -938,7 +1015,7 @@ select {
   padding: 0;
   border: 2px solid #8a8a8f;
   border-radius: 7px;
-  background: #fff;
+  background: var(--card-bg);
   color: #fff;
   font-family: inherit;
   font-size: 15px;
@@ -986,7 +1063,7 @@ select {
 }
 .modal-overlay.active { display: flex; }
 .modal {
-  background: #fff;
+  background: var(--card-bg);
   border-radius: 20px;
   padding: 24px;
   width: 100%;
@@ -1012,6 +1089,9 @@ select {
 .category-info { display: flex; flex-direction: column; min-width: 0; }
 .category-name { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
 .category-count { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.category-month { margin-top: 6px; }
+.category-month .progress-bar { height: 8px; }
+.category-month-text { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
 
 /* ===== TOAST ===== */
 .toast {
@@ -1172,6 +1252,28 @@ select {
 .pending-category {
   width: 100%;
 }
+
+/* Deep-manage block on a pending row: transfer, account, udhaar link and
+   bought-items live here, collapsed until needed so the row stays a plain
+   Approve at first glance. */
+.pending-more {
+  margin-top: 10px;
+  border-top: 1px dashed var(--line);
+  padding-top: 6px;
+}
+.pending-more-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 6px 0;
+}
+.pending-more .form-group { margin-top: 8px; }
+.pending-more .field-label { font-size: 12px; margin-bottom: 4px; }
+.pending-kind,
+.pending-account,
+.pending-debt { width: 100%; }
+.pending-item-check { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 14px; }
 
 /* Category reorder: buttons for touch, drag for desktop */
 .category-move {

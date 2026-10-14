@@ -41,11 +41,15 @@ const ITEM_LIMIT = 80;
 const NOTE_TITLE_LIMIT = 80;
 const NOTE_BODY_LIMIT = 1000;
 const TIMER_LABEL_LIMIT = 60;
+/* How many bank+word -> category memories are kept. Each is a few dozen
+   bytes; this caps the whole map at a few KB so it can never bloat the
+   synced settings document. Oldest goes first when full. */
+const CAT_MEMORY_LIMIT = 100;
 const QTY_LIMIT = 24;
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 const STAMP_RE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?/;
 
-const DEFAULT_CATEGORIES = ['Salary', 'Food', 'Bike/Fuel', 'Groceries', 'Bills', 'Shopping', 'Health', 'Travel', 'Family', 'Other'];
+const DEFAULT_CATEGORIES = ['Salary', 'Food', 'Bike/Fuel', 'Groceries', 'Bills', 'Shopping', 'Health', 'Travel', 'Family', 'Udhaar', 'Other'];
 const DEFAULT_BUDGETS = { Food: 10000, 'Bike/Fuel': 10000, Groceries: 8000, Bills: 5000 };
 
 /* Seeded accounts. These are only a starting point — every account can be
@@ -85,13 +89,13 @@ const TABS = [
   { id: 'transactions', label: 'Records',    glyph: '≡' },
   { id: 'budget',       label: 'Budget',     glyph: '◎' },
   { id: 'udhaar',       label: 'Udhaar',     glyph: '⇄' },
-  { id: 'reports',      label: 'Reports',    glyph: '◔' },
-  { id: 'list',         label: 'List',       glyph: '☑' },
   { id: 'notes',        label: 'Notes',      glyph: '✎' },
+  { id: 'list',         label: 'List',       glyph: '☑' },
+  { id: 'reports',      label: 'Reports',    glyph: '◔' },
   { id: 'categories',   label: 'Categories', glyph: '❑' },
   { id: 'pending',      label: 'Pending',    glyph: '🔔' },
   { id: 'accounts',     label: 'Accounts',   glyph: '▣' },
-  { id: 'settings',     label: 'Backup',     glyph: '⚙' }
+  { id: 'settings',     label: 'Settings',   glyph: '⚙' }
 ];
 
 /* Categorical palette. Chosen to stay distinguishable on white and to hold
@@ -204,10 +208,15 @@ function toPositiveNumber(v) {
   return round2(n);
 }
 
-function cleanText(v, limit) {
+function cleanText(v, limit, keepBreaks) {
   if (typeof v !== 'string') return '';
-  // strip control characters that would corrupt display
-  return v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, limit);
+  // Strip control characters that would corrupt display — but keep line
+  // breaks when asked (multi-line fields like note bodies), so a note typed
+  // on three lines is still three lines after saving.
+  const cleaned = keepBreaks
+    ? v.replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, ' ')
+    : v.replace(/[\u0000-\u001f\u007f]/g, ' ');
+  return cleaned.trim().slice(0, limit);
 }
 
 /** Coerce anything into a finite number inside a range. Used where 0 and
@@ -418,7 +427,7 @@ function blankState() {
     // table, no migration and no RLS to configure. Whole-document
     // last-write-wins applies, same as budgets: fine at family scale.
     // shoppingPeriod remembers which month the list was last prepared for.
-    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, notes: [], timers: [] },
+    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, notes: [], timers: [], catMemory: Object.create(null) },
     closedPeriods: []
   };
 }
@@ -622,7 +631,7 @@ function sanitizeState(raw) {
     notes.push({
       id,
       title,
-      body: cleanText(n.body, NOTE_BODY_LIMIT),
+      body: cleanText(n.body, NOTE_BODY_LIMIT, true),
       color: NOTE_COLORS.indexOf(n.color) !== -1 ? n.color : 'yellow',
       icon: NOTE_ICONS.indexOf(n.icon) !== -1 ? n.icon : '📝',
       pinned: n.pinned === true,
@@ -649,6 +658,22 @@ function sanitizeState(raw) {
       ? Math.min(t.startedAt, Date.now())
       : Date.now();
     timers.push({ id, label, startedAt });
+  }
+
+  // Category memory for Pending approvals: bank + first telling word -> the
+  // category last picked for it ("nayapay|coffee" -> Groceries). Bounded and
+  // validated like everything else: keys are short lowercase strings, values
+  // must name a category that still exists.
+  const catMemory = Object.create(null);
+  const rawMem = isObject(rawSettings.catMemory) ? rawSettings.catMemory : {};
+  for (const k of Object.keys(rawMem)) {
+    if (Object.keys(catMemory).length >= CAT_MEMORY_LIMIT) break;
+    if (typeof rawMem[k] !== 'string') continue;
+    const key = String(k).toLowerCase().slice(0, 80);
+    if (!key || key.indexOf('|') === -1) continue;
+    const kept = categories.find((c) => c.toLowerCase() === rawMem[k].toLowerCase());
+    if (!kept) continue;
+    catMemory[key] = kept;
   }
 
   // ── closedPeriods ───────────────────────────────────────────
@@ -756,6 +781,9 @@ function sanitizeState(raw) {
       settled,
       settledAt,
       ledger: d.ledger !== false,
+      // Which account the money moved through. Old entries predate this and
+      // carry nothing — debtAccountId() falls back for them at use time.
+      accountId: typeof d.accountId === 'string' && d.accountId.trim() ? d.accountId.trim() : null,
       updatedAt: keepStamp(d.updatedAt)
     });
   }
@@ -834,7 +862,7 @@ function sanitizeState(raw) {
       version: SCHEMA_VERSION,
       transactions, debts, budgets, categories, shopping, custody,
       accounts,
-      settings: { budgetOffset, lastAccountId, shoppingPeriod, notes, timers },
+      settings: { budgetOffset, lastAccountId, shoppingPeriod, notes, timers, catMemory },
       closedPeriods
     },
     problems
@@ -932,14 +960,78 @@ function save() {
   return ok;
 }
 
-function resetAll() {
+async function resetAll() {
   if (!confirm('Delete ALL transactions, udhaar, budgets, categories and list items from this browser? This cannot be undone. Export a backup first if you might want the data back.')) return;
+  const S = window.CashFlowSync;
+  // Signed in, this would NOT stay local: the sync engine compares against its
+  // shadow, reads every vanished row as a deletion, and pushes tombstones for
+  // all of them — wiping the cloud as a side effect. So sign out first (which
+  // drops the session and the cursors) and forget the shadow too. Only then is
+  // "local" actually local.
+  if (S && S.isSignedIn) {
+    try { await S.signOut(); } catch (err) { /* signing out locally matters more */ }
+  }
+  if (S && S.resetSyncState) S.resetSyncState();
   try { localStorage.removeItem(STORAGE_KEY); } catch (err) { /* ignore */ }
   state = blankState();
   reportRange = { mode: 'month' };
   budgetPeriod = null;
   renderAll();
-  toast('All local data cleared.');
+  toast('All local data cleared. The cloud was not touched.');
+}
+
+/** Delete the ledger from the cloud, on purpose, with proof of ownership.
+ *
+ *  Backup files and "delete local data" never reach here: this is the one
+ *  button that deletes server rows. It asks for the account password and
+ *  re-signs in with it first — so a borrowed unlocked phone is not enough.
+ *  Only ledger tables go: email_routes and pending_transactions are left
+ *  exactly as they are, so the mail setup survives. Afterwards this browser
+ *  is reset to match, with sync claims cleared so nothing gets re-uploaded. */
+async function deleteCloudData() {
+  const S = window.CashFlowSync;
+  if (!S || !S.isSignedIn) { toast('Sign in first — there is no cloud data without an account'); return; }
+  const pwBox = $('cloudDeletePassword');
+  const pw = pwBox && typeof pwBox.value === 'string' ? pwBox.value : '';
+  if (!pw) { toast('Enter your account password first'); if (pwBox) pwBox.focus(); return; }
+  const email = S.email;
+  if (!confirm(
+    'Permanently delete ALL your ledger data from the cloud?\n\n' +
+    'Transactions, udhaar, shopping, accounts, budgets and categories.\n\n' +
+    'Your email setup (forwarding addresses, pending queue) stays untouched.\n\n' +
+    'This cannot be undone. Export a backup first if you might want anything back.'
+  )) return;
+
+  toast('Checking password…');
+  let res;
+  try {
+    res = await S.signIn(email, pw);
+  } catch (err) {
+    toast('Could not reach the server — nothing was deleted');
+    return;
+  }
+  if (res.error) { toast(res.error); return; }
+  if (pwBox) pwBox.value = '';
+
+  const failures = [];
+  for (const t of ['transactions', 'accounts', 'debts', 'custody', 'shopping', 'prefs']) {
+    try {
+      await S.deleteUserRows(t);
+    } catch (err) {
+      failures.push(t);
+    }
+  }
+  if (failures.length) {
+    toast('Some cloud data could not be deleted (' + failures.join(', ') + '). Nothing was changed here — try again.');
+    return;
+  }
+
+  if (S.resetSyncState) S.resetSyncState();
+  state = blankState();
+  reportRange = { mode: 'month' };
+  budgetPeriod = null;
+  save();
+  toast('Cloud ledger deleted. Your email setup is untouched.');
 }
 
 /* ============================================================
@@ -1183,6 +1275,55 @@ function toast(msg) {
 }
 
 /* ============================================================
+   Appearance (per-device theme, never synced)
+   ============================================================ */
+
+const THEME_KEY = 'cashflow:theme';
+const THEMES = ['light', 'dark', 'sepia'];
+const THEME_LABELS = { light: 'Light', dark: 'Dark', sepia: 'Sepia' };
+
+/** The theme lives in its own storage key on purpose: it is a property of
+ *  the device (this phone wants dark, that laptop wants light), not of the
+ *  money. Putting it in app state would sync it everywhere and flip the
+ *  other device's screen — the opposite of a preference. */
+function getTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    if (THEMES.indexOf(t) !== -1) return t;
+  } catch (err) { /* storage blocked: fall back to light */ }
+  return 'light';
+}
+
+function applyTheme() {
+  const t = getTheme();
+  try {
+    if (t === 'light') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', t);
+  } catch (err) { /* headless test env: nothing to paint on */ }
+}
+
+function setTheme(name) {
+  if (THEMES.indexOf(name) === -1) return;
+  try { localStorage.setItem(THEME_KEY, name); } catch (err) { /* ignore */ }
+  applyTheme();
+  renderThemeButtons();
+  toast(THEME_LABELS[name] + ' theme on');
+}
+
+function renderThemeButtons() {
+  const box = $('themeButtons');
+  if (!box) return;
+  const cur = getTheme();
+  mount(box, THEMES.map((t) =>
+    h('button', {
+      type: 'button',
+      class: 'btn-mini theme-btn' + (t === cur ? ' is-active' : ''),
+      dataset: { act: 'theme-set', arg: t },
+      'aria-pressed': t === cur ? 'true' : 'false'
+    }, (t === cur ? '● ' : '○ ') + THEME_LABELS[t])));
+}
+
+/* ============================================================
    Tabs
    ============================================================ */
 
@@ -1378,6 +1519,7 @@ function refreshAccountSelects() {
   fillAccountSelect($('txAccount'));
   fillAccountSelect($('txToAccount'));
   fillAccountSelect($('itemAccount'));
+  fillAccountSelect($('debtAccount'));
   fillAccountSelect($('editAccount'));
   fillAccountSelect($('editToAccount'));
 }
@@ -1563,8 +1705,8 @@ function mergeDuplicateAccounts(opts) {
  *  to the ledger, and only when the entry is balance-tracked. A full return
  *  goes through the normal settle flow so its confirm and ledger link stay
  *  identical. Partial slices carry their own source marker, so settle /
- *  unsettle — which rebuilds only the 'debt:<id>' link — never touches them,
- *  and deleting the entry leaves the real money movements it recorded. */
+ *  unsettle — which rebuilds only the 'debt:<id>' link — never touches them.
+ *  Deleting the entry takes the whole trail (upfront, slices, link) with it. */
 function returnDebtSome(id) {
   const d = state.debts.find((x) => x.id === id);
   if (!d) { toast('That entry is already gone'); return; }
@@ -1585,24 +1727,45 @@ function returnDebtSome(id) {
 
   if (amount >= out) { settleDebt(id); return; }
 
-  d.amount = round2(out - amount);
+  const res = applyDebtPayment(d, amount, debtAccountId(d));
+  if (res === 'ok' && save()) toast('Recorded ' + formatMoney(amount) + '. ' + formatMoney(d.amount) + ' still outstanding with ' + d.person + '.');
+}
+
+/** File a payment against an open udhaar entry without asking anything.
+ *
+ *  The prompt-and-confirm lives with the callers (Return-some, Pending
+ *  approve); this only moves the money. A full payment settles the entry and
+ *  writes the link like settleDebt does but into the given account and without
+ *  a confirm — the caller already confirmed by pressing its own button. A
+ *  partial payment shrinks the entry and writes the slice. Returns 'settled',
+ *  'partial', or null when there was nothing to do. */
+function applyDebtPayment(d, amount, accId) {
+  if (!d || d.settled) return null;
+  if (!(amount > 0) || amount > d.amount) return null;
+  if (amount >= d.amount) {
+    d.settled = true;
+    d.settledAt = nowStamp();
+    // The money landed here, so the entry now belongs to this account too —
+    // the settlement link is written into it by syncLedgerForDebt.
+    if (accId && findAccount(accId)) d.accountId = accId;
+    syncLedgerForDebt(d);
+    return 'settled';
+  }
+  d.amount = round2(d.amount - amount);
   if (d.ledger) {
-    const accId = state.settings.lastAccountId && findAccount(state.settings.lastAccountId)
-      ? state.settings.lastAccountId
-      : cashAccountId();
     state.transactions.unshift({
       id: newId(),
       type: d.type === 'receive' ? 'income' : 'expense',
       amount,
-      category: findCategory('Other') ? 'Other' : state.categories[0],
+      category: ensureUdhaarCategory(),
       comment: ('Udhaar part return — ' + (d.type === 'receive' ? d.person + ' paid back ' : 'paid ' + d.person + ' ') + formatMoney(amount)).slice(0, COMMENT_LIMIT),
       date: nowStamp(),
-      accountId: accId,
+      accountId: accId && findAccount(accId) ? accId : debtAccountId(d),
       toAccountId: null,
       source: 'debtpart:' + d.id
     });
   }
-  if (save()) toast('Recorded ' + formatMoney(amount) + '. ' + formatMoney(d.amount) + ' still outstanding with ' + d.person + '.');
+  return 'partial';
 }
 
 /* ============================================================
@@ -1612,6 +1775,24 @@ function returnDebtSome(id) {
 function findCategory(name) {
   const key = String(name).toLowerCase();
   return state.categories.find((c) => c.toLowerCase() === key);
+}
+
+/** The Udhaar bucket exists from the first udhaar entry on, for old and new
+ *  installs alike: adding it to the defaults only helps fresh states, so the
+ *  first entry that needs it creates it (once — afterwards it is just found). */
+function ensureUdhaarCategory() {
+  if (!findCategory('Udhaar')) state.categories.push('Udhaar');
+  return 'Udhaar';
+}
+
+/** Which account an udhaar entry moves money through: the one picked when it
+ *  was added, else the last-used account, else cash. Old entries predate the
+ *  picker, so they resolve exactly like settlements always did. */
+function debtAccountId(d) {
+  if (d && typeof d.accountId === 'string' && findAccount(d.accountId)) return d.accountId;
+  const last = state.settings && state.settings.lastAccountId;
+  if (last && findAccount(last)) return last;
+  return cashAccountId();
 }
 
 function addCategory(nameInput) {
@@ -1721,6 +1902,68 @@ function removeBudget(cat) {
   if (!confirm('Remove the budget for "' + cat + '" in ' + periodLabel(period) + '?')) return;
   delete state.budgets[period][cat];
   if (save()) toast('Budget removed for ' + cat);
+}
+
+/** Copy the previous month's limits into the month being viewed — but only
+ *  where nothing is set yet. Existing limits always win, so repeating can
+ *  never silently overwrite a number already chosen for this month. It only
+ *  ever adds, which is why it needs no confirm: there is nothing to lose. */
+function repeatLastMonthBudgets() {
+  const target = activeBudgetPeriod();
+  const prev = previousPeriod(target);
+  const src = state.budgets[prev];
+  if (!src || !Object.keys(src).length) { toast('No budgets in ' + periodLabel(prev) + ' to repeat'); return; }
+  const dest = budgetsFor(target);
+  let n = 0;
+  for (const cat of Object.keys(src)) {
+    if (Object.prototype.hasOwnProperty.call(dest, cat)) continue;
+    if (!findCategory(cat)) continue;
+    dest[cat] = src[cat];
+    n++;
+  }
+  if (!n) { toast('This month already has all of those budgets'); return; }
+  if (save()) toast('Repeated ' + n + ' budget(s) from ' + periodLabel(prev));
+}
+
+/** Move part of one category's budget into another's, within the same month.
+ *
+ *  This is how an over-budget category is managed without touching a single
+ *  transaction: the money already spent stays exactly where it is (reports and
+ *  history never change), only the limits are rebalanced. The month's total
+ *  across limits never changes, so fixing one category cannot silently inflate
+ *  the plan — it borrows from slack elsewhere. Moving everything out removes
+ *  the source row. */
+function moveBudget(cat) {
+  const period = activeBudgetPeriod();
+  const limits = budgetsFor(period);
+  if (!Object.prototype.hasOwnProperty.call(limits, cat)) return;
+  const from = limits[cat];
+  if (!(from > 0)) { toast('"' + cat + '" has nothing to move'); return; }
+
+  const input = window.prompt(
+    'Move how much of the ' + formatMoney(from) + ' budgeted for "' + cat + '" to another category?\n\nTransactions and reports stay exactly as they are — only the limits move.',
+    String(from)
+  );
+  if (input === null) return;
+  let amount = toPositiveNumber(input);
+  if (amount === null) amount = from;   // blank means "all of it"
+  if (amount > from) { toast('That is more than the ' + formatMoney(from) + ' budgeted for "' + cat + '"'); return; }
+
+  const others = state.categories.filter((c) => c.toLowerCase() !== String(cat).toLowerCase());
+  const target = window.prompt(
+    'Move ' + formatMoney(amount) + ' to which category?' +
+    (others.length ? '\n\n' + others.join(', ') : ''),
+    others[0] || ''
+  );
+  if (target === null) return;
+  const match = findCategory(String(target).trim());
+  if (!match) { toast('No such category — pick one from the list shown'); return; }
+  if (match.toLowerCase() === String(cat).toLowerCase()) { toast('That is the same category'); return; }
+
+  limits[cat] = round2(from - amount);
+  if (limits[cat] <= 0) delete limits[cat];
+  limits[match] = round2((limits[match] || 0) + amount);
+  if (save()) toast('Moved ' + formatMoney(amount) + ' from "' + cat + '" to "' + match + '"');
 }
 
 function changeBudgetPeriod(period) {
@@ -1839,7 +2082,8 @@ function addTransaction() {
   $('txType').value = 'expense';
   $('txDate').value = stampToInput(nowStamp());
   setTxTypeFields();
-  $('txAmount').focus();
+  // No focus() here on purpose: after saving, no field re-activates itself —
+  // the keyboard popping back up uninvited is the complaint this removes.
 
   if (!save()) return;
   toast(type === 'transfer'
@@ -1979,33 +2223,64 @@ function addDebt() {
   if (!person) { toast('Enter the person’s name'); return; }
   const amount = readAmountField($('debtAmount'), 'Amount');
   if (amount.error) { toast(amount.error); return; }
+  const type = $('debtType').value === 'pay' ? 'pay' : 'receive';
+  const accId = $('debtAccount').value && findAccount($('debtAccount').value)
+    ? $('debtAccount').value
+    : (state.settings.lastAccountId || cashAccountId());
+  const ledger = $('debtLedger').checked;
 
-  state.debts.push({
+  const d = {
     id: newId(),
-    type: $('debtType').value === 'pay' ? 'pay' : 'receive',
+    type,
     person,
     amount: amount.value,
     note: cleanText($('debtNote').value, COMMENT_LIMIT),
     date: nowStamp(),
     settled: false,
     settledAt: null,
-    ledger: $('debtLedger').checked
-  });
+    ledger,
+    accountId: accId
+  };
+  state.debts.push(d);
+
+  // The money moves NOW, not only on settle: lending pays out of the account
+  // immediately, borrowing lands in it. Settle later records the reverse, so
+  // the two always net out and no second manual entry is ever needed.
+  if (ledger) {
+    state.transactions.unshift({
+      id: newId(),
+      type: type === 'receive' ? 'expense' : 'income',
+      amount: amount.value,
+      category: ensureUdhaarCategory(),
+      comment: (type === 'receive' ? 'Lent to ' + person : 'Borrowed from ' + person).slice(0, COMMENT_LIMIT),
+      date: d.date,
+      accountId: accId,
+      toAccountId: null,
+      source: 'debtout:' + d.id
+    });
+    state.settings.lastAccountId = accId;
+  }
 
   $('debtPerson').value = '';
   $('debtAmount').value = '';
   $('debtNote').value = '';
-  $('debtPerson').focus();
+  // No focus() here on purpose — see addTransaction.
 
-  if (save()) toast('Udhaar added');
+  if (save()) toast(ledger
+    ? 'Udhaar added — ' + formatMoney(amount.value) + (type === 'receive' ? ' out of ' : ' into ') + accountName(accId)
+    : 'Udhaar added (not tracked in balance)');
 }
 
 function deleteDebt(id) {
   const d = state.debts.find((x) => x.id === id);
   if (!d) { toast('That entry is already gone'); return; }
-  if (!confirm('Delete the udhaar entry for ' + d.person + '?')) return;
+  if (!confirm('Delete the udhaar entry for ' + d.person + '? Linked balance entries go with it.')) return;
   dropRecord('debts', id);
   syncLedgerForDebt(d, { forceRemove: true });
+  // The upfront entry and any part-return slices are real movements this entry
+  // caused — deleting the entry takes its whole trail with it, on every device.
+  state.transactions.filter((t) => t.source === 'debtout:' + id || String(t.source || '').indexOf('debtpart:' + id) === 0)
+    .forEach((t) => dropRecord('transactions', t.id));
   if (save()) toast('Udhaar deleted');
 }
 
@@ -2014,11 +2289,12 @@ function settleDebt(id) {
   if (!d) { toast('That entry is already gone'); return; }
 
   if (d.ledger) {
+    const accId = debtAccountId(d);
     const action = d.settled ? 'Un-settling' : 'Settling';
     const effect = d.settled
       ? 'remove the linked entry from'
       : 'record ' + formatMoney(d.amount) + ' in';
-    const where = d.settled ? 'your balance' : 'your balance as ' + (d.type === 'receive' ? 'income' : 'an expense');
+    const where = d.settled ? 'your balance' : accountName(accId) + ' as ' + (d.type === 'receive' ? 'income' : 'an expense');
     if (!confirm(action + ' ' + d.person + ' will ' + effect + ' ' + where + '. Continue?')) return;
   }
 
@@ -2032,6 +2308,8 @@ function settleDebt(id) {
 /**
  * Keep the ledger in step with a debt. Idempotent: any previously linked
  * transaction is removed first, so toggling settle twice cannot duplicate it.
+ * Only the 'debt:' link is rebuilt here — the upfront 'debtout:' entry from
+ * adding, and any 'debtpart:' slices, are real movements and stay put.
  */
 function syncLedgerForDebt(d, opts) {
   const marker = 'debt:' + d.id;
@@ -2041,16 +2319,15 @@ function syncLedgerForDebt(d, opts) {
     .forEach((t) => dropRecord('transactions', t.id));
   if (opts && opts.forceRemove) return;
   if (!d.settled || !d.ledger) return;
-  // A settlement is money that actually moved, so it belongs to whichever
-  // account the user settles into — not silently to whatever was used last.
-  const accId = state.settings.lastAccountId && findAccount(state.settings.lastAccountId)
-    ? state.settings.lastAccountId
-    : cashAccountId();
+  // The settlement lands in the SAME account the entry went through — money
+  // lent out of NayaPay comes back into NayaPay, not into whatever was used
+  // last. Old entries predate the picker and resolve the old way.
+  const accId = debtAccountId(d);
   state.transactions.unshift({
     id: newId(),
     type: d.type === 'receive' ? 'income' : 'expense',
     amount: d.amount,
-    category: findCategory('Other') ? 'Other' : state.categories[0],
+    category: ensureUdhaarCategory(),
     comment: ('Udhaar settled — ' + (d.type === 'receive' ? d.person + ' paid me back' : 'I paid ' + d.person)).slice(0, COMMENT_LIMIT),
     date: d.settledAt || nowStamp(),
     accountId: accId,
@@ -2094,6 +2371,20 @@ function saveDebtEdit() {
   // settled debt's balance effect never disagrees with the record.
   if (ledgerChanged || d.settled) syncLedgerForDebt(d);
 
+  // The upfront entry from adding is real money too: if the amount was edited,
+  // follow it instead of leaving a stale figure behind.
+  if (d.ledger) {
+    const upfront = state.transactions.find((t) => t.source === 'debtout:' + d.id);
+    if (upfront && upfront.amount !== d.amount) {
+      upfront.amount = d.amount;
+      upfront.type = d.type === 'receive' ? 'expense' : 'income';
+      touch(upfront);
+    }
+  } else {
+    state.transactions.filter((t) => t.source === 'debtout:' + d.id)
+      .forEach((t) => dropRecord('transactions', t.id));
+  }
+
   closeModal('editDebtModal');
   if (save()) toast('Udhaar updated');
 }
@@ -2124,11 +2415,10 @@ function addListItem() {
   });
 
   // Clear every field, so a repeated entry does not inherit the previous
-  // quantity or note.
+  // quantity or note. No focus() here on purpose — see addTransaction.
   input.value = '';
   $('itemQty').value = '';
   $('itemNote').value = '';
-  input.focus();
   save();
 }
 
@@ -2269,7 +2559,7 @@ function addTimer() {
   state.settings.timers.push({ id: newId(), label, startedAt: start });
   $('timerLabel').value = '';
   if ($('timerStart')) $('timerStart').value = '';
-  $('timerLabel').focus();
+  // No focus() here on purpose — see addTransaction.
   if (save()) { tickTimers(); toast('Timer started'); }
 }
 
@@ -2354,7 +2644,7 @@ function addNote() {
   state.settings.notes.push({
     id: newId(),
     title,
-    body: cleanText($('noteBody').value, NOTE_BODY_LIMIT),
+    body: cleanText($('noteBody').value, NOTE_BODY_LIMIT, true),
     color: NOTE_COLORS.indexOf(($('noteColor') || {}).value) !== -1 ? $('noteColor').value : 'yellow',
     icon: NOTE_ICONS.indexOf(($('noteIcon') || {}).value) !== -1 ? $('noteIcon').value : '📝',
     pinned: false,
@@ -2363,7 +2653,7 @@ function addNote() {
   });
   $('noteTitle').value = '';
   $('noteBody').value = '';
-  $('noteTitle').focus();
+  // No focus() here on purpose — see addTransaction.
   if (save()) toast('Note saved');
 }
 
@@ -2391,7 +2681,7 @@ function saveNoteEdit() {
   const title = cleanText($('noteEditTitle').value, NOTE_TITLE_LIMIT);
   if (!title) { toast('Give the note a title'); return; }
   n.title = title;
-  n.body = cleanText($('noteEditBody').value, NOTE_BODY_LIMIT);
+  n.body = cleanText($('noteEditBody').value, NOTE_BODY_LIMIT, true);
   n.color = NOTE_COLORS.indexOf($('noteEditColor').value) !== -1 ? $('noteEditColor').value : 'yellow';
   n.icon = NOTE_ICONS.indexOf($('noteEditIcon').value) !== -1 ? $('noteEditIcon').value : '📝';
   // Device-local stamp, like every other date in the app.
@@ -2751,30 +3041,6 @@ function renderReport() {
    Month archive
    ============================================================ */
 
-function closePeriod() {
-  const period = currentPeriod();
-  if (isClosed(period)) { toast(periodLabel(period) + ' is already closed'); return; }
-  if (!confirm(
-    'Close ' + periodLabel(period) + '?\n\n' +
-    'Its budgets and reports are kept and stay readable. New entries go to the new month.\n\n' +
-    'A backup file will be downloaded first.'
-  )) return;
-
-  exportBackup({ quiet: true });
-  state.closedPeriods.push(period);
-  state.closedPeriods.sort();
-  save();
-  toast(periodLabel(period) + ' closed. History is kept — reopen it any time from Backup.');
-}
-
-function reopenPeriod(period) {
-  const i = state.closedPeriods.indexOf(period);
-  if (i === -1) return;
-  state.closedPeriods.splice(i, 1);
-  save();
-  toast(periodLabel(period) + ' reopened');
-}
-
 /* ============================================================
    Backup
    ============================================================ */
@@ -2944,6 +3210,13 @@ function mergeIncomingState(current, incoming) {
   const cash = accounts.rows.find((a) => a && a.kind === 'cash') || accounts.rows[0];
   const notes = unionById(curS.notes, incS.notes);
   const timers = unionById(curS.timers, incS.timers);
+  // Memories merge with the current device winning each key, then capped —
+  // same rule as everything else: what is here is never overwritten.
+  const mem = Object.assign(Object.create(null), incS.catMemory || {}, curS.catMemory || {});
+  for (const k of Object.keys(mem)) {
+    if (typeof mem[k] !== 'string') { delete mem[k]; continue; }
+  }
+  while (Object.keys(mem).length > CAT_MEMORY_LIMIT) delete mem[Object.keys(mem)[0]];
 
   return {
     state: {
@@ -2964,7 +3237,8 @@ function mergeIncomingState(current, incoming) {
           ? curS.shoppingPeriod
           : null,
         notes: notes.rows,
-        timers: timers.rows
+        timers: timers.rows,
+        catMemory: mem
       },
       closedPeriods: Array.from(cp).sort()
     },
@@ -3283,6 +3557,7 @@ function renderBudgets() {
             h('input', { type: 'checkbox', checked: offset, dataset: { act: 'budget-offset', arg: cat } }),
             h('span', {}, 'Income in this category reduces the budget')
           ),
+          h('button', { type: 'button', class: 'budget-move', dataset: { act: 'budget-move', arg: cat }, 'aria-label': 'Move budget from ' + cat }, 'Move'),
           h('button', { type: 'button', class: 'budget-remove', dataset: { act: 'budget-delete', arg: cat }, 'aria-label': 'Remove budget for ' + cat }, 'Remove budget')
         );
       }));
@@ -3489,8 +3764,20 @@ function renderCategories() {
       const key = t.category.toLowerCase();
       counts.set(key, (counts.get(key) || 0) + 1);
     }
-    mount(list, state.categories.map((cat, i) =>
-      h('div', {
+    // This month's spend per category, so every row shows where it stands —
+    // management at a glance instead of a trip to Budget per row.
+    const per = currentPeriod();
+    const { start, end } = periodBoundsOf(per);
+    const today = endOfToday();
+    const windowEnd = end < today ? end : today;
+    const monthSpend = start <= windowEnd ? spendByCategory(start, windowEnd) : new Map();
+    const limits = budgetsFor(per);
+    mount(list, state.categories.map((cat, i) => {
+      const spent = monthSpend.get(cat) || 0;
+      const limit = Object.prototype.hasOwnProperty.call(limits, cat) ? limits[cat] : null;
+      const pct = limit ? (spent / limit) * 100 : 0;
+      const level = !limit ? '' : pct >= 100 ? 'over' : pct >= 70 ? 'warn' : 'ok';
+      return h('div', {
         class: 'category-item', draggable: 'true',
         dataset: { catRow: cat },
         'aria-label': cat + ', position ' + (i + 1) + ' of ' + state.categories.length
@@ -3498,15 +3785,24 @@ function renderCategories() {
         h('div', { class: 'category-info' },
           h('span', { class: 'category-name' }, cat),
           h('span', { class: 'category-count' },
-            (counts.get(cat.toLowerCase()) || 0) + ' transaction(s)' + (offsetOn(cat) ? ' · income offsets budget' : ''))
+            (counts.get(cat.toLowerCase()) || 0) + ' transaction(s)' + (offsetOn(cat) ? ' · income offsets budget' : '')),
+          (spent > 0 || limit !== null)
+            ? h('div', { class: 'category-month' },
+              limit !== null
+                ? h('div', { class: 'progress-bar', role: 'progressbar', 'aria-valuenow': String(Math.round(pct)), 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': cat + ' spending this month' },
+                  h('div', { class: 'progress-fill ' + level, style: 'width:' + Math.min(100, pct) + '%' }))
+                : null,
+              h('span', { class: 'category-month-text' },
+                formatMoney(spent) + ' this month' + (limit !== null ? ' of ' + formatMoney(limit) : '')))
+            : null
         ),
         h('div', { class: 'category-move' },
           iconButton('↑', 'cat-up', { arg: cat, title: 'Move ' + cat + ' up' }),
           iconButton('↓', 'cat-down', { arg: cat, title: 'Move ' + cat + ' down' }),
           iconButton('✕', 'category-delete', { arg: cat, title: 'Delete category ' + cat })
         )
-      )
-    ));
+      );
+    }));
   }
   refreshSelects();
 }
@@ -3575,40 +3871,6 @@ function renderShopping() {
   }
 
   mount(list, children);
-}
-
-function renderMonths() {
-  const list = $('monthList');
-  const closed = state.closedPeriods.slice().reverse();
-  const now = currentPeriod();
-
-  const rows = [];
-  rows.push(h('div', { class: 'month-item is-current' },
-    h('div', { class: 'month-info' },
-      h('span', { class: 'month-name' }, periodLabel(now)),
-      h('span', { class: 'month-meta' }, 'Open — new entries land here')
-    )
-  ));
-  closed.forEach((p) => {
-    const counts = state.transactions.filter((t) => {
-      const d = new Date(t.date);
-      return d.getFullYear() + '-' + pad2(d.getMonth() + 1) === p;
-    }).length;
-    rows.push(h('div', { class: 'month-item' },
-      h('div', { class: 'month-info' },
-        h('span', { class: 'month-name' }, periodLabel(p)),
-        h('span', { class: 'month-meta' }, 'Closed · ' + counts + ' transaction(s) kept')
-      ),
-      h('div', { class: 'month-actions' },
-        button('View', 'month-report', { arg: p, class: 'btn-mini' }),
-        button('Reopen', 'month-reopen', { arg: p })
-      )
-    ));
-  });
-
-  mount(list, rows.length
-    ? h('div', { class: 'month-list' }, rows)
-    : h('div', { class: 'empty-state' }, 'No closed months yet'));
 }
 
 /* ============================================================
@@ -3938,7 +4200,23 @@ async function repairCloud() {
   }
   if (res.error) { toast(res.error); return; }
 
-  repairReport = res.report.join('\n');
+  // Plain sentences, not table slugs and counts: the report is shown verbatim,
+  // so it must read as an answer — what was compared, what was missing, and
+  // what happened about it.
+  const lines = ['Cloud check · just now'];
+  for (const e of res.report || []) {
+    if (!e || typeof e !== 'object') continue;
+    if (e.state === 'ok') {
+      lines.push(e.label + ': ' + e.local + ' here, ' + e.remote + ' on the cloud — in step ✓');
+    } else if (e.state === 'reupload') {
+      const missing = e.local - e.remote;
+      lines.push(e.label + ': ' + e.local + ' here, ' + e.remote + ' on the cloud — ' +
+        missing + ' missing there, re-uploaded ↑');
+    } else {
+      lines.push(e.label + ': could not be checked (' + (e.detail || 'failed') + ')');
+    }
+  }
+  repairReport = lines.join('\n');
   renderAll();
 
   if (res.reset) {
@@ -3959,9 +4237,9 @@ function renderAll() {
   renderNotes();
   renderCategories();
   renderShopping();
-  renderMonths();
   renderReport();
   renderSyncPanel();
+  renderThemeButtons();
   if ($('storageWarning')) $('storageWarning').hidden = storageUsable;
 }
 
@@ -3981,6 +4259,8 @@ const ACTIONS = {
   'cat-up': (el) => moveCategory(el.dataset.arg, -1),
   'cat-down': (el) => moveCategory(el.dataset.arg, 1),
   'budget-delete': (el) => removeBudget(el.dataset.arg),
+  'budget-repeat': () => repeatLastMonthBudgets(),
+  'budget-move': (el) => moveBudget(el.dataset.arg),
   'report': (el) => showReport(el.dataset.arg),
   'report-custom': applyCustomRange,
   'item-toggle': (el) => toggleListItem(el.dataset.id),
@@ -4008,25 +4288,15 @@ const ACTIONS = {
   'email-test': () => runEmailSelfTest(),
   'email-copy-url': () => copyEmailWebhookUrl(),
   'build-check': () => checkForNewerBuild(true),
-  'month-close': closePeriod,
-  'month-reopen': (el) => reopenPeriod(el.dataset.arg),
-  'month-report': (el) => showReport('custom', {
-    from: el.dataset.arg + '-01',
-    to: lastDayOf(el.dataset.arg)
-  }),
+  'theme-set': (el) => setTheme(el.dataset.arg),
   'export': () => exportBackup(),
   'import': importBackup,
   'reset': resetAll,
+  'cloud-delete': deleteCloudData,
   'close-modal': (el) => closeModal(el.dataset.target),
   'approve-tx': (el) => approveTransaction(el.dataset.id),
   'reject-tx': (el) => rejectTransaction(el.dataset.id)
 };
-
-function lastDayOf(period) {
-  const parts = String(period).split('-');
-  const d = new Date(Number(parts[0]), Number(parts[1]), 0);
-  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
-}
 
 let eventsWired = false;
 
@@ -4348,7 +4618,12 @@ function init() {
   }
 
   // Default the date fields to now, so a new entry is "right now" until changed.
+  // Prefilled (never left blank): blank date controls render collapsed on
+  // mobile browsers, which is why they looked empty and congested.
   if ($('txDate')) $('txDate').value = stampToInput(nowStamp());
+  if ($('timerStart') && !$('timerStart').value) $('timerStart').value = stampToInput(nowStamp());
+  if ($('reportFrom') && !$('reportFrom').value) $('reportFrom').value = currentPeriod() + '-01';
+  if ($('reportTo') && !$('reportTo').value) $('reportTo').value = localDateStamp();
 
   // Show only the fields that apply to the selected transaction type.
   if ($('txType')) setTxTypeFields();
@@ -4356,6 +4631,10 @@ function init() {
 
   // Note timers tick live while the app is open (see tickTimers).
   startTimerTicker();
+
+  // Paint the device's own theme before anything renders, so the first paint
+  // is already the right brightness at night.
+  applyTheme();
 
   /* Show which build is running straight away, then look for a newer one.
      Passive: no data is touched, so it is safe on every load, and it turns
@@ -5010,7 +5289,8 @@ function renderPendingQueue() {
              dawn. The day is what a person checks; the time of day is not
              information that exists. */
           when ? ' • ' + formatDayOnly(when) : ' • date unknown'),
-        pendingCategorySelect(tx)
+        pendingCategorySelect(tx),
+        pendingMoreOptions(tx)
       ),
       h('div', { class: 'pending-actions' },
         h('button', {
@@ -5031,30 +5311,185 @@ function renderPendingQueue() {
   }
 }
 
-/** The category picker on a pending row. Approving used to file everything
- *  under "Other", which meant a second trip to Records to fix every single
- *  entry — the approval step should finish the job, not start one. */
+/** The category picker on a pending row. It opens on what was remembered for
+ *  this bank + wording, so repeat mail files itself correctly with zero taps —
+ *  changing it teaches a new memory. */
 function pendingCategorySelect(tx) {
   const sel = h('select', {
     class: 'pending-category',
     'aria-label': 'Category for this transaction',
     dataset: { pendingCat: tx.id }
   });
-  fillCategorySelect(sel, { selected: 'Other' });
+  fillCategorySelect(sel, { selected: pendingRememberedCategory(tx) || 'Other' });
   return h('div', { class: 'form-group pending-cat-row' },
     h('label', { class: 'field-label' }, 'Category'),
     sel);
 }
 
-/** Which category an approval files under: what the picker says, or "Other"
- *  when the picker is gone or names something deleted since. Never Salary by
- *  default — that claim belongs to the user, not the parser. */
+/** Which category an approval files under: the picker's choice, else what was
+ *  remembered for this bank + wording, else "Other" when the picker is gone
+ *  or names something deleted since. Never Salary by default — that claim
+ *  belongs to the user, not the parser. */
 function pendingChosenCategory(txId, type) {
-  let el = null;
-  try { el = document.querySelector('[data-pending-cat="' + txId + '"]'); } catch (err) { el = null; }
+  // An explicit non-Other pick always wins. 'Other' is also the untouched
+  // default, so it defers to memory — and memory never stores 'Other', which
+  // means a deliberate Other lands back on Other through emailCategory.
+  const el = pendingControl(txId, 'pending-cat');
   const picked = el && typeof el.value === 'string' ? el.value : '';
-  if (picked && findCategory(picked)) return findCategory(picked);
+  if (picked && picked.toLowerCase() !== 'other' && findCategory(picked)) return findCategory(picked);
+  const tx = (pendingTransactions || []).find((t) => t.id === txId);
+  const remembered = tx && pendingRememberedCategory(tx);
+  if (remembered) return remembered;
   return emailCategory(type);
+}
+
+/** The memory key for a pending row: bank plus the first telling word of the
+ *  description ("nayapay|coffee"). Scoped to the bank so the same word at two
+ *  banks learns separately; amount-like tokens are skipped so every distinct
+ *  figure does not become its own rule. */
+function catMemoryKey(tx) {
+  const bank = cleanText(tx && tx.bank_name, NAME_LIMIT).toLowerCase();
+  const words = cleanText(tx && tx.description, COMMENT_LIMIT).toLowerCase()
+    .split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && /[a-z]/.test(w));
+  if (!bank || !words.length) return null;
+  return (bank + '|' + words[0]).slice(0, 80);
+}
+
+/** What was last picked for this bank + wording, if that category still
+ *  exists. A deleted category never resurfaces from memory. */
+function pendingRememberedCategory(tx) {
+  const key = catMemoryKey(tx);
+  const mem = state.settings && state.settings.catMemory;
+  const name = key && mem ? mem[key] : null;
+  return (typeof name === 'string' && findCategory(name)) ? findCategory(name) : null;
+}
+
+/** Remember a pick: next time this bank + wording arrives, the picker starts
+ *  there instead of "Other". Deliberate "Other" picks are not stored — Other
+ *  is already the default, so storing it would only spend the budget. */
+function learnCategory(tx, category) {
+  if (!tx || !category || category.toLowerCase() === 'other') return;
+  if (!findCategory(category)) return;
+  const key = catMemoryKey(tx);
+  if (!key) return;
+  if (!state.settings.catMemory || typeof state.settings.catMemory !== 'object') {
+    state.settings.catMemory = Object.create(null);
+  }
+  const mem = state.settings.catMemory;
+  if (mem[key]) delete mem[key];
+  mem[key] = category;
+  const keys = Object.keys(mem);
+  while (keys.length > CAT_MEMORY_LIMIT) delete mem[keys.shift()];
+}
+
+/** Read one per-row Pending control. Every control carries the row id in a
+ *  data attribute, so a re-render between opening the row and pressing
+ *  Approve cannot mix two rows' choices. */
+function pendingControl(txId, attr) {
+  try { return document.querySelector('[data-' + attr + '="' + txId + '"]'); }
+  catch (err) { return null; }
+}
+
+/** The deep-manage block under each pending row. The row itself stays a plain
+ *  Approve — but an ATM withdrawal is really a transfer to Cash, a repayment
+ *  belongs on an udhaar entry, and a grocery payment ticks list items. Those
+ *  choices live here, read at the moment Approve is pressed. */
+function pendingMoreOptions(tx) {
+  const isExpense = tx.type !== 'income';
+  const fromId = pendingAccountId(tx);
+
+  const acctSel = h('select', {
+    class: 'pending-account',
+    'aria-label': 'Account for this transaction',
+    dataset: { pendingAcct: tx.id }
+  });
+  fillAccountSelect(acctSel, { selected: fromId });
+
+  const toSel = h('select', {
+    class: 'pending-account',
+    'aria-label': 'To account (only for transfers)',
+    dataset: { pendingTo: tx.id }
+  });
+  const cashId = cashAccountId();
+  fillAccountSelect(toSel, { selected: (cashId && cashId !== fromId) ? cashId : fromId });
+
+  const kindSel = h('select', {
+    class: 'pending-kind',
+    'aria-label': 'How to file this transaction',
+    dataset: { pendingKind: tx.id }
+  });
+  mount(kindSel,
+    h('option', { value: 'normal' }, isExpense ? 'File as expense' : 'File as income'),
+    isExpense ? h('option', { value: 'transfer' }, 'File as transfer to my own account') : null);
+
+  const openDebts = (state.debts || []).filter((d) => !d.settled);
+  const debtSel = h('select', {
+    class: 'pending-debt',
+    'aria-label': 'Link to an udhaar entry',
+    dataset: { pendingDebt: tx.id }
+  });
+  mount(debtSel,
+    h('option', { value: '' }, 'No udhaar link'),
+    openDebts.map((d) => h('option', { value: d.id },
+      d.person + ' — ' + formatMoney(d.amount) + (d.type === 'receive' ? ' owes me' : ' I owe'))));
+
+  const openItems = (state.shopping || []).filter((s) => !s.checked);
+  return h('details', { class: 'pending-more' },
+    h('summary', { class: 'pending-more-title' }, 'More options'),
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label' }, 'File as'),
+      kindSel),
+    h('div', { class: 'form-group' },
+      h('label', { class: 'field-label' }, isExpense ? 'From account' : 'To account'),
+      acctSel),
+    isExpense
+      ? h('div', { class: 'form-group' },
+        h('label', { class: 'field-label' }, 'To account (transfers only)'),
+        toSel)
+      : null,
+    openDebts.length
+      ? h('div', { class: 'form-group' },
+        h('label', { class: 'field-label' }, 'Udhaar link (skips the bought-items below)'),
+        debtSel)
+      : null,
+    openItems.length
+      ? h('div', { class: 'form-group' },
+        h('label', { class: 'field-label' }, 'Bought items (ticks them, splits this amount)'),
+        openItems.map((s) => h('label', { class: 'check pending-item-check' },
+          h('input', { type: 'checkbox', dataset: { pendingItem: tx.id }, value: s.id }),
+          h('span', {}, s.name + (s.qty ? ' × ' + s.qty : '')))))
+      : null
+  );
+}
+
+/** Which open udhaar entry an approval is linked to, if any. */
+function pendingLinkedDebt(txId) {
+  const el = pendingControl(txId, 'pending-debt');
+  const id = el && typeof el.value === 'string' ? el.value : '';
+  if (!id) return null;
+  const d = (state.debts || []).find((x) => x.id === id && !x.settled);
+  return d || null;
+}
+
+/** Which account an approval files into: what its picker says, falling back
+ *  to the automatic match when the picker is gone. */
+function pendingPickedAccount(txId, tx) {
+  const el = pendingControl(txId, 'pending-acct');
+  const id = el && typeof el.value === 'string' ? el.value : '';
+  if (id && findAccount(id)) return id;
+  return pendingAccountId(tx);
+}
+
+/** Which shopping items the approval ticks. Only open items that still exist
+ *  count — anything bought or deleted since renders nothing. */
+function pendingPickedItems(txId) {
+  let boxes = [];
+  try { boxes = Array.from(document.querySelectorAll('[data-pending-item="' + txId + '"]')); }
+  catch (err) { return []; }
+  return boxes
+    .filter((b) => b.checked)
+    .map((b) => (state.shopping || []).find((s) => s.id === b.value && !s.checked))
+    .filter(Boolean);
 }
 
 async function approveTransaction(txId) {
@@ -5090,41 +5525,9 @@ async function approveTransaction(txId) {
     }
   } catch (err) { /* offline: fall through and file locally, as before */ }
 
-  try {
-    // Built through the same helper the manual form uses, so the record has the
-    // app's field names (date / accountId) rather than the database's column
-    // names. Getting this wrong means accountBalance() never matches the row,
-    // the balance stays wrong, and the push fails on a NOT NULL column.
-    const accId = pendingAccountId(tx);
-    const stamp = pendingDateStamp(tx);
-    const built = buildTransaction(
-      tx.type === 'income' ? 'income' : 'expense',
-      amount,
-      pendingChosenCategory(txId, tx.type),
-      cleanText(tx.description, COMMENT_LIMIT),
-      stamp,
-      accId,
-      null
-    );
-    if (built.error) { toast(built.error); return; }
-
-    built.value.source = 'email:' + tx.id;
-    touch(built.value);
-
-    // unshift, so an approved transaction appears at the top of the ledger like
-    // every other new entry.
-    state.transactions.unshift(built.value);
-    // The entry is filed under the EMAIL's month, which may not be this one —
-    // and Records shows one month at a time. Without this the approval looks
-    // like it vanished (or "went under another month"): it is there, just on a
-    // month the list is not showing. Jump the view to where it landed.
-    const filedPer = String(stamp).slice(0, 7);
-    viewTxPeriod = (PERIOD_RE.test(filedPer) && filedPer !== currentPeriod()) ? filedPer : null;
-    save();
-
-    // Mark as approved in Supabase. Done AFTER the local save: if this call
-    // fails, the transaction is already safely in the ledger and the row will
-    // simply stay pending, which is better than losing the money entry.
+  // Shared tail: tell the server AFTER the local save, so a failed call leaves
+  // the money safely filed and the row simply stays pending.
+  const finishApproval = async () => {
     try {
       await sbFetch('pending_transactions?id=eq.' + txId, {
         method: 'PATCH',
@@ -5133,11 +5536,109 @@ async function approveTransaction(txId) {
     } catch (err) {
       console.warn('Saved locally, but the pending row could not be marked approved:', err && err.message);
     }
-
     pendingTransactions = pendingTransactions.filter(t => t.id !== txId);
     renderPendingQueue();
+  };
 
-    toast('Added ' + formatMoney(amount) + ' to ' + accountName(accId) + ' — dated ' + formatDate(stamp));
+  // Jump Records to where an entry landed. Approvals file under the email's
+  // month (or right now, for udhaar links) while Records shows one month at a
+  // time — without this the approval looks vanished.
+  const jumpToStamp = (s) => {
+    const per = String(s).slice(0, 7);
+    viewTxPeriod = (PERIOD_RE.test(per) && per !== currentPeriod()) ? per : null;
+  };
+
+  try {
+    const accId = pendingPickedAccount(txId, tx);
+    const stamp = pendingDateStamp(tx);
+    const comment = cleanText(tx.description, COMMENT_LIMIT);
+    const kindEl = pendingControl(txId, 'pending-kind');
+    const kind = (kindEl && kindEl.value === 'transfer' && tx.type !== 'income') ? 'transfer' : 'normal';
+    const debt = pendingLinkedDebt(txId);
+
+    if (debt) {
+      // The email IS the repayment: no separate ledger entry is built, the
+      // amount goes straight onto the udhaar entry. Bought-items are skipped
+      // here — one approval, one meaning.
+      const res = applyDebtPayment(debt, amount, accId);
+      if (!res) { toast('That udhaar entry is already settled'); return; }
+      state.settings.lastAccountId = accId;
+      viewTxPeriod = null;
+      save();
+      await finishApproval();
+      toast(res === 'settled'
+        ? 'Settled with ' + debt.person + ' — ' + formatMoney(amount) + ' into ' + accountName(accId)
+        : 'Recorded ' + formatMoney(amount) + ' from ' + debt.person + '. ' + formatMoney(debt.amount) + ' still outstanding.');
+      return;
+    }
+
+    if (kind === 'transfer') {
+      // An ATM withdrawal and its friends: the money never left your hands,
+      // it only changed pockets — so it must never count as spending.
+      const toEl = pendingControl(txId, 'pending-to');
+      const toId = toEl && typeof toEl.value === 'string' && findAccount(toEl.value) ? toEl.value : null;
+      if (!toId || toId === accId) { toast('Pick a different to-account for the transfer'); return; }
+      const built = buildTransaction('transfer', amount, '', comment, stamp, accId, toId);
+      if (built.error) { toast(built.error); return; }
+      built.value.source = 'email:' + tx.id;
+      touch(built.value);
+      state.transactions.unshift(built.value);
+      state.settings.lastAccountId = accId;
+      jumpToStamp(stamp);
+      save();
+      await finishApproval();
+      toast('Moved ' + formatMoney(amount) + ' from ' + accountName(accId) + ' to ' + accountName(toId));
+      return;
+    }
+
+    // Built through the same helper the manual form uses, so the record has the
+    // app's field names (date / accountId) rather than the database's column
+    // names. Getting this wrong means accountBalance() never matches the row,
+    // the balance stays wrong, and the push fails on a NOT NULL column.
+    const built = buildTransaction(
+      tx.type === 'income' ? 'income' : 'expense',
+      amount,
+      pendingChosenCategory(txId, tx.type),
+      comment,
+      stamp,
+      accId,
+      null
+    );
+    if (built.error) { toast(built.error); return; }
+    // Teach the memory: next time this bank + wording arrives, the picker
+    // starts on this category. Only the normal path learns — transfers and
+    // udhaar links have no category to teach.
+    learnCategory(tx, built.value.category);
+
+    built.value.source = 'email:' + tx.id;
+    touch(built.value);
+
+    // unshift, so an approved transaction appears at the top of the ledger like
+    // every other new entry.
+    state.transactions.unshift(built.value);
+    state.settings.lastAccountId = accId;
+
+    // Grocery flow: the ticked items are marked bought against this exact
+    // payment, splitting it the way the list's own save does — one tap files
+    // the ledger AND clears the list, so the two can never disagree.
+    const items = pendingPickedItems(txId);
+    if (items.length) {
+      const share = round2(amount / items.length);
+      const now = nowStamp();
+      for (const s of items) {
+        s.checked = true;
+        s.checkedAt = now;
+        s.boughtTxId = built.value.id;
+        s.cost = share;
+      }
+    }
+
+    jumpToStamp(stamp);
+    save();
+    await finishApproval();
+
+    toast('Added ' + formatMoney(amount) + ' to ' + accountName(accId) + ' — dated ' + formatDate(stamp) +
+      (items.length ? ' — ' + items.length + ' list item(s) ticked' : ''));
   } catch (err) {
     console.error('Approve transaction error:', err);
     toast('Failed to approve: ' + err.message);
