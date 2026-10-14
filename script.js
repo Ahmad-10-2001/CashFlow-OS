@@ -1279,8 +1279,8 @@ function toast(msg) {
    ============================================================ */
 
 const THEME_KEY = 'cashflow:theme';
-const THEMES = ['light', 'dark', 'sepia'];
-const THEME_LABELS = { light: 'Light', dark: 'Dark', sepia: 'Sepia' };
+const THEMES = ['sepia', 'dark'];
+const THEME_LABELS = { sepia: 'Sepia', dark: 'Dark' };
 
 /** The theme lives in its own storage key on purpose: it is a property of
  *  the device (this phone wants dark, that laptop wants light), not of the
@@ -1289,16 +1289,18 @@ const THEME_LABELS = { light: 'Light', dark: 'Dark', sepia: 'Sepia' };
 function getTheme() {
   try {
     const t = localStorage.getItem(THEME_KEY);
+    // 'light' retired with v37: anyone still on it gets sepia, the new
+    // default, rather than a theme that no longer exists.
+    if (t === 'light') return 'sepia';
     if (THEMES.indexOf(t) !== -1) return t;
-  } catch (err) { /* storage blocked: fall back to light */ }
-  return 'light';
+  } catch (err) { /* storage blocked: fall back to sepia */ }
+  return 'sepia';
 }
 
 function applyTheme() {
   const t = getTheme();
   try {
-    if (t === 'light') document.documentElement.removeAttribute('data-theme');
-    else document.documentElement.setAttribute('data-theme', t);
+    document.documentElement.setAttribute('data-theme', t);
   } catch (err) { /* headless test env: nothing to paint on */ }
 }
 
