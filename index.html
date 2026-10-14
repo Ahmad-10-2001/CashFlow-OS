@@ -9,11 +9,11 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v34">
+  <meta name="app-build" content="v36">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
-  <meta name="app-tabs" content="home,transactions,budget,udhaar,reports,list,notes,categories,pending,accounts,settings">
+  <meta name="app-tabs" content="home,transactions,budget,udhaar,notes,list,reports,categories,pending,accounts,settings">
   <meta name="description" content="Track income, expenses, budgets, accounts and udhaar — works offline.">
   <title>CashFlow OS</title>
   <link rel="manifest" href="manifest.json">
@@ -175,6 +175,9 @@
         </div>
         <button class="btn btn-dark" type="submit">Set Budget</button>
       </form>
+      <div class="budget-repeat-row">
+        <button class="btn-mini" type="button" data-act="budget-repeat">Repeat last month's budgets</button>
+      </div>
     </section>
   </div>
 
@@ -203,8 +206,12 @@
       </div>
       <label class="check">
         <input id="debtLedger" type="checkbox" checked>
-        <span>When settled, record it in my balance</span>
+        <span>Move money in my balance now, and again on settle</span>
       </label>
+      <div class="form-group">
+        <label class="field-label" for="debtAccount">Account</label>
+        <select id="debtAccount"></select>
+      </div>
       <button class="btn btn-dark" type="submit">Add Udhaar</button>
       <div id="debtList"></div>
     </form>
@@ -468,13 +475,6 @@
       <div id="syncPanel"></div>
     </section>
 
-    <section class="card" aria-labelledby="monthHeading">
-      <h2 class="card-title" id="monthHeading">Start a New Month</h2>
-      <p class="card-subtitle">Close the current month to keep its budgets and reports separate. Nothing is deleted.</p>
-      <div id="monthList"></div>
-      <button class="btn btn-dark mt-10" type="button" data-act="month-close">Close this month</button>
-    </section>
-
     <section class="card" aria-labelledby="backupHeading">
       <h2 class="card-title" id="backupHeading">Backup</h2>
       <p class="card-subtitle">Your data lives only in this browser. Export regularly.</p>
@@ -484,7 +484,25 @@
         <input type="file" id="importFile" accept=".json,application/json">
       </div>
       <button class="btn btn-dark" type="button" data-act="import">Import Backup</button>
+    </section>
+
+    <section class="card" aria-labelledby="appearanceHeading">
+      <h2 class="card-title" id="appearanceHeading">Appearance</h2>
+      <p class="card-subtitle">Light, dark or sepia — kept on this device only, so your phone and laptop can differ.</p>
+      <div class="btn-row" id="themeButtons"></div>
+    </section>
+
+    <section class="card danger-zone" aria-labelledby="dangerHeading">
+      <h2 class="card-title" id="dangerHeading">Danger zone</h2>
+      <p class="card-subtitle">Deleting here is permanent. Export a backup first if you might want anything back.</p>
       <button class="btn btn-danger" type="button" data-act="reset">Delete all local data</button>
+      <p class="field-hint">Clears this browser only. You are signed out first, so nothing reaches the cloud.</p>
+      <div class="form-group">
+        <label class="field-label" for="cloudDeletePassword">Account password</label>
+        <input id="cloudDeletePassword" type="password" placeholder="Needed to delete cloud data" autocomplete="current-password">
+      </div>
+      <button class="btn btn-danger" type="button" data-act="cloud-delete">Delete cloud ledger data</button>
+      <p class="field-hint">Needs your password. Deletes transactions, udhaar, shopping, accounts, budgets and categories from the cloud. Your email setup stays untouched.</p>
     </section>
   </div>
 
@@ -567,9 +585,9 @@
 </div>
 
 <!-- ═══ Edit note modal ═══ -->
-<div class="modal-overlay" id="noteEditModal" role="dialog" aria-modal="true" aria-labelledby="noteEditTitle" aria-hidden="true" tabindex="-1">
+<div class="modal-overlay" id="noteEditModal" role="dialog" aria-modal="true" aria-labelledby="noteEditHeading" aria-hidden="true" tabindex="-1">
   <form class="modal" id="noteEditForm" novalidate>
-    <h2 class="card-title" id="noteEditTitle">Edit Note</h2>
+    <h2 class="card-title" id="noteEditHeading">Edit Note</h2>
     <input type="hidden" id="noteEditId">
     <div class="form-group">
       <label class="field-label" for="noteEditTitle">Title</label>

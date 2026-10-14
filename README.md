@@ -13,15 +13,15 @@ Track where your money is, what came in, what went out, and who owes whom.
 |---|---|
 | **Home** | Total balance, per-account boxes, this month's income and expense plus last month's figure (hidden when there is none), and the add-transaction form |
 | **Records** | Every transaction in the selected month, searchable, editable |
-| **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets |
-| **Udhaar** | Money lent and borrowed, with full settle or part return ("Return some") |
+| **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets. Over-budget? Move limit from another category, or repeat last month in one tap — transactions never change |
+| **Udhaar** | Money lent and borrowed through a chosen account, with full settle or part return ("Return some"). Adding moves money immediately; settling moves it back |
 | **Reports** | Donut and bar charts over any date range |
 | **List** | A standing shopping list — entered once, unticked automatically every new month; tick what you bought, then save it as one expense |
 | **Notes** | Personal sticky-note cards (color, icon, pin, search, edit, updated stamp) plus a separate Timers section — each timer counts up live from a moment you choose |
-| **Categories** | Add, remove, and reorder spending categories — the order here is the order in every dropdown |
-| **Pending** | Bank-email transactions waiting for approval (with a category picker), then the one-time email setup |
+| **Categories** | Add, remove, and reorder spending categories — the order here is the order in every dropdown. Every row shows this month's spend against its budget |
+| **Pending** | Bank-email transactions waiting for approval. Plain Approve files them; More options files as transfer, links an udhaar repayment, or ticks the bought list items. Repeat mail remembers its category |
 | **Accounts** | Cash, NayaPay, Easypaisa and anything you add, with this month's in/out per account. Opening balances, rename, archive |
-| **Backup** | Cloud sync, month archiving, and JSON export/import (import merges — nothing already here is ever deleted) |
+| **Settings** | Appearance (light/dark/sepia, this device only), cloud sync, JSON export/import (import merges — nothing already here is ever deleted), and a password-protected danger zone |
 
 ---
 
@@ -47,6 +47,13 @@ slice is written to the ledger when the entry is balance-tracked, and
 returning the rest settles through the normal flow. Over-returning is
 refused.
 
+Every udhaar entry goes through the account picked on its form. Adding moves
+the money immediately (lending pays out, borrowing lands in), under a
+dedicated **Udhaar** category created on first use — so no second manual
+entry is ever needed. Settling moves it back into the same account. Old
+entries from before the picker keep working exactly as they did; only new
+entries move money on add.
+
 (Amanat was removed from the app. Its old rows stay valid in storage,
 backups and sync, so nothing was destroyed — they are simply no longer
 shown.)
@@ -62,6 +69,11 @@ is still reserved. What you already spent comes out of its budget first — a
 10,000 budget with 3,000 spent reserves only 7,000 — because the spent money
 already left the balance and must not be subtracted twice. Overspending
 reserves nothing further; it is shown as information, not subtracted again.
+
+An over-budget category is fixed by moving limit, not money: each budget row
+has **Move**, which shifts an amount into another category's limit in the same
+month. Transactions, reports and history never change — only the plan is
+rebalanced, and the month's total across limits stays identical.
 
 ### One month on screen at a time
 
@@ -102,6 +114,22 @@ devices see the same timers and notes with no extra setup.
 Every edit is written to `localStorage` immediately. The app never waits on the
 network, so it behaves identically with the aeroplane mode on. The cloud copy is
 a background nicety, and signing in is entirely optional.
+
+"Delete all local data" clears this browser only: signing out happens first,
+so the sync engine can never read the vanished rows as deletions and wipe the
+cloud behind you. Deleting cloud data is a separate, password-protected button
+in the danger zone — ledger tables only, never the email setup.
+
+### Appearance is per-device
+
+Light, dark and sepia live under **Settings → Appearance**. The choice is
+kept in its own browser key, not in app state: it never syncs, so the phone
+and the laptop can differ. Charts and pastel note cards keep their own
+colours in every theme.
+
+(Month closing was removed: it labelled months without moving anything, and
+the label is what hid entries from view. Old closed months stay readable in
+every month picker; they just cannot be closed or reopened any more.)
 
 ### Storage key, not display name
 

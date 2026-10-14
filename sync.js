@@ -825,7 +825,11 @@ window.CashFlowSync = (function () {
     let reset = 0;
     let totalRows = 0;
 
+    // Plain words, not table slugs: this report is shown to the user verbatim.
+    const LABELS = { transactions: 'Transactions', accounts: 'Accounts', debts: 'Udhaar', custody: 'Amanat', shopping: 'Shopping list' };
+
     for (const table of ALL_TABLES) {
+      const label = LABELS[table] || table;
       const localCount = (state[table] || []).length;
       let remoteCount = null;
       try {
@@ -835,20 +839,20 @@ window.CashFlowSync = (function () {
           { headers: Object.assign({}, headers(), { Prefer: 'count=exact' }) });
         remoteCount = r.count;
       } catch (err) {
-        report.push(table + ': could not be checked (' + (err.message || 'failed') + ')');
+        report.push({ label, state: 'error', detail: (err.message || 'failed') });
         continue;
       }
-      if (remoteCount === null) { report.push(table + ': server did not report a count'); continue; }
+      if (remoteCount === null) { report.push({ label, state: 'error', detail: 'the server did not report a count' }); continue; }
       if (localCount > remoteCount) {
         // The server is missing rows this device has. Forget the claim and let
         // the next push send everything.
         book.lastPushed[table] = null;
         book.lastPulled[table] = null;
         reset++;
-        report.push(table + ': ' + localCount + ' here, ' + remoteCount + ' there — re-uploading');
+        report.push({ label, state: 'reupload', local: localCount, remote: remoteCount });
         totalRows += localCount;
       } else {
-        report.push(table + ': ' + localCount + ' here, ' + remoteCount + ' there — in step');
+        report.push({ label, state: 'ok', local: localCount, remote: remoteCount });
       }
     }
 
@@ -1219,6 +1223,25 @@ window.CashFlowSync = (function () {
     get hasResetToken() { return !!loadReset(); },
     // sync
     start, stop, cycle, queuePush, setStateProvider, setPersist, setAccountCollisionHandler, forgetTombstones, pushAll, touch, seedClock, reconcile, absorbShadow, repairCloudCopy,
+    /* Delete every row this user owns from one table. Used only by the
+       password-confirmed cloud wipe; nothing else in the app deletes remotely. */
+    deleteUserRows: async function (table) {
+      if (!session || !session.userId) throw new Error('Not signed in');
+      await ensureFreshToken();
+      await http(restPath(table) + '?user_id=eq.' + encodeURIComponent(session.userId), {
+        method: 'DELETE', headers: headers()
+      });
+    },
+    /* Forget every local sync claim: cursors, tombstones AND the shadow. Used
+       when the local data is deliberately wiped, so the next reconcile cannot
+       read the vanished rows as deletions and push tombstones for them — which
+       would wipe the cloud as a side effect of clearing this browser. */
+    resetSyncState: function () {
+      book = emptyBook();
+      saveBook();
+      shadow = { transactions: [], accounts: [], debts: [], custody: [], shopping: [] };
+      lastPrefsSent = null;
+    },
     // bookkeeping used by the app
     markDeleted: function (table, id) {
       if (!book.tombstones[table]) book.tombstones[table] = [];
