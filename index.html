@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v42">
+  <meta name="app-build" content="v43">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -141,9 +141,15 @@
   <div id="panel-transactions" data-panel="transactions" role="tabpanel" aria-labelledby="tab-transactions" hidden>
     <section class="card" aria-labelledby="txListHeading">
       <h2 class="card-title" id="txListHeading">Transactions</h2>
-      <div class="form-group tx-period-row">
-        <label class="field-label" for="txPeriod">Month</label>
-        <select id="txPeriod"></select>
+      <div class="tx-top-row">
+        <div class="form-group">
+          <label class="field-label" for="txPeriod">Month</label>
+          <select id="txPeriod"></select>
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="txCatFilter">Category</label>
+          <select id="txCatFilter"></select>
+        </div>
       </div>
       <div class="tx-filter-row">
         <div class="form-group tx-acct-filter">
@@ -153,6 +159,7 @@
         <div class="form-group tx-search-wrap">
           <label class="sr-only" for="txSearch">Search transactions</label>
           <input id="txSearch" type="search" placeholder="Search by category, comment or amount" autocomplete="off">
+          <button class="search-clear" type="button" data-act="search-clear" aria-label="Clear search" title="Clear search">✕</button>
         </div>
       </div>
       <div id="txList"></div>

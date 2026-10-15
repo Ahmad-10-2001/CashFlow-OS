@@ -12,7 +12,7 @@ Track where your money is, what came in, what went out, and who owes whom.
 | Tab | What it is for |
 |---|---|
 | **Home** | Total balance, per-account boxes, this month's income and expense plus last month's figure (hidden when there is none), and the add-transaction form |
-| **Records** | Every transaction in the selected month, searchable (including by account name) and filterable by account, editable |
+| **Records** | Every transaction in the selected month — filter by account or category, search anything (account names included), one-tap clear — editable |
 | **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets. Over-budget? Fix counts part of it under another budget with room — same dialog, no typing, transactions, limits and reports never change. Or repeat last month in one tap |
 | **Udhaar** | Money lent and borrowed with an optional account and category. Picking an account moves money immediately; leaving it empty only records the debt, and settling moves the money then |
 | **Reports** | Donut and bar charts over any date range |

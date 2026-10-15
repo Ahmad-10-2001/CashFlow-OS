@@ -552,7 +552,7 @@ body.modal-open { overflow: hidden; }
 .tab:active { opacity: 0.75; }
 
 /* ===== FORM ELEMENTS ===== */
-.form-group { margin-bottom: 10px; }
+.form-group { margin-bottom: 10px; min-width: 0; }
 
 .field-label {
   display: block;
@@ -595,11 +595,17 @@ input[type="datetime-local"],
 input[type="time"] {
   appearance: auto;
   -webkit-appearance: auto;
+  display: block;
+  width: 100%;
   min-height: 52px;
   /* Native date controls carry a wide intrinsic width and refuse to shrink
-     inside their card on phones, spilling past the edge. */
+     inside their card on phones, spilling past the edge. Belt and suspenders:
+     block layout, fluid width, and padding that leaves room for the segments
+     plus the calendar icon on a ~300px card. */
   min-width: 0;
   max-width: 100%;
+  padding: 12px;
+  font-size: 16px;   /* below 16px iOS Safari zooms on focus — keep it */
 }
 
 input[type="file"] { display: block; width: 100%; padding: 10px; font-size: 14px; }
@@ -1260,8 +1266,15 @@ select {
 .tx-period-row {
   margin-bottom: 10px;
 }
-/* Records filters: a compact account select beside the search, not a second
-   full-width row — the search stays the primary control. */
+/* Records filters: two side-by-side pairs, every control the same height —
+   month with category, account with search. Nothing full-width except the
+   month row that was already there. */
+.tx-top-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.tx-top-row .form-group { flex: 1 1 0; min-width: 0; margin-bottom: 0; }
 .tx-filter-row {
   display: flex;
   gap: 8px;
@@ -1270,9 +1283,25 @@ select {
 }
 .tx-filter-row .form-group { margin-bottom: 0; }
 .tx-acct-filter { flex: 0 1 150px; min-width: 0; }
-.tx-acct-filter .field-label { font-size: 12px; margin-bottom: 4px; }
-.tx-acct-filter select { padding: 12px 10px; font-size: 14px; }
-.tx-search-wrap { flex: 1 1 auto; min-width: 0; }
+.tx-search-wrap { flex: 1 1 auto; min-width: 0; display: flex; gap: 6px; align-items: center; }
+.tx-search-wrap input { flex: 1 1 auto; min-width: 0; }
+/* Clear button lives on the search itself and only while there is text to
+   clear — pure CSS, so it can never disagree with the field. */
+.search-clear {
+  display: none;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+}
+#txSearch:not(:placeholder-shown) + .search-clear { display: inline-flex; }
 
 /* Budget remainder: what is left after this month's budgets */
 .budget-summary {

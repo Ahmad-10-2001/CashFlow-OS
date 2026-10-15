@@ -128,6 +128,10 @@ let viewAcctPeriod = null;
    account ("All transactions"), anything else is an account id. Never
    persisted, so a new load always starts unfiltered. */
 let viewTxAccount = '';
+/* Records category filter. Same contract: '' means every category ("All
+   categories"). Transfers carry no category, so an active filter hides them —
+   they belong to no bucket, which is exactly what the filter asks for. */
+let viewTxCategory = '';
 /** True when a wall-clock stamp falls inside a YYYY-MM month. */
 function inPeriod(dateStr, period) {
   const d = new Date(dateStr);
@@ -152,6 +156,26 @@ function activeTxAccount() {
 function changeTxAccount(id) {
   viewTxAccount = (typeof id === 'string' && id && findAccount(id)) ? id : '';
   renderAll();
+}
+/** The category the Records list is filtered to: '' (all), or the name while
+ *  it still exists — a deleted category falls back to all instead of a blank
+ *  list under a stale selection. */
+function activeTxCategory() {
+  return (typeof viewTxCategory === 'string' && viewTxCategory && findCategory(viewTxCategory)) ? findCategory(viewTxCategory) : '';
+}
+function changeTxCategory(name) {
+  viewTxCategory = (typeof name === 'string' && name && findCategory(name)) ? findCategory(name) : '';
+  renderAll();
+}
+/** Empty the search field by tap, so nobody has to backspace it out. Focus
+ *  returns to the field because clearing is always followed by typing anew —
+ *  this focus is invited by the tap, never a surprise after saving. */
+function clearTxSearch() {
+  const input = $('txSearch');
+  if (!input) return;
+  input.value = '';
+  renderTransactions();
+  try { input.focus(); } catch (err) { /* headless: nothing to focus */ }
 }
 /** The month a ledger view actually shows: the chosen one, unless it no longer
  *  exists (everything in it was deleted), in which case this month. Without
@@ -3777,9 +3801,9 @@ function renderTransactions() {
   viewTxPeriod = per === currentPeriod() ? null : per;
   const perSel = $('txPeriod');
   if (perSel) fillPeriodSelect(perSel, { selected: per });
-  // Account filter: small select beside the search, "All transactions" first.
-  // Rebuilt every render so a renamed account never leaves a stale label, and
-  // the selection is re-validated so a deleted account falls back to all.
+  // Account filter, re-validated like the month: rebuilt every render so a
+  // renamed account never leaves a stale label, and a deleted one falls back
+  // to all instead of a blank list under a stale selection.
   const acctSel = $('txAcctFilter');
   const acctId = activeTxAccount();
   viewTxAccount = acctId;
@@ -3789,6 +3813,16 @@ function renderTransactions() {
       state.accounts.map((a) => h('option', { value: a.id },
         a.archived ? a.name + ' (archived)' : a.name)));
     acctSel.value = acctId;
+  }
+  // Category filter, same contract: rebuilt and re-validated every render.
+  const catSel = $('txCatFilter');
+  const catName = activeTxCategory();
+  viewTxCategory = catName;
+  if (catSel) {
+    mount(catSel,
+      h('option', { value: '' }, 'All categories'),
+      state.categories.map((c) => h('option', { value: c }, c)));
+    catSel.value = catName;
   }
 
   // Sorted here rather than with a locale-aware comparator so the order is
@@ -3808,6 +3842,10 @@ function renderTransactions() {
   // between wallets is found from both ends.
   if (acctId) rows = rows.filter((t) => t.accountId === acctId || t.toAccountId === acctId);
 
+  // Then the category, by exact filing — a transfer has none, so an active
+  // category filter hides transfers, which belong to no bucket by design.
+  if (catName) rows = rows.filter((t) => t.category === catName);
+
   if (search) {
     rows = rows.filter((t) => {
       const cat = String(t.category || '').toLowerCase();
@@ -3826,7 +3864,7 @@ function renderTransactions() {
   }
 
   if (!rows.length) {
-    const scope = acctId ? ' for ' + accountName(acctId) : '';
+    const scope = (acctId ? ' for ' + accountName(acctId) : '') + (catName ? ' in ' + catName : '');
     mount(list, h('div', { class: 'empty-state' }, search
       ? 'No transactions match "' + search + '"' + scope + ' in ' + periodLabel(per)
       : 'No transactions' + scope + ' in ' + periodLabel(per)));
@@ -4480,6 +4518,7 @@ const ACTIONS = {
   'export': () => exportBackup(),
   'import': importBackup,
   'reset': resetAll,
+  'search-clear': clearTxSearch,
   'cloud-delete': deleteCloudData,
   'close-modal': (el) => closeModal(el.dataset.target),
   'approve-tx': (el) => approveTransaction(el.dataset.id),
@@ -4515,6 +4554,7 @@ function wireEvents() {
     if (e.target.id === 'budgetPeriod') { changeBudgetPeriod(e.target.value); return; }
     if (e.target.id === 'txPeriod') { changeTxPeriod(e.target.value); return; }
     if (e.target.id === 'txAcctFilter') { changeTxAccount(e.target.value); return; }
+    if (e.target.id === 'txCatFilter') { changeTxCategory(e.target.value); return; }
     if (e.target.id === 'acctPeriod') { changeAcctPeriod(e.target.value); return; }
     if (e.target.id === 'txType') { setTxTypeFields(); return; }
     if (e.target.id === 'editType') { setEditTypeFields(); return; }
