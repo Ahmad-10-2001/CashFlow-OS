@@ -441,7 +441,7 @@ function blankState() {
     // table, no migration and no RLS to configure. Whole-document
     // last-write-wins applies, same as budgets: fine at family scale.
     // shoppingPeriod remembers which month the list was last prepared for.
-    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, notes: [], timers: [], catMemory: Object.create(null) },
+    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [] },
     closedPeriods: []
   };
 }
@@ -612,6 +612,31 @@ function sanitizeState(raw) {
   const shoppingPeriod = typeof rawSettings.shoppingPeriod === 'string' && PERIOD_RE.test(rawSettings.shoppingPeriod)
     ? rawSettings.shoppingPeriod
     : null;
+
+  // Counted-spending moves between budgets (the Fix button). Validated field
+  // by field; a bad move is skipped, and moves pointing at vanished budgets
+  // stay stored but inert (see liveBudgetMoves) rather than dropped.
+  const budgetMoves = [];
+  const moveIds = new Set();
+  const rawMoves = Array.isArray(rawSettings.budgetMoves) ? rawSettings.budgetMoves : [];
+  for (const m of rawMoves) {
+    if (budgetMoves.length >= 200) { note('kept the first 200 budget moves'); break; }
+    if (!isObject(m)) { note('skipped a malformed budget move'); continue; }
+    if (typeof m.period !== 'string' || !PERIOD_RE.test(m.period)) { note('skipped a budget move with no month'); continue; }
+    if (typeof m.from !== 'string' || !m.from.trim() || typeof m.to !== 'string' || !m.to.trim()) { note('skipped a budget move with no budgets'); continue; }
+    const amount = toPositiveNumber(m.amount);
+    if (amount === null) { note('skipped a budget move with an unusable amount'); continue; }
+    let id = typeof m.id === 'string' && m.id.trim() ? m.id.trim() : newId();
+    if (moveIds.has(id)) id = newId();
+    moveIds.add(id);
+    budgetMoves.push({
+      id,
+      period: m.period,
+      from: m.from.trim().slice(0, NAME_LIMIT),
+      to: m.to.trim().slice(0, NAME_LIMIT),
+      amount
+    });
+  }
 
   // Personal notes: sticky-note cards with a color, an icon, a pin and an
   // updated stamp. Timer fields on a note are from before Timers became their
@@ -879,7 +904,7 @@ function sanitizeState(raw) {
       version: SCHEMA_VERSION,
       transactions, debts, budgets, categories, shopping, custody,
       accounts,
-      settings: { budgetOffset, lastAccountId, shoppingPeriod, notes, timers, catMemory },
+      settings: { budgetOffset, lastAccountId, shoppingPeriod, notes, timers, catMemory, budgetMoves },
       closedPeriods
     },
     problems
@@ -1961,82 +1986,128 @@ function repeatLastMonthBudgets() {
   if (save()) toast('Repeated ' + n + ' budget(s) from ' + periodLabel(prev));
 }
 
-/** Re-file spending from one category into others, picked per transaction.
+/** What counted against a budget this month, after moved spending.
  *
- *  This is the over-budget fix: when a category ran over because of what was
- *  spent, the spent rows themselves move — not the limit. Limits, budgets and
- *  totals never change here, only each row's category. `mapping` is
- *  {transactionId: newCategory}; unknown ids, transfers and unknown categories
- *  are skipped, so a stale dialog can never corrupt the ledger. Returns how
- *  many rows actually moved. `onlyFrom` scopes it to rows currently in one
- *  category, so a row filed elsewhere since the dialog opened keeps its newer
- *  category. Pure apart from the state it edits, so tests can pin it without
- *  a DOM. */
-function applyCategoryRefile(mapping, onlyFrom) {
-  if (!mapping || typeof mapping !== 'object') return 0;
-  let n = 0;
-  for (const id of Object.keys(mapping)) {
-    const t = state.transactions.find((x) => x && x.id === id);
-    if (!t || t.type === 'transfer') continue;
-    if (onlyFrom && t.category !== onlyFrom) continue;
-    const target = findCategory(String(mapping[id] || ''));
-    if (!target) continue;
-    if (t.category === target) continue;
-    t.category = target;
-    touch(t);
-    n++;
+ *  Raw spend minus any income offset, minus what this category gave away to
+ *  other budgets, plus what it took in. Shared by the row, the summary, the
+ *  category bars and the fix dialog, so all four always agree about the same
+ *  number. Moves whose endpoint is no longer a live budget (deleted category
+ *  or removed limit) are ignored where they stand — kept in data, inert —
+ *  so nothing can count under a bucket that no longer exists. */
+function budgetCounted(cat, period) {
+  const per = period || activeBudgetPeriod();
+  const { start, end } = periodBoundsOf(per);
+  const today = endOfToday();
+  const windowEnd = end < today ? end : today;
+  let base = 0;
+  if (start <= windowEnd) {
+    const gross = spendByCategory(start, windowEnd).get(cat) || 0;
+    const inc = offsetOn(cat) ? (incomeByCategory(start, windowEnd).get(cat) || 0) : 0;
+    base = Math.max(0, round2(gross - inc));
   }
-  return n;
+  let out = 0;
+  let inn = 0;
+  for (const m of liveBudgetMoves(per)) {
+    if (m.from === cat) out = round2(out + m.amount);
+    if (m.to === cat) inn = round2(inn + m.amount);
+  }
+  return round2(Math.max(0, base - out) + inn);
 }
 
-/** Open the move-spending dialog for one budget row: every expense filed
- *  under that category this month, each with its own dropdown — no typing,
- *  no names to remember. */
-function openBudgetAdjust(cat) {
+/** Moves of one month that currently apply: well-formed, positive, and both
+ *  ends live budgets of existing categories. Anything else stays stored but
+ *  inert — never counted, never shown. */
+function liveBudgetMoves(period) {
+  const per = period || activeBudgetPeriod();
+  const limits = budgetsFor(per);
+  const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  return ((state.settings && state.settings.budgetMoves) || []).filter((m) =>
+    m && typeof m.id === 'string' && typeof m.from === 'string' && typeof m.to === 'string' &&
+    typeof m.amount === 'number' && m.amount > 0 &&
+    has(limits, m.from) && has(limits, m.to) &&
+    !!findCategory(m.from) && !!findCategory(m.to));
+}
+
+/** How much of a budget is still free: limit minus what counted against it
+ *  this month, floored at zero. */
+function budgetFreeRoom(cat, period) {
+  const per = period || activeBudgetPeriod();
+  const limits = budgetsFor(per);
+  if (!Object.prototype.hasOwnProperty.call(limits, cat)) return 0;
+  return Math.max(0, round2(limits[cat] - budgetCounted(cat, per)));
+}
+
+/** Count `amount` of `cat`'s spending under `toCat` instead, within the month
+ *  being viewed.
+ *
+ *  The over-budget fix that touches nothing but the budget math: Food over by
+ *  2,000 with Bills 3,000 free becomes Food 10,000/10,000 counted and Bills
+ *  7,000/8,000 — both limits stay exactly where they were, every transaction
+ *  keeps its category, reports never change. Guarded both ways: no more than
+ *  what the source has counted, no more than the target has free. Pure apart
+ *  from the state it edits. Returns '' on success, otherwise the reason. */
+function applyBudgetMove(cat, amount, toCat) {
   const period = activeBudgetPeriod();
-  const { start, end } = periodBoundsOf(period);
-  const rows = state.transactions
-    .filter((t) => t.type === 'expense' && t.category === cat && inPeriod(t.date, period))
-    .sort((a, b) => {
-      const diff = new Date(b.date) - new Date(a.date);
-      return diff !== 0 ? diff : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-    });
-  if (!rows.length) { toast('No ' + cat + ' spending in ' + periodLabel(period) + ' to move'); return; }
-  $('budgetAdjustCat').value = cat;
-  $('budgetAdjustSub').textContent =
-    'Filed under "' + cat + '" in ' + periodLabel(period) + '. Pick another category per row — the budget limit itself does not change.';
-  mount($('budgetAdjustList'), rows.map((t) =>
-    h('div', { class: 'adjust-row' },
-      h('div', { class: 'adjust-info' },
-        h('span', { class: 'adjust-amount' }, formatMoney(t.amount)),
-        h('span', { class: 'adjust-detail' },
-          (t.comment ? t.comment + ' · ' : '') + formatDate(t.date))),
-      (() => {
-        const sel = h('select', {
-          class: 'adjust-category',
-          'aria-label': 'Category for ' + formatMoney(t.amount),
-          dataset: { adjTx: t.id }
-        });
-        fillCategorySelect(sel, { selected: t.category });
-        return sel;
-      })()
-    )
-  ));
-  openModal('budgetAdjustModal');
+  const limits = budgetsFor(period);
+  const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+  if (!has(limits, cat)) return 'No budget for "' + cat + '" in ' + periodLabel(period);
+  if (!has(limits, toCat)) return 'No budget for "' + toCat + '" in ' + periodLabel(period);
+  if (String(cat).toLowerCase() === String(toCat).toLowerCase()) return 'That is the same budget';
+  if (!(amount > 0)) return 'Enter an amount to move';
+  const counted = budgetCounted(cat, period);
+  if (amount > counted) return 'Only ' + formatMoney(counted) + ' is counted under "' + cat + '"';
+  const free = budgetFreeRoom(toCat, period);
+  if (amount > free) return 'Only ' + formatMoney(free) + ' is free in "' + toCat + '"';
+  if (!Array.isArray(state.settings.budgetMoves)) state.settings.budgetMoves = [];
+  state.settings.budgetMoves.push({ id: newId(), period, from: cat, to: toCat, amount: round2(amount) });
+  return '';
 }
 
-/** Apply the move-spending dialog: one Save re-files every changed row. */
-function saveBudgetAdjust() {
-  // Scoped to the category the dialog was opened for: a row filed elsewhere
-  // since (another device, another tab) keeps its newer category instead of
-  // being dragged back by a stale dialog.
-  const mapping = Object.create(null);
-  for (const sel of document.querySelectorAll('#budgetAdjustList [data-adj-tx]')) {
-    mapping[sel.dataset.adjTx] = sel.value;
-  }
-  const n = applyCategoryRefile(mapping, $('budgetAdjustCat').value);
-  closeModal('budgetAdjustModal');
-  if (save()) toast(n ? 'Moved ' + n + ' transaction(s) out of "' + $('budgetAdjustCat').value + '"' : 'Nothing changed');
+/** Undo one counted-spending move. Always safe: removing a move only restores
+ *  the raw counts underneath. */
+function undoBudgetMove(id) {
+  const moves = (state.settings && state.settings.budgetMoves) || [];
+  const hit = moves.find((m) => m && m.id === id);
+  if (!hit) { toast('That move is already gone'); return; }
+  state.settings.budgetMoves = moves.filter((m) => m.id !== id);
+  if (save()) toast('Back to counting under "' + hit.from + '"');
+}
+
+/** Open the fix dialog for one over-budget row: an amount field (prefilled
+ *  with exactly the over amount) plus every other budget showing its free
+ *  room — pick one, save, done. No typing names, no prompts, no transaction
+ *  ever touched. */
+function openBudgetFix(cat) {
+  const period = activeBudgetPeriod();
+  const limits = budgetsFor(period);
+  if (!Object.prototype.hasOwnProperty.call(limits, cat)) return;
+  const over = Math.max(0, round2(budgetCounted(cat, period) - limits[cat]));
+  const options = Object.keys(limits)
+    .filter((c) => c.toLowerCase() !== String(cat).toLowerCase())
+    .map((c) => ({ name: c, free: budgetFreeRoom(c, period) }))
+    .filter((o) => o.free > 0);
+  if (!options.length) { toast('No other budget has free room in ' + periodLabel(period)); return; }
+  $('budgetFixCat').value = cat;
+  const amt = $('budgetFixAmount');
+  amt.value = over > 0 ? String(over) : '';
+  amt.placeholder = over > 0 ? String(over) : 'Amount to move';
+  $('budgetFixSub').textContent =
+    '"' + cat + '" is over by ' + formatMoney(over) + ' in ' + periodLabel(period) +
+    '. Count part of it under another budget instead — limits, transactions and reports stay exactly as they are.';
+  const sel = $('budgetFixTo');
+  mount(sel, options.map((o) => h('option', { value: o.name }, o.name + ' — ' + formatMoney(o.free) + ' free')));
+  openModal('budgetFixModal');
+}
+
+/** Apply the fix dialog: one Save records the move, nothing else. */
+function saveBudgetFix() {
+  const cat = $('budgetFixCat').value;
+  const toCat = $('budgetFixTo').value;
+  const amount = toPositiveNumber($('budgetFixAmount').value);
+  const err = applyBudgetMove(cat, amount === null ? 0 : amount, toCat);
+  if (err) { toast(err); return; }
+  closeModal('budgetFixModal');
+  if (save()) toast(formatMoney(amount) + ' now counts under "' + toCat + '"');
 }
 
 function changeBudgetPeriod(period) {
@@ -3294,6 +3365,9 @@ function mergeIncomingState(current, incoming) {
   const cash = accounts.rows.find((a) => a && a.kind === 'cash') || accounts.rows[0];
   const notes = unionById(curS.notes, incS.notes);
   const timers = unionById(curS.timers, incS.timers);
+  // Moves merge like everything else: current rows win each id, the rest is
+  // appended. sanitizeState already validated both sides' shapes.
+  const moves = unionById(curS.budgetMoves, incS.budgetMoves);
   // Memories merge with the current device winning each key, then capped —
   // same rule as everything else: what is here is never overwritten.
   const mem = Object.assign(Object.create(null), incS.catMemory || {}, curS.catMemory || {});
@@ -3322,7 +3396,8 @@ function mergeIncomingState(current, incoming) {
           : null,
         notes: notes.rows,
         timers: timers.rows,
-        catMemory: mem
+        catMemory: mem,
+        budgetMoves: moves.rows
       },
       closedPeriods: Array.from(cp).sort()
     },
@@ -3560,21 +3635,15 @@ function renderAccounts() {
  *  reported separately, purely as information. A pure function so the maths
  *  is testable without rendering. */
 function budgetSummary(period) {
-  const { start, end } = periodBoundsOf(period);
-  const today = endOfToday();
-  const windowEnd = end < today ? end : today;
-  const live = start <= windowEnd;
-  const monthSpend = live ? spendByCategory(start, windowEnd) : new Map();
-  const monthIncome = live ? incomeByCategory(start, windowEnd) : new Map();
+  // Counted, not just spent: moved spending applies here exactly as on the
+  // rows, so the summary and the list can never disagree.
   const limits = budgetsFor(period);
   let used = 0;
   let reserved = 0;
   let overExtra = 0;
   for (const cat of Object.keys(limits)) {
     const limit = limits[cat];
-    const gross = monthSpend.get(cat) || 0;
-    const inc = offsetOn(cat) ? (monthIncome.get(cat) || 0) : 0;
-    const catUsed = Math.max(0, round2(gross - inc));
+    const catUsed = budgetCounted(cat, period);
     used = round2(used + catUsed);
     reserved = round2(reserved + Math.max(0, round2(limit - catUsed)));
     overExtra = round2(overExtra + Math.max(0, round2(catUsed - limit)));
@@ -3611,7 +3680,9 @@ function renderBudgets() {
         const gross = monthSpend.get(cat) || 0;
         const offset = offsetOn(cat);
         const inc = offset ? (monthIncome.get(cat) || 0) : 0;
-        const used = Math.max(0, round2(gross - inc));
+        // Counted, not just spent: moves in and out of this budget apply here,
+        // so the row, the summary and the fix dialog always show one number.
+        const used = budgetCounted(cat, period);
         const pct = limit > 0 ? (used / limit) * 100 : 0;
         const over = used > limit;
         const level = pct >= 100 ? 'over' : pct >= 70 ? 'warn' : 'ok';
@@ -3633,6 +3704,17 @@ function renderBudgets() {
           over
             ? h('div', { class: 'budget-over' }, 'Over budget by ' + formatMoney(used - limit))
             : h('div', { class: 'budget-left' }, formatMoney(limit - used) + ' left this month'),
+          liveBudgetMoves(period).filter((m) => m.from === cat).map((m) =>
+            h('div', { class: 'budget-breakdown' },
+              formatMoney(m.amount) + ' counted under ' + m.to + ' ',
+              h('button', {
+                type: 'button', class: 'budget-undo',
+                dataset: { act: 'budget-move-undo', arg: m.id },
+                'aria-label': 'Stop counting ' + formatMoney(m.amount) + ' under ' + m.to
+              }, 'Undo'))),
+          liveBudgetMoves(period).filter((m) => m.to === cat).map((m) =>
+            h('div', { class: 'budget-breakdown' },
+              'Includes ' + formatMoney(m.amount) + ' counted from ' + m.from)),
           inc > 0
             ? h('div', { class: 'budget-breakdown' },
                 'Spent ' + formatMoney(gross) + ' − income ' + formatMoney(inc) + ' = ' + formatMoney(used) + ' counted')
@@ -3641,8 +3723,8 @@ function renderBudgets() {
             h('input', { type: 'checkbox', checked: offset, dataset: { act: 'budget-offset', arg: cat } }),
             h('span', {}, 'Income in this category reduces the budget')
           ),
-          used > 0
-            ? h('button', { type: 'button', class: 'budget-adjust', dataset: { act: 'budget-adjust', arg: cat }, 'aria-label': 'Move spending out of ' + cat }, 'Adjust…')
+          over
+            ? h('button', { type: 'button', class: 'budget-adjust', dataset: { act: 'budget-fix', arg: cat }, 'aria-label': 'Fix over-budget ' + cat + ' from another budget' }, 'Fix…')
             : null,
           h('button', { type: 'button', class: 'budget-remove', dataset: { act: 'budget-delete', arg: cat }, 'aria-label': 'Remove budget for ' + cat }, 'Remove budget')
         );
@@ -3872,16 +3954,13 @@ function renderCategories() {
       const key = t.category.toLowerCase();
       counts.set(key, (counts.get(key) || 0) + 1);
     }
-    // This month's spend per category, so every row shows where it stands —
-    // management at a glance instead of a trip to Budget per row.
+    // This month's counted spend per category, so every row shows where it
+    // stands — management at a glance instead of a trip to Budget per row.
     const per = currentPeriod();
-    const { start, end } = periodBoundsOf(per);
-    const today = endOfToday();
-    const windowEnd = end < today ? end : today;
-    const monthSpend = start <= windowEnd ? spendByCategory(start, windowEnd) : new Map();
     const limits = budgetsFor(per);
     mount(list, state.categories.map((cat, i) => {
-      const spent = monthSpend.get(cat) || 0;
+      // Counted, like the budget row: moved spending applies here too.
+      const spent = budgetCounted(cat, per);
       const limit = Object.prototype.hasOwnProperty.call(limits, cat) ? limits[cat] : null;
       const pct = limit ? (spent / limit) * 100 : 0;
       const level = !limit ? '' : pct >= 100 ? 'over' : pct >= 70 ? 'warn' : 'ok';
@@ -4368,7 +4447,8 @@ const ACTIONS = {
   'cat-down': (el) => moveCategory(el.dataset.arg, 1),
   'budget-delete': (el) => removeBudget(el.dataset.arg),
   'budget-repeat': () => repeatLastMonthBudgets(),
-  'budget-adjust': (el) => openBudgetAdjust(el.dataset.arg),
+  'budget-fix': (el) => openBudgetFix(el.dataset.arg),
+  'budget-move-undo': (el) => undoBudgetMove(el.dataset.arg),
   'report': (el) => showReport(el.dataset.arg),
   'report-custom': applyCustomRange,
   'item-toggle': (el) => toggleListItem(el.dataset.id),
@@ -4481,7 +4561,7 @@ function wireEvents() {
     ['editForm', saveEdit],
     ['editDebtForm', saveDebtEdit],
     ['noteEditForm', saveNoteEdit],
-    ['budgetAdjustForm', saveBudgetAdjust]
+    ['budgetFixForm', saveBudgetFix]
   ];
   forms.forEach(([id, handler]) => {
     const form = $(id);
@@ -4506,7 +4586,7 @@ function wireEvents() {
   }
 
   // close modals on backdrop click
-  ['editModal', 'editDebtModal', 'noteEditModal', 'budgetAdjustModal'].forEach((id) => {
+  ['editModal', 'editDebtModal', 'noteEditModal', 'budgetFixModal'].forEach((id) => {
     const overlay = $(id);
     if (overlay) overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(id); });
   });

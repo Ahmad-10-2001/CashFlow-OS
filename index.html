@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v40">
+  <meta name="app-build" content="v42">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -635,15 +635,22 @@
   </form>
 </div>
 
-<!-- ═══ Move spending between categories ═══ -->
-<div class="modal-overlay" id="budgetAdjustModal" role="dialog" aria-modal="true" aria-labelledby="budgetAdjustHeading" aria-hidden="true" tabindex="-1">
-  <form class="modal" id="budgetAdjustForm" novalidate>
-    <h2 class="card-title" id="budgetAdjustHeading">Move spending</h2>
-    <input type="hidden" id="budgetAdjustCat">
-    <p class="card-subtitle" id="budgetAdjustSub"></p>
-    <div id="budgetAdjustList"></div>
-    <button class="btn btn-primary" type="submit">Save changes</button>
-    <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="budgetAdjustModal">Cancel</button>
+<!-- ═══ Fix over budget ═══ -->
+<div class="modal-overlay" id="budgetFixModal" role="dialog" aria-modal="true" aria-labelledby="budgetFixHeading" aria-hidden="true" tabindex="-1">
+  <form class="modal" id="budgetFixForm" novalidate>
+    <h2 class="card-title" id="budgetFixHeading">Fix over budget</h2>
+    <input type="hidden" id="budgetFixCat">
+    <p class="card-subtitle" id="budgetFixSub"></p>
+    <div class="form-group">
+      <label class="field-label" for="budgetFixAmount">Amount you want to move to this budget</label>
+      <input id="budgetFixAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="field-label" for="budgetFixTo">Take it from — free room shown per budget</label>
+      <select id="budgetFixTo"></select>
+    </div>
+    <button class="btn btn-primary" type="submit">Move</button>
+    <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="budgetFixModal">Cancel</button>
   </form>
 </div>
 

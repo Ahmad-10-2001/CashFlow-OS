@@ -15,7 +15,7 @@
    delete-old-caches step pick up the new build in one go.
    ============================================================ */
 
-const CACHE_VERSION = 'v40';
+const CACHE_VERSION = 'v42';
 const CACHE_PREFIX = 'cashflow-os-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
 const SHELL_URL = './index.html';
