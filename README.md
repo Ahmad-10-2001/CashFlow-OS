@@ -602,11 +602,18 @@ simply the cheapest option here, it is the one that works at all.
    Settings**, and set *Verify JWT* to off.
 
    This is not optional and it is easy to miss. Supabase's gateway refuses a call
-   to a function that carries no `Authorization` header *before the function's own
-   code runs*, so with the setting left on, nothing from a mail provider can ever
-   reach it — a third party has no Supabase login token to send. The app's own
-   test calls carry the publishable key and get through, which makes it a
-   particularly confusing failure: the test passes and the feature does not.
+   to a function that carries no valid `Authorization` header *before the function's
+   own code runs*, answering **401 "JWT expired"**, so with the setting left on,
+   nothing from a mail provider can ever reach it — a third party has no Supabase
+   login token to send. The symptom is silent: no row appears under Pending and
+   the app's own test is the only thing that names the cause.
+
+   `supabase/config.toml` in this repository pins the same setting
+   (`[functions.poll-emails] verify_jwt = false`), so a deploy from the CLI
+   cannot turn it back on — the CLI defaults to *on* whenever it is not stated.
+   If the dashboard and the file ever disagree, the dashboard wins for the live
+   deployment: set it there, or redeploy with
+   `supabase functions deploy poll-emails --no-verify-jwt`.
 
 7. In Gmail, **Settings → Forwarding and POP/IMAP → Add a forwarding address**,
    and tick *Keep a copy* so nothing leaves your inbox.

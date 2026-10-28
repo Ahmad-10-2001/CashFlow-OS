@@ -662,6 +662,27 @@ window.CashFlowSync = (function () {
     return null;
   }
 
+  /** Get a new access token from the refresh token.
+   *
+   *  Three outcomes, kept apart on purpose. The old code collapsed the last
+   *  two: ANY failure — a dropped connection, a server on fire, a VPN that
+   *  ate the request — cleared the session, which threw away a perfectly good
+   *  login the moment the network hiccuped. The user then saw "sign in again"
+   *  for no reason they could find, and everything that reads the server
+   *  (the Pending queue, the forwarding addresses) stopped at once.
+   *
+   *    • true            — refreshed; adopt() stored the new token.
+   *    • false           — the SERVER refused: wrong/rotated refresh token,
+   *                        password changed, account deleted. Session cleared,
+   *                        because it genuinely cannot work again.
+   *    • throws          — the server could not be reached or errored. The
+   *                        credentials are not disproved, so the session is
+   *                        kept and the caller reports a network problem
+   *                        instead of signing the user out.
+   *
+   *  An auth rejection arrives as 4xx from GoTrue; a network failure arrives
+   *  as a TypeError from fetch with no status at all, which is exactly the
+   *  distinction being made. */
   async function refresh() {
     if (!session || !session.refreshToken) return false;
     try {
@@ -671,7 +692,11 @@ window.CashFlowSync = (function () {
       adopt(out, session.email);
       return true;
     } catch (err) {
-      // A rejected refresh means the password was changed or the account is gone.
+      const status = err && typeof err.status === 'number' ? err.status : 0;
+      const msg = String((err && err.message) || '');
+      const serverSaidNo = (status >= 400 && status < 500) ||
+        /invalid refresh|refresh_token|session_not_found|user.*not.*found|expired/i.test(msg);
+      if (!serverSaidNo) throw err;   // unreachable: keep the login
       session = null;
       saveSession();
       return false;
@@ -1218,11 +1243,23 @@ window.CashFlowSync = (function () {
        asserting against the real implementation rather than a stand-in. */
     decodeJwtEmail,
     get isSignedIn() { return !!session; },
+    /* The access token the next REST call should carry, or null when there is
+       no session. Exported so sbHeaders() has one source of truth instead of
+       re-reading localStorage behind a refresh's back. */
+    get accessToken() { return session ? session.accessToken : null; },
+    get userId() { return session ? session.userId : null; },
     get email() { return session ? session.email : null; },
     get resetEmail() { const r = loadReset(); return r ? r.email : null; },
     get hasResetToken() { return !!loadReset(); },
     // sync
     start, stop, cycle, queuePush, setStateProvider, setPersist, setAccountCollisionHandler, forgetTombstones, pushAll, touch, seedClock, reconcile, absorbShadow, repairCloudCopy,
+    /* Exported so the app's own REST reads (Pending queue, email routes) can
+       ask for a token that is still valid instead of shipping whatever is in
+       localStorage. An access token lasts an hour; a read made after that
+       without refreshing gets "JWT expired" from PostgREST, which looks to the
+       user like the data vanished. The sync loop already refreshes on its own
+       schedule — this is for the reads that happen between cycles. */
+    ensureFreshToken,
     /* Delete every row this user owns from one table. Used only by the
        password-confirmed cloud wipe; nothing else in the app deletes remotely. */
     deleteUserRows: async function (table) {

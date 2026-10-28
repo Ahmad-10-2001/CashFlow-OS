@@ -4942,6 +4942,15 @@ function init() {
 let pendingTransactions = [];
 let emailConnected = false;
 let pendingQueueError = null;
+/* True when the forwarding-address read failed for one reason only: the login
+   token was stale or refused. The addresses are saved on the server in that
+   case, so saying "not working yet" would send the user redoing a setup that
+   is fine — the one thing wrong is the session. */
+let emailAuthExpired = false;
+/* True when there is no session at all. The addresses and the webhook belong
+   to the account, so there is nothing to show and nothing to redo without a
+   login — including the case where an expired token was the only problem. */
+let emailNeedsSignIn = false;
 // Every active forwarding address on this account. There is deliberately more
 // than one: Gmail forwarding keeps the original To header, so a forwarded mail
 // arrives addressed to the Gmail account, not to the AgentMail inbox — both
@@ -4957,7 +4966,16 @@ function sbHeaders() {
     'apikey': cfg.publishableKey,
     'Content-Type': 'application/json'
   };
-  // Reuse the session token from sync.js
+  // The live session in sync.js is the source of truth: it is the copy that a
+  // refresh just rewrote. localStorage is only a fallback for the window where
+  // this file is running without sync.js loaded — reading storage first meant a
+  // token refreshed a second ago could be shadowed by the stale one on disk.
+  const S = window.CashFlowSync;
+  const token = (S && S.accessToken) || null;
+  if (token) {
+    headers['Authorization'] = 'Bearer ' + token;
+    return headers;
+  }
   try {
     const raw = localStorage.getItem('cashflow:session');
     if (raw) {
@@ -4970,26 +4988,71 @@ function sbHeaders() {
   return headers;
 }
 
-/** Make a Supabase REST API call using plain fetch. */
+/** Make a Supabase REST API call using plain fetch.
+ *
+ *  The session token is refreshed first, not read blindly from localStorage.
+ *  An access token lives an hour; a call made after that without a refresh is
+ *  answered by PostgREST with "JWT expired", which reads to the user as "my
+ *  transactions are gone" rather than "your login is stale". The sync loop
+ *  refreshes on its own schedule, but the Pending queue and the email routes
+ *  are read the moment their tab opens, which can be any time after the last
+ *  cycle — so every read asks for a fresh token here. */
 async function sbFetch(path, opts) {
   const cfg = window.CASHFLOW_CONFIG || {};
   const url = cfg.url + '/rest/v1/' + path;
-  const res = await fetch(url, Object.assign({
-    headers: sbHeaders()
-  }, opts || {}));
-  const text = await res.text();
-  let body = null;
-  if (text) { try { body = JSON.parse(text); } catch (err) { body = text; } }
-  if (!res.ok) {
-    const msg = (body && (body.msg || body.message || body.error_description)) ||
-      (body && body.error) || ('HTTP ' + res.status);
-    throw new Error(msg);
-  }
-  return body;
+  const S = window.CashFlowSync;
+  let retried = false;
+
+  const askFresh = async function () {
+    if (!S || typeof S.ensureFreshToken !== 'function') return;
+    try {
+      await S.ensureFreshToken();
+    } catch (err) {
+      // Not signed in, or the refresh was refused (password changed, account
+      // gone). Let the request go out anyway: the headers may still carry a
+      // token that works, and if they do not the 401 below names the reason.
+      const msg = (err && err.message) || '';
+      if (/not signed in|session expired/i.test(msg)) throw new Error(msg);
+    }
+  };
+
+  const once = async function () {
+    const res = await fetch(url, Object.assign({ headers: sbHeaders() }, opts || {}));
+    const text = await res.text();
+    let body = null;
+    if (text) { try { body = JSON.parse(text); } catch (err) { body = text; } }
+    if (!res.ok) {
+      const msg = (body && (body.msg || body.message || body.error_description)) ||
+        (body && body.error) || ('HTTP ' + res.status);
+      // A token that expired between the refresh above and this response (a
+      // slow network, a clock jump) is retried once with a brand-new one.
+      // Only once: an endless retry loop would hide a real auth problem.
+      if (!retried && res.status === 401 &&
+          /jwt expired|token.*expired|invalid.*jwt/i.test(String(msg))) {
+        retried = true;
+        await askFresh();
+        return once();
+      }
+      throw new Error(msg);
+    }
+    return body;
+  };
+
+  // Refresh first, not read blindly from localStorage. An access token lives
+  // an hour; a call made after that without a refresh is answered by
+  // PostgREST with "JWT expired", which reads to the user as "my transactions
+  // are gone" rather than "your login is stale". The sync loop refreshes on
+  // its own schedule, but the Pending queue and the email routes are read the
+  // moment their tab opens — which can be any time after the last cycle.
+  await askFresh();
+  return once();
 }
 
-/** Get current user ID from the session. */
+/** Get current user ID from the session. sync.js holds the live copy; storage
+ *  is only the fallback for a page running without it. */
 function getCurrentUserId() {
+  const S = window.CashFlowSync;
+  if (S && S.userId) return S.userId;
   try {
     const raw = localStorage.getItem('cashflow:session');
     if (raw) {
@@ -5012,15 +5075,22 @@ async function loadEmailRouteStatus() {
   restoreEmailSetup();
   wireEmailSetupFields();
   if (!userId) {
+    // Signed out (including a session cleared by a refused refresh): the
+    // addresses and the webhook live in the account, so the honest answer is
+    // to sign in — not to walk through a setup that may well be complete.
+    emailNeedsSignIn = true;
+    emailAuthExpired = false;
     emailConnected = false;
     emailRoutes = [];
     renderEmailConnectStatus();
     renderEmailRouteList();
     return;
   }
+  emailNeedsSignIn = false;
 
   try {
     const data = await sbFetch('email_routes?user_id=eq.' + encodeURIComponent(userId) + '&is_active=eq.true');
+    emailAuthExpired = false;
     emailRoutes = Array.isArray(data) ? data : [];
     if (emailRoutes.length) {
       emailConnected = true;
@@ -5036,6 +5106,8 @@ async function loadEmailRouteStatus() {
     console.warn('Could not read the forwarding route:', err && err.message);
     emailConnected = false;
     emailRoutes = [];
+    emailAuthExpired = /jwt expired|token.*expired|not signed in|session expired/i
+      .test((err && err.message) || '');
   }
   renderEmailConnectStatus();
   renderEmailRouteList();
@@ -5304,10 +5376,11 @@ function describeGatewayProblem(status, body) {
       'The apikey header is missing from this app’s request, which is a bug here rather than a setting on your side. ' +
       'Reopen the app to pull the newest version.';
   }
-  if (/INVALID_JWT|INVALID_TOKEN/i.test(code)) {
-    return 'Supabase refused the request before it reached the function. ' +
-      'Open Edge Functions → poll-emails → Settings and turn OFF "Verify JWT". ' +
-      'A webhook from a mail provider cannot present a Supabase login token, and while that setting is on, nothing from AgentMail can ever reach the function.';
+  if (/INVALID_JWT|INVALID_TOKEN|JWT_EXPIRED|jwt expired|token expired|exp claim/i.test(code + ' ' + String((body && (body.message || body.error_description || body.error)) || ''))) {
+    return 'Supabase refused the request before it reached the function — its JWT check is on. ' +
+      'Open Edge Functions → poll-emails → Settings and turn OFF "Verify JWT", then Save. ' +
+      'A webhook from a mail provider cannot present a Supabase login token, so while that setting is on, ' +
+      'no bank email can ever reach the function and nothing will appear under Pending.';
   }
   if (/403|forbidden/i.test(String(status))) {
     return 'Supabase refused the request. Turn OFF "Verify JWT" in the function’s Settings — a third-party webhook cannot send a login token.';
@@ -5446,6 +5519,18 @@ function renderEmailConnectStatus() {
       h('span', { class: 'email-status-icon' }, '✓'),
       h('span', {}, 'Addresses saved. Bank emails sent to them will appear under Pending once the test below passes.')
     ));
+  } else if (emailNeedsSignIn) {
+    mount(statusEl, h('div', { class: 'email-status disconnected' },
+      h('span', { class: 'email-status-icon' }, '○'),
+      h('span', {}, 'Sign in to see this setup — your forwarding addresses and webhook live in your account.')
+    ));
+  } else if (emailAuthExpired) {
+    // Setup is fine — only the session is stale. Redoing the steps would change
+    // nothing, so this says the one action that does.
+    mount(statusEl, h('div', { class: 'email-status disconnected' },
+      h('span', { class: 'email-status-icon' }, '○'),
+      h('span', {}, 'Your sign-in has expired. Sign in again from Settings — your addresses are already saved, and bank emails resume as soon as the session is back.')
+    ));
   } else {
     mount(statusEl, h('div', { class: 'email-status disconnected' },
       h('span', { class: 'email-status-icon' }, '○'),
@@ -5454,14 +5539,21 @@ function renderEmailConnectStatus() {
   }
   // The setup steps hide once they have done their job; the saved addresses
   // above stay visible. If the setup ever breaks, the status flips back and
-  // the steps reappear on their own.
+  // the steps reappear on their own — but a missing or expired login is not
+  // the setup breaking, so those stay hidden while it is only the session.
   const det = $('emailSetupDetails');
-  if (det) det.hidden = emailConnected;
+  if (det) det.hidden = emailConnected || emailAuthExpired || emailNeedsSignIn;
 }
 
 async function loadPendingTransactions() {
   const userId = getCurrentUserId();
-  if (!userId) { renderPendingQueue(); return; }
+  if (!userId) {
+    // No session means the queue cannot be read, and an empty list here would
+    // look exactly like "no bank emails arrived". Say which it is.
+    pendingTransactions = [];
+    pendingQueueError = 'Not signed in — sign in again from Settings and the queue loads immediately. Nothing was lost.';    renderPendingQueue();
+    return;
+  }
 
   try {
     const data = await sbFetch(
@@ -5474,7 +5566,15 @@ async function loadPendingTransactions() {
     // an empty queue and concludes no transactions arrived.
     console.warn('Could not read the pending queue:', err && err.message);
     pendingTransactions = [];
-    pendingQueueError = (err && err.message) || 'Could not load';
+    const raw = (err && err.message) || 'Could not load';
+    // A stale or refused login reads as "JWT expired" at the API — the reason
+    // behind the reported bug. Say what to do instead of passing the raw
+    // server wording through: nothing is lost, the rows are on the server.
+    pendingQueueError = /jwt expired|token.*expired|not signed in|session expired/i.test(raw)
+      ? 'Your sign-in has expired — sign in again from Settings and this queue loads immediately. The transactions are safe on the server.'
+      : (/failed to fetch|networkerror|network request failed/i.test(raw)
+        ? 'You are offline — the queue loads as soon as you reconnect. Nothing was lost.'
+        : raw);
   }
   renderPendingQueue();
 }
