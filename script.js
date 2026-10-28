@@ -577,11 +577,28 @@ function sanitizeState(raw) {
   const accountNames = new Set();
   const rawAccounts = Array.isArray(raw.accounts) ? raw.accounts : null;
 
+  // A duplicate-named account's id must not dangle: records pointing at it are
+  // re-filed onto the survivor (see transactions and udhaar below), and its
+  // opening balance is folded into the survivor so the money is not dropped.
+  const accountAlias = new Map();
+
   const addAccount = (id, name, kind, opening, archived, a) => {
     const clean = cleanText(name, NAME_LIMIT);
     if (!clean) return null;
     const key = clean.toLowerCase();
-    if (accountNames.has(key)) { note('merged a duplicate account named "' + clean + '"'); return null; }
+    if (accountNames.has(key)) {
+      const survivor = accounts.find((x) => x.name.toLowerCase() === key);
+      const dupOpening = round2(clampNumber(opening, -MAX_AMOUNT, MAX_AMOUNT));
+      if (survivor && dupOpening) {
+        // The duplicate's opening balance is real money in the user's mental
+        // book; dropping it would silently understate the account forever.
+        survivor.openingBalance = round2(survivor.openingBalance + dupOpening);
+        note('folded the opening balance of the duplicate "' + clean + '" into the kept account');
+      }
+      if (survivor && typeof id === 'string' && id.trim()) accountAlias.set(id.trim(), survivor.id);
+      note('merged a duplicate account named "' + clean + '"');
+      return null;
+    }
     accountNames.add(key);
     let aid = (typeof id === 'string' && id.trim()) ? id.trim() : newId();
     if (accountIds.has(aid)) aid = newId();
@@ -772,8 +789,12 @@ function sanitizeState(raw) {
     const isTransfer = t.type === 'transfer';
 
     // Resolve the account. A v3 record has no accountId at all: its money was
-    // whatever the user physically had, so it lands on Cash.
-    let accountId = typeof t.accountId === 'string' && accountIdSet.has(t.accountId) ? t.accountId : null;
+    // whatever the user physically had, so it lands on Cash. An id dropped as a
+    // duplicate of a same-named account is re-filed onto the survivor.
+    const rawAccountId = typeof t.accountId === 'string' && accountIdSet.has(t.accountId)
+      ? t.accountId
+      : (typeof t.accountId === 'string' && accountAlias.has(t.accountId) ? accountAlias.get(t.accountId) : null);
+    let accountId = rawAccountId;
     if (!accountId) {
       if (typeof t.accountId === 'string' && t.accountId) note('re-filed a transaction whose account no longer exists, under Cash');
       accountId = cashId;
@@ -782,7 +803,10 @@ function sanitizeState(raw) {
 
     let toAccountId = null;
     if (isTransfer) {
-      toAccountId = typeof t.toAccountId === 'string' && accountIdSet.has(t.toAccountId) ? t.toAccountId : null;
+      const rawToId = typeof t.toAccountId === 'string' && accountIdSet.has(t.toAccountId)
+        ? t.toAccountId
+        : (typeof t.toAccountId === 'string' && accountAlias.has(t.toAccountId) ? accountAlias.get(t.toAccountId) : null);
+      toAccountId = rawToId;
       if (!toAccountId || toAccountId === accountId) {
         // A transfer that loops back into the same account moves nothing, so it
         // is meaningless rather than merely wrong.
@@ -845,8 +869,11 @@ function sanitizeState(raw) {
       settledAt,
       ledger: d.ledger !== false,
       // Which account the money moved through. Old entries predate this and
-      // carry nothing — debtAccountId() falls back for them at use time.
-      accountId: typeof d.accountId === 'string' && d.accountId.trim() ? d.accountId.trim() : null,
+      // carry nothing — debtAccountId() falls back for them at use time. An id
+      // dropped as a duplicate follows its survivor here too.
+      accountId: typeof d.accountId === 'string' && d.accountId.trim()
+        ? (accountAlias.get(d.accountId.trim()) || (accountIdSet.has(d.accountId.trim()) ? d.accountId.trim() : null))
+        : null,
       // Which bucket its ledger entries file under. Old entries predate this
       // too and resolve to Udhaar, exactly as they always filed.
       category: typeof d.category === 'string' && d.category.trim() ? d.category.trim().slice(0, NAME_LIMIT) : 'Udhaar',
@@ -1038,6 +1065,9 @@ async function resetAll() {
     try { await S.signOut(); } catch (err) { /* signing out locally matters more */ }
   }
   if (S && S.resetSyncState) S.resetSyncState();
+  // Nothing is left on this browser, so the next sign-in is not a takeover of
+  // anyone's records.
+  if (S && S.clearLocalDataOwner) S.clearLocalDataOwner();
   try { localStorage.removeItem(STORAGE_KEY); } catch (err) { /* ignore */ }
   state = blankState();
   reportRange = { mode: 'month' };
@@ -4272,6 +4302,31 @@ async function handleAuth(mode) {
 
   const bad = S.validateCredentials(email, password);
   if (bad) { toast(bad); return; }
+
+  // This browser may still hold another account's records: signing out keeps
+  // them by design. Uploading them under the new address would hand one
+  // person's whole ledger to the other account, so the takeover is made
+  // explicit before a single row leaves.
+  const owner = S.dataOwner;
+  const target = String(email).trim().toLowerCase();
+  if (owner && owner.email && String(owner.email).toLowerCase() !== target) {
+    const holdsData = !!(state.transactions.length || state.debts.length || state.custody.length
+      || state.shopping.length || (state.settings.notes && state.settings.notes.length)
+      || state.accounts.length > 3);
+    if (holdsData) {
+      const go = confirm('This browser still holds records that belong to ' + owner.email
+        + '.\n\nSigning in as ' + target + ' will UPLOAD all of them to that account'
+        + (mode === 'up' ? ' (the new one you are creating)' : '')
+        + '.\n\nContinue?');
+      if (!go) {
+        // The form is left exactly as it was: rebuilding it here would throw
+        // away the password the user already typed, and make them retype it
+        // just to change their mind about the address.
+        toast('Cancelled — nothing was uploaded');
+        return;
+      }
+    }
+  }
 
   const btn = document.querySelector('[data-act="auth-' + (mode === 'up' ? 'up' : 'in') + '"]');
   if (btn) btn.disabled = true;

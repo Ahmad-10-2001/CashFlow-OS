@@ -100,8 +100,8 @@ window.CashFlowSync = (function () {
      state: cursors and tombstones are sync plumbing, not user data,
      and should not end up in a backup file. */
   function emptyBook() {
-    const b = { lastPushed: {}, lastPulled: {}, tombstones: {}, prefsPushedAt: null, prefsPulledAt: null };
-    ALL_TABLES.forEach((t) => { b.lastPushed[t] = null; b.lastPulled[t] = null; b.tombstones[t] = []; });
+    const b = { lastPushed: {}, lastPulled: {}, tombstones: {}, shadow: {}, userId: null, prefsBase: null, prefsPushedAt: null, prefsPulledAt: null };
+    ALL_TABLES.forEach((t) => { b.lastPushed[t] = null; b.lastPulled[t] = null; b.tombstones[t] = []; b.shadow[t] = {}; });
     return b;
   }
   let book = emptyBook();
@@ -146,10 +146,27 @@ window.CashFlowSync = (function () {
 
      The shadow starts EMPTY on purpose: the first reconcile therefore
      stamps everything, which is what makes a brand new account upload
-     its whole history on first sign-in. */
-  let shadow = { transactions: [], accounts: [], debts: [], custody: [], shopping: [] };
-  const clone = (r) => Object.assign({}, r);
+     its whole history on first sign-in. It lives in the persisted book
+     (as id → fingerprint hash, not full copies) so a page reload does
+     not mistake every surviving record for a new edit — before it was
+     in-memory only, which made every load re-upload the whole ledger
+     and made another device's newer rows look older than the freshly
+     re-stamped locals, so they were silently dropped. */
   const fingerprint = (r) => JSON.stringify(r);
+  /** ~64-bit FNV-style hash so the persisted shadow stays small: a
+   *  record id plus 12 chars instead of the whole record. */
+  function hashStr(str) {
+    let h1 = 0x811c9dc5;
+    let h2 = 0x01000193;
+    for (let i = 0; i < str.length; i++) {
+      const c = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+      h2 = Math.imul(h2 + c, 2654435761) >>> 0;
+      h2 = ((h2 << 13) | (h2 >>> 19)) >>> 0;
+    }
+    return h1.toString(36) + '.' + h2.toString(36);
+  }
+  const recHash = (r) => hashStr(fingerprint(r));
 
   /* A delete queued by markDeleted() counts as a change, even though
      reconcile() then finds the tombstone already present and skips adding a
@@ -159,33 +176,35 @@ window.CashFlowSync = (function () {
 
   function reconcile(state) {
     let changed = false;
+    if (!book.shadow) book.shadow = {};
     for (const t of ALL_TABLES) {
       const list = state[t] || [];
-      const prev = shadow[t] || [];
-      const prevById = new Map();
-      for (const p of prev) prevById.set(p.id, p);
+      if (!book.shadow[t] || typeof book.shadow[t] !== 'object' || Array.isArray(book.shadow[t])) book.shadow[t] = {};
+      const prevById = book.shadow[t];
       const liveIds = new Set();
 
       for (const r of list) {
         liveIds.add(r.id);
-        const before = prevById.get(r.id);
-        if (before && fingerprint(before) === fingerprint(r)) continue;
+        const before = prevById[r.id];
+        if (before && before === recHash(r)) continue;
         r.updatedAt = touch();
         changed = true;
       }
 
       // Anything in the shadow but gone from the state was deleted, and
       // needs a tombstone so the delete reaches the other devices.
-      for (const p of prev) {
-        if (liveIds.has(p.id)) continue;
+      for (const pid of Object.keys(prevById)) {
+        if (liveIds.has(pid)) continue;
         if (!book.tombstones[t]) book.tombstones[t] = [];
         // One tombstone per id. markDeleted() may already have queued this one.
-        if (book.tombstones[t].some((x) => x.id === p.id)) continue;
-        book.tombstones[t].push({ id: p.id, updatedAt: touch() });
+        if (book.tombstones[t].some((x) => x.id === pid)) continue;
+        book.tombstones[t].push({ id: pid, updatedAt: touch() });
         changed = true;
       }
 
-      shadow[t] = list.map(clone);
+      const next = {};
+      for (const r of list) next[r.id] = recHash(r);
+      book.shadow[t] = next;
     }
     const marked = markedSinceLastReconcile > 0;
     markedSinceLastReconcile = 0;
@@ -195,7 +214,11 @@ window.CashFlowSync = (function () {
 
   /** Called after a pull so server rows are not re-stamped as local edits. */
   function absorbShadow(table, list) {
-    shadow[table] = (list || []).map(clone);
+    if (!book.shadow) book.shadow = {};
+    const next = {};
+    for (const r of (list || [])) if (r && r.id) next[r.id] = recHash(r);
+    book.shadow[table] = next;
+    saveBook();
   }
 
   /* Drop tombstones the app knows are bogus. A tombstone for an id this device
@@ -337,6 +360,30 @@ window.CashFlowSync = (function () {
     }
   }
 
+  /* ---------- who owns this browser's records ----------
+     Sign-out deliberately keeps the local data (offline-first, and the same
+     person usually returns). That also means the NEXT account signed into
+     would silently inherit and upload it as its own — on a shared browser the
+     second person ends up with the first person's whole ledger in their
+     cloud. The owner is therefore remembered next to the data, and the app
+     confirms with the user (CashFlowSync.dataOwner) before a different
+     account is allowed to push it. */
+  const OWNER_KEY = 'cashflow:owner';
+  function loadOwner() {
+    try {
+      const raw = localStorage.getItem(OWNER_KEY);
+      if (!raw) return null;
+      const o = JSON.parse(raw);
+      return o && typeof o.email === 'string' && o.email ? o : null;
+    } catch (err) { return null; }
+  }
+  function saveOwner(o) {
+    try {
+      if (o) localStorage.setItem(OWNER_KEY, JSON.stringify(o));
+      else localStorage.removeItem(OWNER_KEY);
+    } catch (err) { /* quota: a marker, not user data */ }
+  }
+
   function adopt(out, email) {
     // The push/pull cursors are claims about a specific account's server copy
     // ("everything up to T is uploaded"). Reusing account A's cursors after
@@ -344,10 +391,19 @@ window.CashFlowSync = (function () {
     // leftovers under B's name — so a change of owner resets the book and the
     // next cycle does a full push and pull. Refreshes keep the same user and
     // are unaffected.
-    const prevUserId = session ? session.userId : null;
+    //
+    // The comparison uses the owner remembered IN the book, not just the live
+    // session: a session refused by the server (refresh() → false) leaves the
+    // book behind with no session at all, and the old code then let the next
+    // account inherit those cursors and silently skip its own rows.
+    const prevUserId = book.userId || (session ? session.userId : null);
     const nextUserId = out.user && out.user.id;
-    if (prevUserId && nextUserId && prevUserId !== nextUserId) {
+    if (nextUserId && prevUserId && prevUserId !== nextUserId) {
       book = emptyBook();
+      saveBook();
+    }
+    if (nextUserId) {
+      book.userId = nextUserId;
       saveBook();
     }
     session = {
@@ -363,6 +419,10 @@ window.CashFlowSync = (function () {
     };
     if (!session.expiresAt) session.expiresAt = Date.now() + 3600000;
     saveSession();
+    // This account now owns whatever this browser holds. The app is expected
+    // to have confirmed a takeover of someone else's records before calling
+    // signIn/signUp (see dataOwner below).
+    saveOwner({ userId: session.userId, email: session.email });
     // `status` is a snapshot taken when this module loaded, so a fresh
     // sign-in has to refresh it or the UI keeps drawing the signed-out panel.
     if (status) { status.signedIn = true; status.email = session.email; }
@@ -886,7 +946,10 @@ window.CashFlowSync = (function () {
       // rows the server does have. Clearing both, then pushing, is the only
       // state that cannot silently lose anything.
       saveBook();
-      shadow = { transactions: [], accounts: [], debts: [], custody: [], shopping: [] };
+      // Shadow goes with the cursors: with a full re-upload ahead, stale
+      // fingerprints would only hide rows that genuinely changed.
+      book.shadow = {};
+      ALL_TABLES.forEach((t) => { book.shadow[t] = {}; });
       try { await pushAll(state); } catch (err) { /* reported by pushAll's own status */ }
     }
 
@@ -915,6 +978,7 @@ window.CashFlowSync = (function () {
   }
 
   async function pushOneTable(state, table) {
+    const myBook = book;
     const dirty = dirtyRecords(state, table);
     const tombs = (book.tombstones[table] || []).filter((t) => {
       if (!book.lastPushed[table]) return true;
@@ -923,15 +987,31 @@ window.CashFlowSync = (function () {
 
     if (!dirty.length && !tombs.length) return;
 
+    // A sign-out mid-flight nulls the session; writing cursors with it gone
+    // would throw (or worse, land on the next account's fresh book). A session
+    // that exists but carries no user id is a different thing entirely — a
+    // corrupt login — and must surface rather than silently push nothing.
+    if (!session || book !== myBook) return;
     const userId = session.userId;
+    if (!userId) throw new Error('Session has no user id — sign in again');
 
     // Send regular rows and tombstones SEPARATELY — Supabase REST API
     // rejects mixed-shape rows with "All object keys must match".
-    
+
+    // The cursor only advances AFTER every request in this call has
+    // succeeded. If the tombstone POST below throws, nothing is advanced
+    // and nothing is trimmed, so the delete is retried next cycle (the
+    // row upserts above are merge-duplicates, so re-sending them is
+    // harmless). Before, the row cursor was committed first, which made
+    // a failed delete permanent: the tombstone fell behind the cursor
+    // and the filter above dropped it forever, silently un-deleting on
+    // every other device.
+    let newest = book.lastPushed[table];
+
     // First: push regular dirty rows (deduplicated)
     if (dirty.length) {
       const rows = dedupeById(dirty.map((r) => Object.assign({ user_id: userId, updated_at: r.updatedAt }, MAP[table].toRow(r))));
-      
+
       await ensureFreshToken();
       await http(restPath(table), {
         method: 'POST',
@@ -939,11 +1019,9 @@ window.CashFlowSync = (function () {
         body: JSON.stringify(rows)
       });
 
-      let newest = book.lastPushed[table];
       for (const r of rows) {
         if (!newest || Date.parse(r.updated_at) > Date.parse(newest)) newest = r.updated_at;
       }
-      book.lastPushed[table] = newest;
     }
 
     // Then: push tombstones separately (deduplicated)
@@ -1011,35 +1089,48 @@ window.CashFlowSync = (function () {
         body: JSON.stringify(tombRows)
       });
 
-      let newest = book.lastPushed[table];
       for (const t of tombs) {
         if (!newest || Date.parse(t.updatedAt) > Date.parse(newest)) newest = t.updatedAt;
       }
-      book.lastPushed[table] = newest;
+      // Both requests landed — but only touch the book this call started with.
+      // A sign-out swaps in a fresh one, and trimming/poking that would mix the
+      // old account's plumbing into the new account's state.
+      if (book !== myBook) return;
       const keep = (book.tombstones[table] || []).filter((t) => Date.parse(t.updatedAt) > Date.parse(newest));
       book.tombstones[table] = keep;
     }
 
+    if (book !== myBook) return;
+    if (newest !== book.lastPushed[table]) book.lastPushed[table] = newest;
     saveBook();
   }
 
   async function pushPrefs(state) {
     if (!prefsChanged(state)) return;
     const userId = session.userId;
-    await ensureFreshToken();
+    // Snapshot the document before the request: state keeps mutating while the
+    // POST is in flight, and the signature/base below must describe exactly
+    // what was sent, not what the state happened to become.
+    const snap = clonePrefsDoc(state);
     const body = {
       user_id: userId,
       updated_at: touch(),
-      budgets: state.budgets,
-      categories: state.categories,
-      settings: state.settings,
-      closed_periods: state.closedPeriods
+      budgets: snap.budgets,
+      categories: snap.categories,
+      settings: snap.settings,
+      closed_periods: snap.closedPeriods
     };
+    await ensureFreshToken();
     await http(restPath('prefs'), {
       method: 'POST',
       headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
       body: JSON.stringify([body])
     });
+    // Committed only after the POST landed. Before, the signature was marked
+    // sent before the request, so one network failure meant the edit was
+    // remembered as synced and never retried until something else changed.
+    lastPrefsSent = prefsSignature(snap);
+    book.prefsBase = snap;
     book.prefsPushedAt = body.updated_at;
     saveBook();
   }
@@ -1052,12 +1143,89 @@ window.CashFlowSync = (function () {
   function prefsSignature(state) {
     return JSON.stringify([state.budgets, state.categories, state.settings, state.closedPeriods]);
   }
+  /** Read-only on purpose: the signature is only committed by pushPrefs once
+   *  the server has actually accepted the document. */
   function prefsChanged(state) {
-    if (lastPrefsSent === null) { lastPrefsSent = prefsSignature(state); return true; }
-    const sig = prefsSignature(state);
-    if (sig === lastPrefsSent) return false;
-    lastPrefsSent = sig;
-    return true;
+    return lastPrefsSent === null || prefsSignature(state) !== lastPrefsSent;
+  }
+
+  /* ---------- prefs: three-way merge ----------
+     The prefs row is one document, but treating it as one blob loses work: a
+     device that edited one budget would push and silently overwrite every
+     category, note and setting the other device had changed since. The last
+     accepted copy (book.prefsBase) is kept so a newer server document can be
+     merged key by key: a side that did not touch a key takes the other side's
+     value, a key only one side changed takes that change, a key both changed
+     keeps the local one (it is pushed again next cycle instead of vanishing),
+     and lists of id-bearing records or plain scalars (categories, notes,
+     budget moves, closed months) are unioned, never dropped. */
+  const PREFS_DOC_KEYS = ['budgets', 'categories', 'settings', 'closedPeriods'];
+  function isPlainObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+  function hasId(x) { return isPlainObj(x) && typeof x.id === 'string' && x.id.length > 0; }
+  function snapEq(a, b) {
+    const na = a === undefined ? null : a;
+    const nb = b === undefined ? null : b;
+    return JSON.stringify(na) === JSON.stringify(nb);
+  }
+  function clonePrefsDoc(d) {
+    const out = {};
+    for (const k of PREFS_DOC_KEYS) {
+      const v = d ? d[k] : undefined;
+      out[k] = v === undefined ? undefined : JSON.parse(JSON.stringify(v));
+    }
+    return out;
+  }
+  function unionById(base, local, incoming) {
+    const out = local.slice();
+    const byId = new Map(out.map((x) => [x.id, x]));
+    const b = Array.isArray(base) ? base : [];
+    for (const s of incoming) {
+      const l = byId.get(s.id);
+      if (!l) { out.push(s); byId.set(s.id, s); continue; }
+      const bb = b.find((x) => x.id === s.id);
+      out[out.indexOf(l)] = mergePrefsValue(bb, l, s);
+    }
+    return out;
+  }
+  function unionScalars(local, incoming) {
+    const out = local.slice();
+    for (const v of incoming) {
+      if (!out.some((x) => snapEq(x, v))) out.push(v);
+    }
+    return out;
+  }
+  function mergePrefsValue(base, local, incoming) {
+    // A side that simply has nothing (first sign-in on a fresh device, or a
+    // document from before a key existed) must not be read as a deletion —
+    // the other side's value is taken as-is.
+    if (local === undefined || local === null) return incoming;
+    if (incoming === undefined || incoming === null) return local;
+    if (snapEq(local, incoming)) return local;
+    if (base !== undefined && snapEq(local, base)) return incoming;   // local never touched it
+    if (base !== undefined && snapEq(incoming, base)) return local;   // server never touched it
+    if (Array.isArray(local) && Array.isArray(incoming)) {
+      if (local.every(hasId) && incoming.every(hasId)) return unionById(base, local, incoming);
+      const scalar = (v) => v === null || ['string', 'number', 'boolean'].indexOf(typeof v) !== -1;
+      if (local.every(scalar) && incoming.every(scalar)) return unionScalars(local, incoming);
+    }
+    if (isPlainObj(local) && isPlainObj(incoming)) {
+      const out = {};
+      const b = isPlainObj(base) ? base : {};
+      for (const k of new Set(Object.keys(local).concat(Object.keys(incoming)))) {
+        out[k] = mergePrefsValue(b[k], local[k], incoming[k]);
+      }
+      return out;
+    }
+    return local;  // true conflict on a scalar: local wins and is re-pushed
+  }
+  function mergePrefsDoc(base, local, incoming) {
+    const b = isPlainObj(base) ? base : {};
+    const merged = {};
+    for (const k of PREFS_DOC_KEYS) {
+      merged[k] = mergePrefsValue(b[k], local ? local[k] : undefined, incoming ? incoming[k] : undefined);
+    }
+    if (Array.isArray(merged.closedPeriods)) merged.closedPeriods = merged.closedPeriods.slice().sort();
+    return merged;
   }
 
   /* ---------- pull ---------- */
@@ -1071,6 +1239,7 @@ window.CashFlowSync = (function () {
      point was skipped *forever*, silently. */
   async function pullOneTable(state, table) {
     const list = state[table] || (state[table] = []);
+    const myBook = book;
     let applied = 0;
     let cursor = book.lastPulled[table];
 
@@ -1114,6 +1283,10 @@ window.CashFlowSync = (function () {
 
       if (!consumed) break;
       cursor = newest;
+      // An in-flight pull must not write into a book that is no longer this
+      // account's: sign-out swaps in a fresh book, and without this check the
+      // old user's cursor landed on the new account's book, hiding its rows.
+      if (book !== myBook) return applied;
       book.lastPulled[table] = newest;
       absorbShadow(table, list);
       saveBook();
@@ -1133,19 +1306,46 @@ window.CashFlowSync = (function () {
     const p = row[0];
     if (!p.updated_at) return false;
     if (book.prefsPulledAt && Date.parse(p.updated_at) <= Date.parse(book.prefsPulledAt)) return false;
-    // Whole-document last-write-wins, same rule as the record tables.
+    // Our own newer push is already the truth; do not merge it back over
+    // ourselves.
     if (book.prefsPushedAt && Date.parse(p.updated_at) <= Date.parse(book.prefsPushedAt)) {
       book.prefsPulledAt = p.updated_at;
       saveBook();
       return false;
     }
-    state.budgets = p.budgets;
-    state.categories = p.categories;
-    state.settings = p.settings;
-    state.closedPeriods = p.closed_periods;
+    // Merge instead of replace. The server document becomes the new base, and
+    // the signature is set to what the SERVER holds — so if the merge kept
+    // anything this device had, pushPrefs sees a difference next cycle and
+    // sends the merged document onward. Before, the whole row was overwritten
+    // in both directions, so a first pull on a fresh device wiped the local
+    // categories and budgets outright.
+    const incoming = { budgets: p.budgets, categories: p.categories, settings: p.settings, closedPeriods: p.closed_periods };
+    const localDoc = {
+      budgets: state.budgets,
+      categories: state.categories,
+      settings: state.settings,
+      closedPeriods: state.closedPeriods
+    };
+    // With no stored base this is the first time this device has seen the
+    // account's document. Treating the LOCAL copy as the base means every
+    // local value counts as "never touched" and the server's copy wins the
+    // conflicts — which is right for the usual case (a fresh device joining
+    // an account that already has real budgets, notes and themes). Lists are
+    // unioned either way, so nothing local ever disappears.
+    const merged = mergePrefsDoc(book.prefsBase || localDoc, localDoc, incoming);
+    // Shape guard: a damaged server document must never replace a working
+    // local shape (a budgets object, a categories list) with its own garbage.
+    if (!isPlainObj(merged.budgets)) merged.budgets = isPlainObj(state.budgets) ? state.budgets : {};
+    if (!Array.isArray(merged.categories)) merged.categories = Array.isArray(state.categories) ? state.categories : [];
+    if (!isPlainObj(merged.settings)) merged.settings = isPlainObj(state.settings) ? state.settings : {};
+    if (!Array.isArray(merged.closedPeriods)) merged.closedPeriods = Array.isArray(state.closedPeriods) ? state.closedPeriods : [];
+    state.budgets = merged.budgets;
+    state.categories = merged.categories;
+    state.settings = merged.settings;
+    state.closedPeriods = merged.closedPeriods;
     book.prefsPulledAt = p.updated_at;
-    book.prefsPushedAt = p.updated_at;
-    lastPrefsSent = prefsSignature(state);
+    book.prefsBase = clonePrefsDoc(incoming);
+    lastPrefsSent = prefsSignature(incoming);
     saveBook();
     return true;
   }
@@ -1251,6 +1451,22 @@ window.CashFlowSync = (function () {
     get email() { return session ? session.email : null; },
     get resetEmail() { const r = loadReset(); return r ? r.email : null; },
     get hasResetToken() { return !!loadReset(); },
+    /* Which account claimed the records stored on this browser, or null when
+       nobody has signed in here yet. The app compares it against the address
+       being signed into and asks the user before handing one person's ledger
+       to another account. */
+    get dataOwner() { return loadOwner(); },
+    /* Explicit claim, for flows that end in a session without adopt() having
+       decided anything (e.g. the app deciding the takeover was confirmed). */
+    claimLocalData: function () {
+      if (!session) return null;
+      const o = { userId: session.userId, email: session.email };
+      saveOwner(o);
+      return o;
+    },
+    /* Called after the local records are deliberately wiped: nothing is left
+       to own, so the next sign-in is not treated as a takeover. */
+    clearLocalDataOwner: function () { saveOwner(null); },
     // sync
     start, stop, cycle, queuePush, setStateProvider, setPersist, setAccountCollisionHandler, forgetTombstones, pushAll, touch, seedClock, reconcile, absorbShadow, repairCloudCopy,
     /* Exported so the app's own REST reads (Pending queue, email routes) can
@@ -1274,9 +1490,10 @@ window.CashFlowSync = (function () {
        read the vanished rows as deletions and push tombstones for them — which
        would wipe the cloud as a side effect of clearing this browser. */
     resetSyncState: function () {
+      // emptyBook() already carries an empty shadow, so this forgets the
+      // fingerprints too — no stale hash can hide a record or fake a deletion.
       book = emptyBook();
       saveBook();
-      shadow = { transactions: [], accounts: [], debts: [], custody: [], shopping: [] };
       lastPrefsSent = null;
     },
     // bookkeeping used by the app
