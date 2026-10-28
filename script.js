@@ -1141,11 +1141,18 @@ async function deleteCloudData() {
 function ledgerTotals(start, end) {
   let income = 0;
   let expense = 0;
+  // Future-dated records are not money yet. periodBoundsOf() ends a month at
+  // its last day, so a transaction dated later this month used to be counted
+  // in the Income/Expense figures on Home — money that has not moved. Budget
+  // rows already cap at today (budgetCounted); this makes the totals beside
+  // them agree. A record dated tomorrow therefore waits until tomorrow.
+  const cap = endOfToday();
+  const stop = end && end > cap ? cap : end;
   for (const t of state.transactions) {
     if (t.type === 'transfer') continue;
     const d = new Date(t.date);
     if (start && d < start) continue;
-    if (end && d > end) continue;
+    if (stop && d > stop) continue;
     if (t.type === 'income') income += t.amount;
     else expense += t.amount;
   }
@@ -1586,8 +1593,20 @@ function fillCategorySelect(select, opts) {
     return h('option', { value: name }, isOrphan ? name + ' (removed)' : name);
   }));
 
-  if (o.selected) {
-    const match = names.find((n) => n.toLowerCase() === String(o.selected).toLowerCase());
+  /* What to keep selected. An explicit `selected` wins; otherwise the value
+     the control already holds is kept as long as it is still a real choice —
+     every re-render used to reset these dropdowns to the first entry, so a
+     category typed into the Records form silently became "the first one"
+     whenever a budget or category changed elsewhere. A control with nothing
+     held yet (first fill) takes `fallback` when it exists, so the udhaar form
+     opens on "Udhaar" rather than whatever category happens to be first. */
+  const held = typeof select.value === 'string' ? select.value : '';
+  const wanted = typeof o.selected === 'string' ? o.selected
+    : held || (typeof o.fallback === 'string' && names.some((n) => n.toLowerCase() === o.fallback.toLowerCase())
+      ? o.fallback
+      : '');
+  if (wanted) {
+    const match = names.find((n) => n.toLowerCase() === String(wanted).toLowerCase());
     if (match) { select.value = match; return; }
   }
   select.selectedIndex = 0;
@@ -1596,7 +1615,10 @@ function fillCategorySelect(select, opts) {
 function refreshSelects() {
   fillCategorySelect($('txCategory'));
   fillCategorySelect($('budgetCategory'));
-  fillCategorySelect($('debtCategory'), { selected: 'Udhaar' });
+  // The udhaar category keeps whatever is picked now instead of snapping back
+  // to "Udhaar" — but a form with nothing picked yet opens on the Udhaar
+  // bucket (its fallback), which is where these entries file by default.
+  fillCategorySelect($('debtCategory'), { fallback: 'Udhaar' });
   refreshAccountSelects();
 }
 
@@ -1608,7 +1630,16 @@ function refreshSelects() {
 function fillAccountSelect(select, opts) {
   if (!select) return;
   const o = opts || {};
-  const chosen = typeof o.selected === 'string' ? o.selected : (state.settings.lastAccountId || cashAccountId());
+  /* Keep what the control already holds when no explicit choice is given, for
+     the same reason as the category select: these refill on every re-render,
+     and resetting to the last-used account made a picked "No account movement"
+     (or a wallet chosen a moment ago) snap back the instant anything else was
+     saved. An explicit `selected` still wins. */
+  const held = typeof select.value === 'string' ? select.value : '';
+  const chosen = typeof o.selected === 'string' ? o.selected
+    : (held && (held === '' ? !!o.emptyLabel : state.accounts.some((a) => a.id === held)))
+      ? held
+      : (state.settings.lastAccountId || cashAccountId());
   const list = state.accounts.filter((a) => !a.archived || a.id === chosen);
 
   mount(select,
@@ -1623,6 +1654,9 @@ function refreshAccountSelects() {
   fillAccountSelect($('txAccount'));
   fillAccountSelect($('txToAccount'));
   fillAccountSelect($('itemAccount'));
+  // The debt account is the one that mattered most to keep: an empty pick is a
+  // real, deliberate answer ("this udhaar does not move money"), and it was
+  // the value that snapped back to the last-used wallet on every save.
   fillAccountSelect($('debtAccount'), { emptyLabel: 'No account movement' });
   fillAccountSelect($('editAccount'));
   fillAccountSelect($('editToAccount'));
@@ -1831,8 +1865,18 @@ function returnDebtSome(id) {
 
   if (amount >= out) { settleDebt(id); return; }
 
+  // The prompt-and-confirm already happened above, so this only moves the
+  // money. applyDebtPayment answers 'settled' (amount reached the remainder —
+  // not possible here, settleDebt handled it) or 'partial'. Checking for 'ok'
+  // matched neither, so a part-return was written to memory and then thrown
+  // away without save() — the balance moved on screen and snapped back on
+  // reload. Save on every real answer.
   const res = applyDebtPayment(d, amount, debtAccountId(d), debtCategory(d));
-  if (res === 'ok' && save()) toast('Recorded ' + formatMoney(amount) + '. ' + formatMoney(d.amount) + ' still outstanding with ' + d.person + '.');
+  if (res === 'partial' && save()) {
+    toast('Recorded ' + formatMoney(amount) + '. ' + formatMoney(d.amount) + ' still outstanding with ' + d.person + '.');
+  } else if (res === null) {
+    toast('That entry is already settled');
+  }
 }
 
 /** File a payment against an open udhaar entry without asking anything.
@@ -2416,22 +2460,44 @@ function saveEdit() {
    Udhaar
    ============================================================ */
 
-function addDebt() {
+async function addDebt() {
   const person = cleanText($('debtPerson').value, NAME_LIMIT);
   if (!person) { toast('Enter the person’s name'); return; }
   const amount = readAmountField($('debtAmount'), 'Amount');
   if (amount.error) { toast(amount.error); return; }
   const type = $('debtType').value === 'pay' ? 'pay' : 'receive';
-  // Account is optional: picked means money moves right now through it, empty
+  // Account is optional: picked means the money can move through it, empty
   // means this only records the debt (an old one, or money handled outside any
-  // account) and the movement happens on settle.
+  // account) and the movement — if any — happens on settle.
   const accPick = $('debtAccount').value;
   const accId = accPick && findAccount(accPick) ? accPick : null;
-  const ledger = $('debtLedger').checked;
   // Category is optional too: whatever the entry — and its later settlement —
   // files under. Defaults to the Udhaar bucket.
   const catPick = $('debtCategory') && $('debtCategory').value;
   const category = (catPick && findCategory(catPick)) ? findCategory(catPick) : ensureUdhaarCategory();
+
+  // Money must never move on its own. With an account picked the user decides,
+  // right here, whether this is a real movement through that account or just a
+  // record — no silent +/- on the balance. With no account there is nothing to
+  // move through, so only the record lands and no question is asked.
+  let moveNow = false;
+  if (accId) {
+    const choice = await askChoice(
+      'Add udhaar',
+      (type === 'receive' ? person + ' owes you ' : 'You owe ' + person + ' ') + formatMoney(amount.value) +
+        '. Move it through ' + accountName(accId) + ' now, or just record the udhaar?',
+      [
+        {
+          value: 'move', kind: 'primary',
+          label: 'Move ' + formatMoney(amount.value) + ' ' + (type === 'receive' ? 'out of ' : 'into ') + accountName(accId)
+        },
+        { value: 'record', label: 'Just record — no money moves' }
+      ]
+    );
+    if (choice === null) return;          // cancelled: nothing is written
+    moveNow = choice === 'move';
+  }
+  const ledger = moveNow;
 
   const d = {
     id: newId(),
@@ -2448,10 +2514,9 @@ function addDebt() {
   };
   state.debts.push(d);
 
-  // The money moves NOW, not only on settle: lending pays out of the account
-  // immediately, borrowing lands in it. Settle later records the reverse, so
-  // the two always net out and no second manual entry is ever needed. With no
-  // account picked there is nothing to move through, so only the record lands.
+  // Lending pays out of the account immediately, borrowing lands in it. Settle
+  // later records the reverse, so the two always net out and no second manual
+  // entry is ever needed. Only when the user just above asked for the movement.
   if (ledger && accId) {
     state.transactions.unshift({
       id: newId(),
@@ -2473,44 +2538,84 @@ function addDebt() {
   // No focus() here on purpose — see addTransaction.
 
   if (save()) toast(!ledger
-    ? 'Udhaar added (not tracked in balance)'
+    ? 'Udhaar recorded (no money moved)'
     : accId
       ? 'Udhaar added — ' + formatMoney(amount.value) + (type === 'receive' ? ' out of ' : ' into ') + accountName(accId)
       : 'Udhaar added — no money moved yet');
 }
 
-function deleteDebt(id) {
+async function deleteDebt(id) {
   const d = state.debts.find((x) => x.id === id);
   if (!d) { toast('That entry is already gone'); return; }
-  if (!confirm('Delete the udhaar entry for ' + d.person + '? Linked balance entries go with it.')) return;
+
+  const choice = await askChoice(
+    'Delete udhaar',
+    'Delete ' + d.person + '’s ' + formatMoney(d.amount) + ' entry. Also remove the money entries it wrote (upfront, part-returns, settle), or only delete the udhaar record?',
+    [
+      { value: 'all', kind: 'danger', label: 'Delete udhaar and its money entries' },
+      { value: 'record', label: 'Only delete the udhaar record' }
+    ]
+  );
+  if (choice === null) return;
+
   dropRecord('debts', id);
-  syncLedgerForDebt(d, { forceRemove: true });
-  // The upfront entry and any part-return slices are real movements this entry
-  // caused — deleting the entry takes its whole trail with it, on every device.
-  state.transactions.filter((t) => t.source === 'debtout:' + id || String(t.source || '').indexOf('debtpart:' + id) === 0)
-    .forEach((t) => dropRecord('transactions', t.id));
+  if (choice === 'all') {
+    syncLedgerForDebt(d, { forceRemove: true });
+    // The upfront entry and any part-return slices are real movements this
+    // entry caused — deleting the entry takes its whole trail with it, on
+    // every device.
+    state.transactions.filter((t) => t.source === 'debtout:' + id || String(t.source || '').indexOf('debtpart:' + id) === 0)
+      .forEach((t) => dropRecord('transactions', t.id));
+  }
   if (save()) toast('Udhaar deleted');
 }
 
-function settleDebt(id) {
+async function settleDebt(id) {
   const d = state.debts.find((x) => x.id === id);
   if (!d) { toast('That entry is already gone'); return; }
 
-  if (d.ledger) {
-    const accId = debtAccountId(d);
-    const action = d.settled ? 'Un-settling' : 'Settling';
-    const effect = d.settled
-      ? 'remove the linked entry from'
-      : 'record ' + formatMoney(d.amount) + ' in';
-    const where = d.settled ? 'your balance' : accountName(accId) + ' as ' + (d.type === 'receive' ? 'income' : 'an expense');
-    if (!confirm(action + ' ' + d.person + ' will ' + effect + ' ' + where + '. Continue?')) return;
+  // Settling can either move the money back (a real ledger entry in the
+  // account it went through) or only close the record. Both are legitimate —
+  // sometimes the cash already changed hands outside the app — so the user
+  // picks, instead of the ledger being written behind their back.
+  if (d.settled) {
+    const choice = await askChoice(
+      'Un-settle udhaar',
+      'Un-settling ' + d.person + '’s ' + formatMoney(d.amount) + '. Remove the settled money entry from your balance, or only reopen the record?',
+      [
+        { value: 'ledger', kind: 'primary', label: 'Remove the money entry too' },
+        { value: 'record', label: 'Only reopen the record' }
+      ]
+    );
+    if (choice === null) return;
+    d.settled = false;
+    d.settledAt = null;
+    // A record-only reopen leaves the settle entry in place as plain money;
+    // the ledger path drops it through the normal linked-entry cleanup.
+    if (choice === 'ledger') syncLedgerForDebt(d);
+    if (save()) toast('Marked as unsettled');
+    return;
   }
 
-  d.settled = !d.settled;
-  d.settledAt = d.settled ? nowStamp() : null;
-  syncLedgerForDebt(d);
+  const accId = debtAccountId(d);
+  const choice = await askChoice(
+    'Settle udhaar',
+    'Settle ' + d.person + '’s ' + formatMoney(d.amount) + '. Record it in ' + accountName(accId) + ' as ' +
+      (d.type === 'receive' ? 'income' : 'an expense') + ', or only close the record (no money moves)?',
+    [
+      { value: 'ledger', kind: 'primary', label: 'Record ' + formatMoney(d.amount) + ' in ' + accountName(accId) },
+      { value: 'record', label: 'Only close the record' }
+    ]
+  );
+  if (choice === null) return;
 
-  if (save()) toast(d.settled ? 'Marked as settled' : 'Marked as unsettled');
+  d.settled = true;
+  d.settledAt = nowStamp();
+  if (choice === 'ledger') {
+    d.ledger = true;
+    syncLedgerForDebt(d);
+  }
+  if (save()) toast('Marked as settled');
 }
 
 /**
@@ -3498,12 +3603,50 @@ function openModal(id) {
 function closeModal(id) {
   const modal = $(id) || (activeModalId ? $(activeModalId) : null);
   if (!modal) return;
+  const wasChoice = modal.id === 'choiceModal';
   modal.classList.remove('active');
   modal.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('modal-open');
   activeModalId = null;
   if (lastFocused && typeof lastFocused.focus === 'function') lastFocused.focus();
   lastFocused = null;
+  // Backing out of the choice dialog (Escape, backdrop tap, Cancel) is itself
+  // an answer — "neither" — so the awaiting action is released with null
+  // instead of hanging on a promise nobody resolves.
+  if (wasChoice && choiceResolve) { const r = choiceResolve; choiceResolve = null; r(null); }
+}
+
+/* The single-question dialog. A yes/no confirm cannot carry the real decision
+   behind an udhaar action — "settle it and move the money" and "just close the
+   entry" are both legitimate and opposite — so this asks with named options and
+   awaits the pick. Kept separate from window.confirm on purpose: the answer is
+   a value, not a boolean, and the extra "do nothing" is as reachable as the
+   others (Escape / backdrop / Cancel all resolve null). */
+let choiceResolve = null;
+
+function askChoice(title, message, options) {
+  const modal = $('choiceModal');
+  if (!modal) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    choiceResolve = resolve;
+    $('choiceTitle').textContent = title;
+    $('choiceMessage').textContent = message;
+    // Buttons are built fresh per question, so binding their click here is
+    // safe — nothing re-renders them out from under the handler.
+    mount($('choiceButtons'), options.map((o) => h('button', {
+      class: 'btn ' + (o.kind === 'primary' ? 'btn-primary'
+        : o.kind === 'danger' ? 'btn-danger'
+          : o.kind === 'cancel' ? 'btn-cancel' : 'btn-dark'),
+      type: 'button',
+      onclick: () => {
+        const r = choiceResolve;
+        choiceResolve = null;
+        closeModal('choiceModal');
+        if (r) r(o.value);
+      }
+    }, o.label)));
+    openModal('choiceModal');
+  });
 }
 
 function handleModalKeys(e) {
@@ -4183,6 +4326,18 @@ function renderSyncPanel() {
     return;
   }
 
+  /* The signed-out forms are rebuilt by every save() (renderAll reaches here),
+     which threw away a half-typed email or password whenever anything else in
+     the app was saved. Rebuild only when the mode actually changes or the form
+     is gone — the first render still builds it, a sign-out rebuilds it, and a
+     mid-reset step (code / new password) swaps it, but an unrelated save no
+     longer wipes the fields. The delegated submit handlers in wireEvents()
+     survive this because they listen on document, not on the element. */
+  const formId = resetMode === 'newpw' ? 'newPwForm'
+    : resetMode === 'code' ? 'resetCodeForm'
+      : 'authForm';
+  if (box.querySelector('form#' + formId)) return;
+
   mount(box, ...(resetMode === 'newpw'
     ? [newPasswordForm(S)]
     : resetMode === 'code'
@@ -4681,7 +4836,7 @@ function wireEvents() {
   }
 
   // close modals on backdrop click
-  ['editModal', 'editDebtModal', 'noteEditModal', 'budgetFixModal'].forEach((id) => {
+  ['editModal', 'editDebtModal', 'noteEditModal', 'budgetFixModal', 'choiceModal'].forEach((id) => {
     const overlay = $(id);
     if (overlay) overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(id); });
   });
@@ -5819,27 +5974,42 @@ function pendingMoreOptions(tx) {
       d.person + ' — ' + formatMoney(d.amount) + (d.type === 'receive' ? ' owes me' : ' I owe'))));
 
   const openItems = (state.shopping || []).filter((s) => !s.checked);
+
+  /* One labelled group per concern, instead of a single flat pile of
+     dropdowns. The section titles carry the "what does this do" that used to
+     live in long option text, and the two-column grid on wider screens keeps
+     the row from growing tall enough to push Approve below the fold. The
+     details/summary still collapses it all, so a plain Approve stays one tap
+     away. */
+  const section = (title, hint, ...kids) => h('div', { class: 'pending-section' },
+    h('div', { class: 'pending-section-head' },
+      h('span', { class: 'pending-section-title' }, title),
+      hint ? h('span', { class: 'pending-section-hint' }, hint) : null),
+    h('div', { class: 'pending-section-body' }, ...kids));
+
   return h('details', { class: 'pending-more' },
     h('summary', { class: 'pending-more-title' }, 'More options'),
-    h('div', { class: 'form-group' },
-      h('label', { class: 'field-label' }, 'File as'),
-      kindSel),
-    h('div', { class: 'form-group' },
-      h('label', { class: 'field-label' }, isExpense ? 'From account' : 'To account'),
-      acctSel),
-    isExpense
-      ? h('div', { class: 'form-group' },
-        h('label', { class: 'field-label' }, 'To account (transfers only)'),
-        toSel)
-      : null,
+    section('How to file', 'Expense, income, or a transfer between your own accounts',
+      h('div', { class: 'form-group' },
+        h('label', { class: 'field-label' }, 'Type'),
+        kindSel)),
+    section('Which account', isExpense ? 'Where the money left from' : 'Where the money landed',
+      h('div', { class: 'form-group' },
+        h('label', { class: 'field-label' }, isExpense ? 'From account' : 'To account'),
+        acctSel),
+      isExpense
+        ? h('div', { class: 'form-group' },
+          h('label', { class: 'field-label' }, 'To account (transfers only)'),
+          toSel)
+        : null),
     openDebts.length
-      ? h('div', { class: 'form-group' },
-        h('label', { class: 'field-label' }, 'Udhaar link (skips the bought-items below)'),
-        debtSel)
+      ? section('Udhaar link', 'Settles part of an open debt instead of filing a new record',
+        h('div', { class: 'form-group' },
+          h('label', { class: 'field-label' }, 'Link to entry'),
+          debtSel))
       : null,
     openItems.length
-      ? h('div', { class: 'form-group' },
-        h('label', { class: 'field-label' }, 'Bought items (ticks them, splits this amount)'),
+      ? section('Bought items', 'Tick what this payment covered — the amount is split across them',
         openItems.map((s) => h('label', { class: 'check pending-item-check' },
           h('input', { type: 'checkbox', dataset: { pendingItem: tx.id }, value: s.id }),
           h('span', {}, s.name + (s.qty ? ' × ' + s.qty : '')))))
@@ -5914,7 +6084,11 @@ async function approveTransaction(txId) {
   // the money safely filed and the row simply stays pending.
   const finishApproval = async () => {
     try {
-      await sbFetch('pending_transactions?id=eq.' + txId, {
+      // Encoded, like every other id that reaches the query string: a pending
+      // row whose id carries a reserved character would otherwise build a
+      // malformed filter, the PATCH would match nothing, and the row would sit
+      // in the queue forever looking un-approved.
+      await sbFetch('pending_transactions?id=eq.' + encodeURIComponent(txId), {
         method: 'PATCH',
         body: JSON.stringify({ status: 'approved', approved_at: new Date().toISOString() })
       });

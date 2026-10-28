@@ -217,13 +217,10 @@
         <label class="sr-only" for="debtNote">Reason</label>
         <input id="debtNote" type="text" placeholder="Reason (optional)" maxlength="300" autocomplete="off">
       </div>
-      <label class="check">
-        <input id="debtLedger" type="checkbox" checked>
-        <span>Move money in my balance now, and again on settle</span>
-      </label>
       <div class="form-group">
         <label class="field-label" for="debtAccount">Account <span class="field-opt">(optional — empty records without moving)</span></label>
         <select id="debtAccount"></select>
+        <p class="field-hint">Pick an account and you’ll be asked on save whether to move the money now or only record the udhaar.</p>
       </div>
       <div class="form-group">
         <label class="field-label" for="debtCategory">Category <span class="field-opt">(optional)</span></label>
@@ -599,6 +596,19 @@
     <button class="btn btn-primary" type="submit">Update</button>
     <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="editDebtModal">Cancel</button>
   </form>
+</div>
+
+<!-- ═══ Choice dialog ═══ -->
+<!-- One question, several named answers, awaited by the caller. Used where a
+     yes/no confirm cannot express the decision — an udhaar action can either
+     move money through an account or only touch the record, and both are
+     legitimate. Its buttons are filled by askChoice(); nothing is typed here. -->
+<div class="modal-overlay" id="choiceModal" role="dialog" aria-modal="true" aria-labelledby="choiceTitle" aria-hidden="true" tabindex="-1">
+  <div class="modal">
+    <h2 class="card-title" id="choiceTitle">Confirm</h2>
+    <p class="choice-msg" id="choiceMessage"></p>
+    <div class="choice-buttons" id="choiceButtons"></div>
+  </div>
 </div>
 
 <!-- ═══ Edit note modal ═══ -->

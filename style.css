@@ -1123,6 +1123,29 @@ select {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Choice dialog: a short question over a stack of full-width answers. The
+   buttons are stacked rather than side by side because each label is a
+   sentence ("Move Rs 500 out of NayaPay"), not a word — two columns would
+   wrap them into unreadable stubs on a phone. The safe/danger pair is kept
+   visually apart so the destructive answer never sits next to the one a
+   thumb reaches for by default. */
+.choice-msg {
+  font-size: 14px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0 0 16px;
+}
+.choice-buttons { display: flex; flex-direction: column; gap: 8px; }
+.choice-buttons .btn {
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.4;
+  white-space: normal;
+}
+.choice-buttons .btn-danger { margin-top: 8px; }
+
 /* ===== EMPTY STATE ===== */
 .empty-state { text-align: center; padding: 20px; color: var(--muted); font-size: 14px; }
 
@@ -1339,9 +1362,11 @@ select {
   width: 100%;
 }
 
-/* Deep-manage block on a pending row: transfer, account, udhaar link and
+/* Deep-manage block on a pending row: file-as, account, udhaar link and
    bought-items live here, collapsed until needed so the row stays a plain
-   Approve at first glance. */
+   Approve at first glance. Inside, each concern is its own labelled section —
+   a flat pile of dropdowns under one "More options" heading was hard to scan,
+   and the section title now carries what each control is for. */
 .pending-more {
   margin-top: 10px;
   border-top: 1px dashed var(--line);
@@ -1354,12 +1379,52 @@ select {
   cursor: pointer;
   padding: 6px 0;
 }
-.pending-more .form-group { margin-top: 8px; }
+
+/* One group per concern. A soft card separates it from its neighbours without
+   adding a border to every field, and the head keeps the title and its
+   one-line explanation together so the purpose reads at a glance. */
+.pending-section {
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+}
+.pending-section:first-of-type { margin-top: 8px; }
+.pending-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.pending-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.pending-section-hint {
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.85;
+  line-height: 1.35;
+}
+.pending-section-body { display: flex; flex-direction: column; gap: 8px; }
+.pending-more .form-group { margin-top: 0; }
 .pending-more .field-label { font-size: 12px; margin-bottom: 4px; }
 .pending-kind,
 .pending-account,
 .pending-debt { width: 100%; }
-.pending-item-check { display: flex; gap: 8px; align-items: center; margin-top: 6px; font-size: 14px; }
+.pending-item-check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+
+/* Two columns once there is room, so "How to file" and "Which account" sit
+   side by side and the row stops growing tall enough to push Approve out of
+   view. Stacked again below the breakpoint. */
+@media (min-width: 560px) {
+  .pending-section-body { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  .pending-section-body > .pending-item-check { grid-column: 1 / -1; }
+}
 
 /* Category reorder: buttons for touch, drag for desktop */
 .category-move {

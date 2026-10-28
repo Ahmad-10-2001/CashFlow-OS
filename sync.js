@@ -61,12 +61,13 @@ window.CashFlowSync = (function () {
       toRow: (r) => ({
         id: r.id, type: r.type, person: r.person, amount: r.amount, note: r.note,
         happened_at: r.date, settled: r.settled, settled_at: r.settledAt || '',
-        ledger: r.ledger
+        ledger: r.ledger, account_id: r.accountId || null, category: r.category || 'Udhaar'
       }),
       fromRow: (row) => ({
         id: row.id, updatedAt: row.updated_at, type: row.type, person: row.person,
         amount: Number(row.amount), note: row.note, date: row.happened_at,
-        settled: row.settled, settledAt: row.settled_at || null, ledger: row.ledger
+        settled: row.settled, settledAt: row.settled_at || null, ledger: row.ledger,
+        accountId: row.account_id || null, category: row.category || 'Udhaar'
       })
     },
     custody: {
