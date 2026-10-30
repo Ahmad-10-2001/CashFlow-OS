@@ -237,26 +237,10 @@ function parseDate(v) {
 }
 
 /** Coerce anything into a usable positive amount, or null. Rejects NaN/Infinity/0/negatives. */
-/** Evaluate a tiny arithmetic expression safely ("120+80*2" -> 280). Falls
- *  back to a plain number when there is no operator, so normal entry is
- *  untouched. Anything that does not look like numbers and basic operators is refused. */
-function evalAmountExpr(v) {
-  const s = String(v == null ? '' : v).trim().replace(/,/g, '');
-  if (s === '') return null;
-  if (!/^[0-9+\-*/().\s]+$/.test(s)) return NaN;
-  if (!/[+\-*/]/.test(s)) return Number(s);
-  try {
-    // eslint-disable-next-line no-new-func
-    const fn = new Function('return (' + s + ')');
-    const r = fn();
-    return (typeof r === 'number' && Number.isFinite(r)) ? r : NaN;
-  } catch (err) { return NaN; }
-}
-
 function toPositiveNumber(v) {
   let n;
   if (typeof v === 'number') n = v;
-  else if (typeof v === 'string' && v.trim() !== '') n = evalAmountExpr(v);
+  else if (typeof v === 'string' && v.trim() !== '') n = Number(v.replace(/,/g, '').trim());
   else return null;
   if (!Number.isFinite(n) || n <= 0 || n > MAX_AMOUNT) return null;
   return round2(n);
@@ -481,7 +465,7 @@ function blankState() {
     // table, no migration and no RLS to configure. Whole-document
     // last-write-wins applies, same as budgets: fine at family scale.
     // shoppingPeriod remembers which month the list was last prepared for.
-    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], recurring: [], goals: [], templates: [], challenges: [], streak: { count: 0, lastDate: null }, accent: null },
+    settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [] },
     closedPeriods: []
   };
 }
@@ -669,10 +653,7 @@ function sanitizeState(raw) {
   const shoppingPeriod = typeof rawSettings.shoppingPeriod === 'string' && PERIOD_RE.test(rawSettings.shoppingPeriod)
     ? rawSettings.shoppingPeriod
     : null;
-  const budgetRollover = rawSettings.budgetRollover === true;
-  const budgetRolloverPeriod = typeof rawSettings.budgetRolloverPeriod === 'string' && PERIOD_RE.test(rawSettings.budgetRolloverPeriod)
-    ? rawSettings.budgetRolloverPeriod
-    : null;
+
   // Counted-spending moves between budgets (the Fix button). Validated field
   // by field; a bad move is skipped, and moves pointing at vanished budgets
   // stay stored but inert (see liveBudgetMoves) rather than dropped.
@@ -697,104 +678,6 @@ function sanitizeState(raw) {
       amount
     });
   }
-
-  // Recurring transactions: a standing instruction that re-files itself each
-  // month (salary, rent, subscriptions). Validated field by field.
-  const recurring = [];
-  const recurringIds = new Set();
-  const rawRecurring = Array.isArray(rawSettings.recurring) ? rawSettings.recurring : [];
-  for (const r of rawRecurring) {
-    if (!isObject(r)) { note('skipped a malformed recurring entry'); continue; }
-    const amount = toPositiveNumber(r.amount);
-    if (amount === null) { note('skipped a recurring entry with an unusable amount'); continue; }
-    const type = r.type === 'income' ? 'income' : (r.type === 'expense' ? 'expense' : null);
-    if (!type) { note('skipped a recurring entry with no type'); continue; }
-    let id = typeof r.id === 'string' && r.id.trim() ? r.id.trim() : newId();
-    if (recurringIds.has(id)) id = newId();
-    recurringIds.add(id);
-    recurring.push({
-      id,
-      type,
-      amount,
-      category: typeof r.category === 'string' && findCategory ? (findCategory(r.category) || fallbackCategory) : fallbackCategory,
-      comment: cleanText(r.comment, COMMENT_LIMIT),
-      dayOfMonth: clampNumber(r.dayOfMonth, 1, 28),
-      accountId: typeof r.accountId === 'string' && accountIdSet.has(r.accountId) ? r.accountId : cashId,
-      active: r.active !== false,
-      lastFiled: typeof r.lastFiled === 'string' && PERIOD_RE.test(r.lastFiled) ? r.lastFiled : null
-    });
-  }
-
-  // Savings goals: a target amount + how much is set aside.
-  const goals = [];
-  const goalIds = new Set();
-  const rawGoals = Array.isArray(rawSettings.goals) ? rawSettings.goals : [];
-  for (const g of rawGoals) {
-    if (!isObject(g)) { note('skipped a malformed goal'); continue; }
-    const target = toPositiveNumber(g.target);
-    if (target === null) { note('skipped a goal with an unusable target'); continue; }
-    let id = typeof g.id === 'string' && g.id.trim() ? g.id.trim() : newId();
-    if (goalIds.has(id)) id = newId();
-    goalIds.add(id);
-    let saved = g.saved === 0 ? 0 : toPositiveNumber(g.saved);
-    if (saved === null) saved = 0;
-    if (saved > target) saved = target;
-    goals.push({
-      id,
-      name: cleanText(g.name, NAME_LIMIT) || 'Goal',
-      target,
-      saved: round2(saved),
-      icon: typeof g.icon === 'string' ? g.icon.slice(0, 4) : '🎯',
-      color: typeof g.color === 'string' ? g.color.slice(0, 20) : ''
-    });
-  }
-
-  // Quick-add templates: one-tap expense/income buttons.
-  const templates = [];
-  const templateIds = new Set();
-  const rawTemplates = Array.isArray(rawSettings.templates) ? rawSettings.templates : [];
-  for (const t of rawTemplates) {
-    if (!isObject(t)) { note('skipped a malformed template'); continue; }
-    const amount = toPositiveNumber(t.amount);
-    if (amount === null) { note('skipped a template with an unusable amount'); continue; }
-    let id = typeof t.id === 'string' && t.id.trim() ? t.id.trim() : newId();
-    if (templateIds.has(id)) id = newId();
-    templateIds.add(id);
-    templates.push({
-      id,
-      label: cleanText(t.label, ITEM_LIMIT) || 'Template',
-      type: t.type === 'income' ? 'income' : 'expense',
-      amount,
-      category: typeof t.category === 'string' && findCategory ? (findCategory(t.category) || fallbackCategory) : fallbackCategory,
-      accountId: typeof t.accountId === 'string' && accountIdSet.has(t.accountId) ? t.accountId : cashId
-    });
-  }
-
-  // Monthly challenges: a spending cap for one category for one month.
-  const challenges = [];
-  const challengeIds = new Set();
-  const rawChallenges = Array.isArray(rawSettings.challenges) ? rawSettings.challenges : [];
-  for (const c of rawChallenges) {
-    if (!isObject(c)) { note('skipped a malformed challenge'); continue; }
-    const cap = toPositiveNumber(c.cap);
-    if (cap === null) { note('skipped a challenge with an unusable cap'); continue; }
-    if (typeof c.period !== 'string' || !PERIOD_RE.test(c.period)) { note('skipped a challenge with no month'); continue; }
-    if (typeof c.category !== 'string' || !findCategory(c.category)) { note('skipped a challenge for a missing category'); continue; }
-    let id = typeof c.id === 'string' && c.id.trim() ? c.id.trim() : newId();
-    if (challengeIds.has(id)) id = newId();
-    challengeIds.add(id);
-    challenges.push({ id, period: c.period, category: findCategory(c.category), cap });
-  }
-
-  // No-spend streak: consecutive days with zero expense.
-  const rawStreak = isObject(rawSettings.streak) ? rawSettings.streak : {};
-  const streak = {
-    count: clampNumber(rawStreak.count, 0, 3650),
-    lastDate: (typeof rawStreak.lastDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(rawStreak.lastDate)) ? rawStreak.lastDate : null
-  };
-
-  // Accent color (per-device-ish, but stored in settings for sync).
-  const accent = (typeof rawSettings.accent === 'string' && /^#[0-9a-fA-F]{6}$/.test(rawSettings.accent)) ? rawSettings.accent : null;
 
   // Personal notes: sticky-note cards with a color, an icon, a pin and an
   // updated stamp. Timer fields on a note are from before Timers became their
@@ -1072,7 +955,7 @@ function sanitizeState(raw) {
       version: SCHEMA_VERSION,
       transactions, debts, budgets, categories, shopping, custody,
       accounts,
-      settings: { budgetOffset, lastAccountId, shoppingPeriod, budgetRollover, budgetRolloverPeriod, notes, timers, catMemory, budgetMoves, recurring, goals, templates, challenges, streak, accent },
+      settings: { budgetOffset, lastAccountId, shoppingPeriod, notes, timers, catMemory, budgetMoves },
       closedPeriods
     },
     problems
@@ -1495,22 +1378,6 @@ function knownPeriods() {
    ============================================================ */
 
 let toastTimer = null;
-let undoStack = [];
-function pushUndo() {
-  try { undoStack.unshift(JSON.stringify(state)); if (undoStack.length > 5) undoStack.length = 5; } catch (err) { /* ignore */ }
-}
-function undoLast() {
-  if (!undoStack.length) { toast('Nothing to undo'); return; }
-  try {
-    state = JSON.parse(undoStack.shift());
-    reportRange = { mode: 'month' };
-    budgetPeriod = null;
-    viewTxPeriod = null;
-    viewAcctPeriod = null;
-    save();
-    toast('Undone');
-  } catch (err) { toast('Could not undo'); }
-}
 function toast(msg) {
   const existing = document.querySelector('.toast');
   if (existing) existing.remove();
@@ -1560,47 +1427,18 @@ function setTheme(name) {
   renderThemeButtons();
   toast(THEME_LABELS[name] + ' theme on');
 }
-function setAccent(color) {
-  if (!/^#[0-9a-fA-F]{6}$/.test(color)) return;
-  if (!state.settings) state.settings = {};
-  state.settings.accent = color;
-  applyAccent();
-  save();
-  renderThemeButtons();
-  toast('Accent color updated');
-}
-
-const ACCENT_COLORS = ['#0a58ca', '#c0271d', '#127531', '#8a5200', '#6b21a8', '#0e7490', '#be185d', '#9a3412'];
-
-function applyAccent() {
-  const a = (state.settings && state.settings.accent) || null;
-  if (a) document.documentElement.style.setProperty('--accent', a);
-  else document.documentElement.style.removeProperty('--accent');
-}
 
 function renderThemeButtons() {
   const box = $('themeButtons');
   if (!box) return;
   const cur = getTheme();
-  const accent = (state.settings && state.settings.accent) || null;
-  mount(box,
-    h('div', { class: 'btn-row' }, THEMES.map((t) =>
-      h('button', {
-        type: 'button',
-        class: 'btn-mini theme-btn' + (t === cur ? ' is-active' : ''),
-        dataset: { act: 'theme-set', arg: t },
-        'aria-pressed': t === cur ? 'true' : 'false'
-      }, (t === cur ? '● ' : '○ ') + THEME_LABELS[t]))),
-    h('div', { class: 'btn-row mt-10' }, ACCENT_COLORS.map((c) =>
-      h('button', {
-        type: 'button',
-        class: 'btn-mini accent-btn' + (c === accent ? ' is-active' : ''),
-        style: 'background:' + c + ';color:#fff;border:none',
-        dataset: { act: 'accent-set', arg: c },
-        'aria-pressed': c === accent ? 'true' : 'false',
-        title: c
-      }, c === accent ? '●' : '○')))
-  );
+  mount(box, THEMES.map((t) =>
+    h('button', {
+      type: 'button',
+      class: 'btn-mini theme-btn' + (t === cur ? ' is-active' : ''),
+      dataset: { act: 'theme-set', arg: t },
+      'aria-pressed': t === cur ? 'true' : 'false'
+    }, (t === cur ? '● ' : '○ ') + THEME_LABELS[t])));
 }
 
 /* ============================================================
@@ -2415,9 +2253,9 @@ function dropRecord(table, id) {
 }
 
 function readAmountField(input, label) {
-  const raw = String(input.value == null ? '' : input.value).trim();
+  const raw = String(input.value == null ? '' : input.value).trim().replace(/,/g, '');
   if (raw === '') return { error: label + ' is required' };
-  const n = evalAmountExpr(raw);
+  const n = Number(raw);
   if (!Number.isFinite(n)) return { error: label + ' must be a number' };
   if (n <= 0) return { error: label + ' must be more than zero' };
   if (n > MAX_AMOUNT) return { error: label + ' is too large' };
@@ -2499,36 +2337,8 @@ function addTransaction() {
   );
   if (built.error) { toast(built.error); return; }
 
-  pushUndo();
   state.transactions.unshift(built.value);
   state.settings.lastAccountId = fromId;
-
-  // Split expense: each named person owes their share. Money already left via
-  // the expense above, so these debts carry no ledger movement of their own.
-  const splitOn = $('txSplitOn');
-  const splitNames = $('txSplitNames');
-  if (type === 'expense' && splitOn && splitOn.checked && splitNames && splitNames.value.trim()) {
-    const names = splitNames.value.split(',').map((s) => cleanText(s, NAME_LIMIT)).filter(Boolean);
-    if (names.length) {
-      const share = round2(amount.value / (names.length + 1));
-      for (const name of names) {
-        state.debts.push({
-          id: newId(),
-          type: 'receive',
-          person: name,
-          amount: share,
-          note: cleanText('Split of expense', COMMENT_LIMIT),
-          date: nowStamp(),
-          settled: false,
-          settledAt: null,
-          ledger: false,
-          accountId: null,
-          category: ensureUdhaarCategory()
-        });
-      }
-      toast('Split into ' + (names.length + 1) + ' shares of ' + formatMoney(share));
-    }
-  }
 
   $('txAmount').value = '';
   $('txComment').value = '';
@@ -2553,8 +2363,6 @@ function setTxTypeFields() {
   setHidden('txCategoryGroup', isTransfer);
   setHidden('txToAccountGroup', !isTransfer);
   setHidden('txAccountGroup', false);
-  const splitG = $('txSplitGroup');
-  if (splitG) splitG.hidden = isTransfer || $('txType').value !== 'expense';
   if (isTransfer) {
     const to = $('txToAccount');
     const from = $('txAccount');
@@ -2585,7 +2393,6 @@ function deleteTransaction(id) {
     ? 'transfer of ' + formatMoney(tx.amount) + ' from ' + accountName(tx.accountId) + ' to ' + accountName(tx.toAccountId)
     : tx.type + ' of ' + formatMoney(tx.amount);
   if (!confirm('Delete this ' + what + '?')) return;
-  pushUndo();
   dropRecord('transactions', id);
   if (save()) toast('Transaction deleted');
 }
@@ -2726,7 +2533,6 @@ async function addDebt() {
     accountId: accId,
     category
   };
-  pushUndo();
   state.debts.push(d);
 
   // Lending pays out of the account immediately, borrowing lands in it. Settle
@@ -2773,7 +2579,6 @@ async function deleteDebt(id) {
   );
   if (choice === null) return;
 
-  pushUndo();
   dropRecord('debts', id);
   if (choice === 'all') {
     syncLedgerForDebt(d, { forceRemove: true });
@@ -2994,7 +2799,6 @@ function saveListPurchase() {
     toAccountId: null,
     source: 'list:bulk'
   };
-  pushUndo();
   state.transactions.unshift(tx);
 
   for (const s of ticked) {
@@ -3040,27 +2844,6 @@ function maybeResetShopping() {
   }
   state.settings.shoppingPeriod = cur;
   return true;
-}
-
-function maybeRolloverBudgets() {
-  if (!state.settings) return false;
-  const cur = currentPeriod();
-  const last = state.settings.budgetRolloverPeriod;
-  if (last === cur) return false;
-  const rollover = typeof last === 'string' && PERIOD_RE.test(last) && last < cur && state.settings.budgetRollover === true;
-  if (rollover) {
-    const prev = state.budgets[last];
-    const dest = budgetsFor(cur);
-    for (const cat of Object.keys(prev || {})) {
-      if (Object.prototype.hasOwnProperty.call(dest, cat)) continue;
-      const spent = budgetCounted(cat, last);
-      const unused = Math.max(0, round2((prev[cat] || 0) - spent));
-      if (unused > 0) dest[cat] = round2((prev[cat] || 0) + unused);
-      else dest[cat] = prev[cat];
-    }
-  }
-  state.settings.budgetRolloverPeriod = cur;
-  return rollover;
 }
 
 /* ============================================================
@@ -3579,34 +3362,6 @@ function renderReport() {
           )))
       : h('div', { class: 'empty-state' }, 'No expenses in this period'),
 
-    (function () {
-      const insights = [];
-      if (totals.expense > 0 && totals.income > 0) {
-        const savingsRate = round2(((totals.income - totals.expense) / totals.income) * 100);
-        insights.push('Savings rate: ' + savingsRate + '%');
-      }
-      if (ranked.length) insights.push('Top category: ' + ranked[0][0] + ' (' + formatMoney(ranked[0][1]) + ')');
-      // weekday pattern
-      const byDay = [0,0,0,0,0,0,0];
-      for (const t of state.transactions) {
-        if (t.type !== 'expense') continue;
-        const d = new Date(t.date);
-        if (start && d < start) continue;
-        if (end && d > end) continue;
-        byDay[d.getDay()] += t.amount;
-      }
-      const maxDay = byDay.indexOf(Math.max(...byDay));
-      const days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-      if (Math.max(...byDay) > 0) insights.push('Highest spending day: ' + days[maxDay]);
-      // personality
-      const personality = totals.expense > totals.income ? 'Weekend Spender? Check your top category.' : (totals.income - totals.expense > totals.expense ? 'Super Saver 🏆' : 'Balanced Spender ⚖️');
-      if (!insights.length) return null;
-      return h('div', { class: 'report-insights' },
-        h('h3', { class: 'section-title' }, 'Insights'),
-        insights.map((i) => h('div', { class: 'report-row' }, h('span', { class: 'label' }, i))),
-        h('div', { class: 'report-row strong' }, h('span', { class: 'label' }, 'Personality: ' + personality)));
-    })(),
-
     h('div', { class: 'report-total' }, h('span', {}, 'Total income'), h('span', { class: 'pos' }, formatMoney(totals.income))),
     h('div', { class: 'report-total' }, h('span', {}, 'Total expense'), h('span', { class: 'neg' }, formatMoney(totals.expense))),
     h('div', { class: 'report-total strong' },
@@ -3790,17 +3545,9 @@ function mergeIncomingState(current, incoming) {
   const cash = accounts.rows.find((a) => a && a.kind === 'cash') || accounts.rows[0];
   const notes = unionById(curS.notes, incS.notes);
   const timers = unionById(curS.timers, incS.timers);
+  // Moves merge like everything else: current rows win each id, the rest is
+  // appended. sanitizeState already validated both sides' shapes.
   const moves = unionById(curS.budgetMoves, incS.budgetMoves);
-  const recurring = unionById(curS.recurring, incS.recurring);
-  const goals = unionById(curS.goals, incS.goals);
-  const templates = unionById(curS.templates, incS.templates);
-  const challenges = unionById(curS.challenges, incS.challenges);
-  // Streak: keep the higher count (never regress a streak).
-  const curStreak = (curS.streak && typeof curS.streak.count === 'number') ? curS.streak : { count: 0, lastDate: null };
-  const incStreak = (incS.streak && typeof incS.streak.count === 'number') ? incS.streak : { count: 0, lastDate: null };
-  const streak = curStreak.count >= incStreak.count ? curStreak : incStreak;
-  // Accent: current device wins (appearance is per-device-ish).
-  const accent = (typeof curS.accent === 'string') ? curS.accent : (typeof incS.accent === 'string' ? incS.accent : null);
   // Memories merge with the current device winning each key, then capped —
   // same rule as everything else: what is here is never overwritten.
   const mem = Object.assign(Object.create(null), incS.catMemory || {}, curS.catMemory || {});
@@ -3827,20 +3574,10 @@ function mergeIncomingState(current, incoming) {
         shoppingPeriod: (typeof curS.shoppingPeriod === 'string' && PERIOD_RE.test(curS.shoppingPeriod))
           ? curS.shoppingPeriod
           : null,
-        budgetRollover: curS.budgetRollover === true,
-        budgetRolloverPeriod: (typeof curS.budgetRolloverPeriod === 'string' && PERIOD_RE.test(curS.budgetRolloverPeriod))
-          ? curS.budgetRolloverPeriod
-          : null,
         notes: notes.rows,
         timers: timers.rows,
         catMemory: mem,
-        budgetMoves: moves.rows,
-        recurring: recurring.rows,
-        goals: goals.rows,
-        templates: templates.rows,
-        challenges: challenges.rows,
-        streak,
-        accent
+        budgetMoves: moves.rows
       },
       closedPeriods: Array.from(cp).sort()
     },
@@ -3953,169 +3690,6 @@ function handleModalKeys(e) {
    Rendering
    ============================================================ */
 
-function ensureHomeExtras() {
-  const panel = $('panel-home');
-  if (!panel) return null;
-  let box = $('homeExtras');
-  if (!box) {
-    box = h('div', { id: 'homeExtras', class: 'home-extras' });
-    panel.append(box);
-  }
-  return box;
-}
-
-function noSpendStreak() {
-  // Consecutive days ending today with zero expense.
-  const today = new Date();
-  const expenseDays = new Set();
-  for (const t of state.transactions) {
-    if (t.type !== 'expense') continue;
-    const d = new Date(t.date);
-    expenseDays.add(d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate());
-  }
-  let count = 0;
-  for (let i = 0; i < 365; i++) {
-    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
-    const key = d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
-    if (expenseDays.has(key)) break;
-    count++;
-  }
-  return count;
-}
-
-function safeToSpend() {
-  const { total } = allAccountBalances();
-  const per = currentPeriod();
-  const limits = budgetsFor(per);
-  let reserved = 0;
-  for (const cat of Object.keys(limits)) {
-    const limit = limits[cat];
-    const used = budgetCounted(cat, per);
-    reserved = round2(reserved + Math.max(0, round2(limit - used)));
-  }
-  const remaining = round2(total - reserved);
-  const now = new Date();
-  const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  const daysLeft = Math.max(1, last.getDate() - now.getDate() + 1);
-  return { amount: round2(remaining / daysLeft), remaining, daysLeft };
-}
-
-function renderHomeExtras() {
-  const box = ensureHomeExtras();
-  if (!box) return;
-  const goals = (state.settings && state.settings.goals) || [];
-  const templates = (state.settings && state.settings.templates) || [];
-  const streak = noSpendStreak();
-  const sts = safeToSpend();
-  const children = [];
-
-  // Safe to spend + streak row
-  children.push(h('div', { class: 'home-widget-row' },
-    h('div', { class: 'home-widget' },
-      h('div', { class: 'widget-label' }, 'Safe to spend today'),
-      h('div', { class: 'widget-value' }, formatMoney(sts.amount)),
-      h('div', { class: 'widget-sub' }, formatMoney(sts.remaining) + ' over ' + sts.daysLeft + ' days')),
-    h('div', { class: 'home-widget' },
-      h('div', { class: 'widget-label' }, 'No-spend streak'),
-      h('div', { class: 'widget-value' }, streak + ' day' + (streak === 1 ? '' : 's') + ' 🔥'),
-      h('div', { class: 'widget-sub' }, streak > 0 ? 'Keep it going!' : 'Spend nothing today to start'))
-  ));
-
-  // Savings goals
-  if (goals.length) {
-    children.push(h('div', { class: 'home-section' },
-      h('h3', { class: 'section-title' }, 'Savings goals'),
-      goals.map((g) => {
-        const pct = g.target > 0 ? Math.min(100, (g.saved / g.target) * 100) : 0;
-        return h('div', { class: 'goal-card' },
-          h('div', { class: 'goal-head' },
-            h('span', {}, g.icon + ' ' + g.name),
-            h('span', {}, formatMoney(g.saved) + ' / ' + formatMoney(g.target))),
-          h('div', { class: 'progress-bar' },
-            h('div', { class: 'progress-fill ok', style: 'width:' + pct + '%' })),
-          h('div', { class: 'btn-row mt-10' },
-            button('Save ₨', 'goal-save', { id: g.id, arg: g.id, class: 'btn-mini' })));
-      })));
-  }
-
-  // Quick-add templates
-  if (templates.length) {
-    children.push(h('div', { class: 'home-section' },
-      h('h3', { class: 'section-title' }, 'Quick add'),
-      h('div', { class: 'btn-row' }, templates.map((t) =>
-        h('button', {
-          type: 'button',
-          class: 'btn-mini',
-          dataset: { act: 'template-add', id: t.id }
-         }, t.label + ' · ' + formatMoney(t.amount))))));
-  }
-
-  // Add goal / template forms
-  children.push(h('div', { class: 'home-section' },
-    h('div', { class: 'btn-row' },
-      button('New goal', 'goal-new', { class: 'btn-mini' }),
-      button('New template', 'template-new', { class: 'btn-mini' }),
-      button('Undo', 'undo', { class: 'btn-mini' }))));
-
-  mount(box, children);
-}
-
-function newChallenge() {
-  const cat = window.prompt('Category:', state.categories[0] || 'Food');
-  if (!cat || !findCategory(cat)) { toast('Unknown category'); return; }
-  const cap = toPositiveNumber(window.prompt('Cap amount:'));
-  if (cap === null) return;
-  if (!state.settings.challenges) state.settings.challenges = [];
-  state.settings.challenges.push({ id: newId(), period: activeBudgetPeriod(), category: findCategory(cat), cap });
-  pushUndo();
-  save();
-  toast('Challenge added');
-}
-function newGoal() {
-  const name = window.prompt('Goal name (e.g. New phone):');
-  if (!name) return;
-  const target = toPositiveNumber(window.prompt('Target amount:'));
-  if (target === null) { toast('Invalid amount'); return; }
-  if (!state.settings.goals) state.settings.goals = [];
-  state.settings.goals.push({ id: newId(), name: cleanText(name, NAME_LIMIT), target, saved: 0, icon: '🎯', color: '' });
-  pushUndo();
-  save();
-  toast('Goal added');
-}
-function saveToGoal(id) {
-  const g = (state.settings.goals || []).find((x) => x.id === id);
-  if (!g) return;
-  const amt = toPositiveNumber(window.prompt('Add to "' + g.name + '" (saved ' + formatMoney(g.saved) + '):'));
-  if (amt === null) return;
-  g.saved = round2(Math.min(g.target, g.saved + amt));
-  pushUndo();
-  save();
-  if (g.saved >= g.target) toast('🎉 Goal reached: ' + g.name + '!');
-  else toast('Saved ' + formatMoney(amt) + ' towards ' + g.name);
-}
-function newTemplate() {
-  const label = window.prompt('Template label (e.g. Chai):');
-  if (!label) return;
-  const amount = toPositiveNumber(window.prompt('Amount:'));
-  if (amount === null) return;
-  const type = (window.prompt('Type: expense or income?', 'expense') || 'expense').toLowerCase() === 'income' ? 'income' : 'expense';
-  if (!state.settings.templates) state.settings.templates = [];
-  state.settings.templates.push({ id: newId(), label: cleanText(label, ITEM_LIMIT), type, amount, category: type === 'income' ? (findCategory('Salary') ? 'Salary' : (state.categories[0] || 'Other')) : (findCategory('Food') ? 'Food' : (state.categories[0] || 'Other')), accountId: state.settings.lastAccountId || cashAccountId() });
-  pushUndo();
-  save();
-  toast('Template added');
-}
-function addFromTemplate(id) {
-  const t = (state.settings.templates || []).find((x) => x.id === id);
-  if (!t) return;
-  const built = buildTransaction(t.type, t.amount, t.category, t.label, nowStamp(), t.accountId, null);
-  if (built.error) { toast(built.error); return; }
-  pushUndo();
-  state.transactions.unshift(built.value);
-  state.settings.lastAccountId = t.accountId;
-  save();
-  toast('Added ' + formatMoney(t.amount));
-}
 function renderBalance() {
   // Income and Expense are this month's flow; the headline stays lifetime, so
   // a new month reads fresh zeros up top while the total below it is untouched.
@@ -4191,7 +3765,6 @@ function renderBalance() {
   mount($('udhaarLine'), badges.length
     ? h('div', { class: 'u-badges' }, badges)
     : h('span', { class: 'udhaar-line muted' }, 'No outstanding udhaar'));
-  renderHomeExtras();
 }
 
 /* ---------- accounts tab ---------- */
@@ -4376,36 +3949,6 @@ function renderBudgets() {
       }));
 
   mount($('budgetList'), head, body);
-
-  // Budget extras: rollover toggle + monthly challenges.
-  let extras = $('budgetExtras');
-  if (!extras) {
-    extras = h('div', { id: 'budgetExtras', class: 'home-section' });
-    const panel = $('panel-budget');
-    if (panel) panel.append(extras);
-  }
-  const challenges = (state.settings && state.settings.challenges) || [];
-  const cur = activeBudgetPeriod();
-  mount(extras,
-    h('label', { class: 'check' },
-      h('input', { type: 'checkbox', checked: !!(state.settings && state.settings.budgetRollover), dataset: { act: 'budget-rollover-toggle' } }),
-      h('span', {}, 'Carry unused budget to next month')),
-    h('h3', { class: 'section-title' }, 'Monthly challenges'),
-    challenges.filter((c) => c.period === cur).length
-      ? challenges.filter((c) => c.period === cur).map((c) => {
-          const used = budgetCounted(c.category, c.period);
-          const pct = c.cap > 0 ? Math.min(100, (used / c.cap) * 100) : 0;
-          const ok = used <= c.cap;
-          return h('div', { class: 'challenge-card' },
-            h('div', { class: 'goal-head' },
-              h('span', {}, c.category + ' under ' + formatMoney(c.cap)),
-              h('span', {}, formatMoney(used) + ' used')),
-            h('div', { class: 'progress-bar' },
-              h('div', { class: 'progress-fill ' + (ok ? 'ok' : 'over'), style: 'width:' + pct + '%' })),
-            ok ? h('div', { class: 'widget-sub' }, 'On track ✅') : h('div', { class: 'widget-sub' }, 'Over by ' + formatMoney(used - c.cap)));
-        })
-      : h('div', { class: 'empty-state' }, 'No challenge this month.'),
-    h('div', { class: 'btn-row mt-10' }, button('New challenge', 'challenge-new', { class: 'btn-mini' })));
   const prevBudgetCat = $('budgetCategory') ? $('budgetCategory').value : '';
   fillCategorySelect($('budgetCategory'), { selected: prevBudgetCat });
 
@@ -4443,74 +3986,6 @@ function renderBudgets() {
       );
     }
   }
-}
-
-function ensureRecurringHost() {
-  const panel = $('panel-transactions');
-  if (!panel) return null;
-  let box = $('recurringBox');
-  if (!box) { box = h('div', { id: 'recurringBox', class: 'home-section' }); panel.insertBefore(box, panel.firstChild); }
-  return box;
-}
-function maybeFileRecurring() {
-  const cur = currentPeriod();
-  const recs = (state.settings && state.settings.recurring) || [];
-  let filed = 0;
-  for (const r of recs) {
-    if (!r.active) continue;
-    if (r.lastFiled === cur) continue;
-    const today = new Date();
-    if (r.dayOfMonth > today.getDate() && r.lastFiled === previousPeriod(cur)) continue;
-    const built = buildTransaction(r.type, r.amount, r.category, r.comment || ('Recurring: ' + r.type), nowStamp(), r.accountId, null);
-    if (built.error) continue;
-    built.value.source = 'recurring:' + r.id;
-    pushUndo();
-    state.transactions.unshift(built.value);
-    r.lastFiled = cur;
-    filed++;
-  }
-  if (filed) { save(); toast('Filed ' + filed + ' recurring transaction(s)'); }
-}
-function newRecurring() {
-  const type = (window.prompt('Type: expense or income?', 'expense') || 'expense').toLowerCase() === 'income' ? 'income' : 'expense';
-  const amount = toPositiveNumber(window.prompt('Amount:'));
-  if (amount === null) return;
-  const day = clampNumber(window.prompt('Day of month (1-28):', '1'), 1, 28);
-  const comment = window.prompt('Label:') || '';
-  if (!state.settings.recurring) state.settings.recurring = [];
-  state.settings.recurring.push({ id: newId(), type, amount, category: type === 'income' ? (findCategory('Salary') ? 'Salary' : state.categories[0]) : (findCategory('Food') ? 'Food' : state.categories[0]), comment: cleanText(comment, COMMENT_LIMIT), dayOfMonth: day, accountId: state.settings.lastAccountId || cashAccountId(), active: true, lastFiled: null });
-  pushUndo();
-  save();
-  toast('Recurring added');
-}
-function toggleRecurring(id) {
-  const r = ((state.settings && state.settings.recurring) || []).find((x) => x.id === id);
-  if (!r) return;
-  r.active = !r.active;
-  pushUndo();
-  save();
-}
-function deleteRecurring(id) {
-  if (!state.settings || !state.settings.recurring) return;
-  pushUndo();
-  state.settings.recurring = state.settings.recurring.filter((x) => x.id !== id);
-  save();
-  toast('Recurring removed');
-}
-function renderRecurring() {
-  const box = ensureRecurringHost();
-  if (!box) return;
-  const recs = (state.settings && state.settings.recurring) || [];
-  mount(box,
-    h('h3', { class: 'section-title' }, 'Recurring transactions'),
-    recs.length
-      ? recs.map((r) => h('div', { class: 'recurring-item' },
-          h('span', {}, (r.type === 'income' ? '+' : '-') + ' ' + formatMoney(r.amount) + ' . ' + r.category + ' . day ' + r.dayOfMonth + (r.active ? '' : ' (paused)')),
-          h('div', { class: 'btn-row' },
-            button(r.active ? 'Pause' : 'Resume', 'recurring-toggle', { id: r.id, arg: r.id, class: 'btn-mini' }),
-            button('Delete', 'recurring-delete', { id: r.id, arg: r.id, class: 'btn-mini danger' }))))
-      : h('div', { class: 'empty-state' }, 'No recurring entries. Add salary/rent/subscriptions.'),
-    h('div', { class: 'btn-row mt-10' }, button('New recurring', 'recurring-new', { class: 'btn-mini' })));
 }
 
 function renderTransactions() {
@@ -5214,7 +4689,6 @@ function renderAll() {
   renderAccounts();
   renderBudgets();
   renderTransactions();
-  renderRecurring();
   renderDebts();
   renderTimers();
   renderNotes();
@@ -5242,8 +4716,6 @@ const ACTIONS = {
   'cat-up': (el) => moveCategory(el.dataset.arg, -1),
   'cat-down': (el) => moveCategory(el.dataset.arg, 1),
   'budget-delete': (el) => removeBudget(el.dataset.arg),
-  'budget-rollover-toggle': () => { if (!state.settings) state.settings = {}; state.settings.budgetRollover = !(state.settings.budgetRollover); save(); },
-  'challenge-new': () => newChallenge(),
   'budget-repeat': () => repeatLastMonthBudgets(),
   'budget-fix': (el) => openBudgetFix(el.dataset.arg),
   'budget-move-undo': (el) => undoBudgetMove(el.dataset.arg),
@@ -5275,19 +4747,10 @@ const ACTIONS = {
   'email-copy-url': () => copyEmailWebhookUrl(),
   'build-check': () => checkForNewerBuild(true),
   'theme-set': (el) => setTheme(el.dataset.arg),
-  'accent-set': (el) => setAccent(el.dataset.arg),
   'export': () => exportBackup(),
   'import': importBackup,
   'reset': resetAll,
   'search-clear': clearTxSearch,
-  'undo': () => undoLast(),
-  'goal-new': () => newGoal(),
-  'goal-save': (el) => saveToGoal(el.dataset.id),
-  'template-new': () => newTemplate(),
-  'template-add': (el) => addFromTemplate(el.dataset.id),
-  'recurring-new': () => newRecurring(),
-  'recurring-toggle': (el) => toggleRecurring(el.dataset.id),
-  'recurring-delete': (el) => deleteRecurring(el.dataset.id),
   'cloud-delete': deleteCloudData,
   'close-modal': (el) => closeModal(el.dataset.target),
   'approve-tx': (el) => approveTransaction(el.dataset.id),
@@ -5580,8 +5043,7 @@ function init() {
   // paint so the user never sees the pair. Silent: the repair notice already
   // covers "we fixed something on load".
   try { mergeDuplicateAccounts({ silent: true }); } catch (err) { /* never block boot */ }
-  try { maybeFileRecurring(); } catch (err) { /* never block boot */ }
-  try { if (maybeRolloverBudgets()) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) {} } } catch (err) { /* never block boot */ }
+
   // A new month unticks the standing shopping list (see maybeResetShopping).
   // Persisted quietly when it fires: it is a calendar rollover, not an edit.
   try {
@@ -5591,14 +5053,6 @@ function init() {
   } catch (err) { /* never block boot */ }
 
   wireEvents();
-  document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
-      const tag = (document.activeElement && document.activeElement.tagName) || '';
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      e.preventDefault();
-      undoLast();
-    }
-  });
 
   /* Decide what the sync panel should show, before the first render paints it.
      Two ways to arrive here with a valid recovery token: a link the user just
@@ -5638,45 +5092,6 @@ function init() {
   // Show only the fields that apply to the selected transaction type.
   if ($('txType')) setTxTypeFields();
   refreshAccountSelects();
-  // Voice entry button injected into the transaction form.
-  const amtInput = $('txAmount');
-  if (amtInput && !$('txVoiceBtn')) {
-    const btn = h('button', { type: 'button', id: 'txVoiceBtn', class: 'btn-mini', title: 'Voice entry' }, '🎤');
-    btn.addEventListener('click', () => {
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) { toast('Voice not supported in this browser'); return; }
-      const rec = new SR();
-      rec.lang = 'en-US';
-      rec.onresult = (e) => {
-        const text = (e.results[0][0].transcript || '').trim();
-        // Try to extract a number; put the whole text in comment for context.
-        const m = text.match(/(\d[\d,\.]*)/);
-        if (m) $('txAmount').value = m[1].replace(/,/g, '');
-        const c = $('txComment');
-        if (c && !c.value) c.value = text;
-        toast('Heard: ' + text);
-      };
-      rec.onerror = () => toast('Voice failed');
-      rec.start();
-    });
-    amtInput.insertAdjacentElement('afterend', btn);
-  }
-
-  // Split expense UI injected into the transaction form.
-  const tf = $('txForm');
-  if (tf && !$('txSplitGroup')) {
-    const grp = h('div', { id: 'txSplitGroup', class: 'form-group', hidden: true },
-      h('label', { class: 'check' },
-        h('input', { type: 'checkbox', id: 'txSplitOn' }),
-        h('span', {}, 'Split this expense with others')),
-      h('div', { id: 'txSplitNamesWrap', hidden: true },
-        h('label', { class: 'field-label', for: 'txSplitNames' }, 'Names (comma separated)'),
-        h('input', { id: 'txSplitNames', type: 'text', placeholder: 'Ali, Sara' })));
-    const btn = tf.querySelector('button[type="submit"]');
-    if (btn) tf.insertBefore(grp, btn);
-    const on = $('txSplitOn');
-    if (on) on.addEventListener('change', () => { const w = $('txSplitNamesWrap'); if (w) w.hidden = !on.checked; });
-  }
 
   // Note timers tick live while the app is open (see tickTimers).
   startTimerTicker();
@@ -5684,7 +5099,6 @@ function init() {
   // Paint the device's own theme before anything renders, so the first paint
   // is already the right brightness at night.
   applyTheme();
-  applyAccent();
 
   /* Show which build is running straight away, then look for a newer one.
      Passive: no data is touched, so it is safe on every load, and it turns
