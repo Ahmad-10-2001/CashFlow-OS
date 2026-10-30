@@ -1147,7 +1147,7 @@ function ledgerTotals(start, end) {
   // rows already cap at today (budgetCounted); this makes the totals beside
   // them agree. A record dated tomorrow therefore waits until tomorrow.
   const cap = endOfToday();
-  const stop = end && end > cap ? cap : end;
+  const stop = (!end || end > cap) ? cap : end;
   for (const t of state.transactions) {
     if (t.type === 'transfer') continue;
     const d = new Date(t.date);
@@ -1192,6 +1192,13 @@ async function remapCollidingAccountIds() {
     if (!t) continue;
     if (map[t.accountId]) t.accountId = map[t.accountId];
     if (map[t.toAccountId]) t.toAccountId = map[t.toAccountId];
+  }
+  // Udhaar entries carry their own account reference; it must follow the
+  // rename too, or a settled debt would land in the wrong (or vanished)
+  // account and the balance would no longer agree.
+  for (const d of state.debts || []) {
+    if (!d) continue;
+    if (map[d.accountId]) d.accountId = map[d.accountId];
   }
   if (state.settings && map[state.settings.lastAccountId]) {
     state.settings.lastAccountId = map[state.settings.lastAccountId];
@@ -1242,6 +1249,8 @@ function allAccountBalances() {
 
 /** Income / expense / transfer split for one account over a window. */
 function accountActivity(id, start, end) {
+  const cap = endOfToday();
+  const stop = (!end || end > cap) ? cap : end;
   let income = 0;
   let expense = 0;
   let transferIn = 0;
@@ -1249,7 +1258,7 @@ function accountActivity(id, start, end) {
   for (const t of state.transactions) {
     const d = new Date(t.date);
     if (start && d < start) continue;
-    if (end && d > end) continue;
+    if (stop && d > stop) continue;
     if (t.type === 'transfer') {
       if (t.toAccountId === id) transferIn += t.amount;
       if (t.accountId === id) transferOut += t.amount;
@@ -1289,12 +1298,14 @@ function udhaarTotals() {
 /** Expense per category inside a window. Uses a Map so category names can never
  *  collide with Object.prototype keys such as "toString" or "constructor". */
 function spendByCategory(start, end) {
+  const cap = endOfToday();
+  const stop = (!end || end > cap) ? cap : end;
   const map = new Map();
   for (const t of state.transactions) {
     if (t.type !== 'expense') continue;
     const d = new Date(t.date);
     if (start && d < start) continue;
-    if (end && d > end) continue;
+    if (stop && d > stop) continue;
     map.set(t.category, round2((map.get(t.category) || 0) + t.amount));
   }
   return map;
@@ -1303,12 +1314,14 @@ function spendByCategory(start, end) {
 /** Income per category inside a window — used to offset a budget when the
  *  category has that switch on. */
 function incomeByCategory(start, end) {
+  const cap = endOfToday();
+  const stop = (!end || end > cap) ? cap : end;
   const map = new Map();
   for (const t of state.transactions) {
     if (t.type !== 'income') continue;
     const d = new Date(t.date);
     if (start && d < start) continue;
-    if (end && d > end) continue;
+    if (stop && d > stop) continue;
     map.set(t.category, round2((map.get(t.category) || 0) + t.amount));
   }
   return map;
@@ -1761,8 +1774,13 @@ function deleteAccount(id) {
   if (!acc) { toast('That account no longer exists'); return; }
   if (id === cashAccountId()) { toast('Cash cannot be deleted — every transaction has to land somewhere'); return; }
   const n = countTransactionsForAccount(id);
+  const u = state.debts.filter((d) => d.accountId === id).length;
   if (n > 0) {
     toast('"' + acc.name + '" has ' + n + ' transaction(s). Archive it instead — deleting would lose them.');
+    return;
+  }
+  if (u > 0) {
+    toast('"' + acc.name + '" is used by ' + u + ' udhaar entr(y/ies). Archive it instead — deleting would leave them dangling.');
     return;
   }
   if (!confirm('Delete "' + acc.name + '"? This cannot be undone.')) return;
@@ -1818,6 +1836,9 @@ function mergeDuplicateAccounts(opts) {
         if (!t) continue;
         if (t.accountId === a.id) t.accountId = survivor.id;
         if (t.toAccountId === a.id) t.toAccountId = survivor.id;
+      }
+      for (const d of state.debts || []) {
+        if (d && d.accountId === a.id) d.accountId = survivor.id;
       }
       survivor.openingBalance = round2(
         (Number(survivor.openingBalance) || 0) + (Number(a.openingBalance) || 0));
@@ -3928,7 +3949,8 @@ function renderBudgets() {
       }));
 
   mount($('budgetList'), head, body);
-  fillCategorySelect($('budgetCategory'));
+  const prevBudgetCat = $('budgetCategory') ? $('budgetCategory').value : '';
+  fillCategorySelect($('budgetCategory'), { selected: prevBudgetCat });
 
   // What is left after this month's budgets. Only shown once at least one
   // budget exists — an empty month needs no summary.
@@ -4996,7 +5018,9 @@ function init() {
   }
 
   // Checked first: nothing should render until we know the files agree.
-  const stale = staleAssetReason();
+  // Offline, a cache wipe + reload would leave the app dead (nothing to fetch),
+  // so a mismatch detected while offline is logged and tolerated instead.
+  const stale = (typeof navigator !== 'undefined' && navigator.onLine === false) ? null : staleAssetReason();
   if (stale) {
     // If a purge was already tried and the files STILL disagree, the service
     // worker is not the cause — reloading again would just loop on a blank
@@ -6116,20 +6140,62 @@ async function approveTransaction(txId) {
     const debt = pendingLinkedDebt(txId);
 
     if (debt) {
-      // The email IS the repayment: no separate ledger entry is built, the
-      // amount goes straight onto the udhaar entry — filed under this row's
-      // picked category, so a committee repayment lands in Committee, not in
-      // some default bucket. Bought-items are skipped here — one approval,
-      // one meaning.
-      const res = applyDebtPayment(debt, amount, accId, pendingChosenCategory(txId, tx.type));
+      const debtAmount = debt.amount;
+      const chosenCat = pendingChosenCategory(txId, tx.type);
+
+      // Amount fits the outstanding debt: one meaning, one entry.
+      if (amount <= debtAmount) {
+        const res = applyDebtPayment(debt, amount, accId, chosenCat);
+        if (!res) { toast('That udhaar entry is already settled'); return; }
+        state.settings.lastAccountId = accId;
+        viewTxPeriod = null;
+        save();
+        await finishApproval();
+        toast(res === 'settled'
+          ? 'Settled with ' + debt.person + ' — ' + formatMoney(amount) + ' into ' + accountName(accId)
+          : 'Recorded ' + formatMoney(amount) + ' from ' + debt.person + '. ' + formatMoney(debt.amount) + ' still outstanding.');
+        return;
+      }
+
+      // Amount is larger than the outstanding debt: settle the udhaar in full,
+      // then file the remainder as an ordinary income/expense, so no money is
+      // silently dropped and the two meanings stay separate.
+      const res = applyDebtPayment(debt, debtAmount, accId, chosenCat);
       if (!res) { toast('That udhaar entry is already settled'); return; }
+      const remainder = round2(amount - debtAmount);
+      const built = buildTransaction(
+        tx.type === 'income' ? 'income' : 'expense',
+        remainder,
+        chosenCat,
+        comment,
+        stamp,
+        accId,
+        null
+      );
+      if (built.error) { toast(built.error); return; }
+      learnCategory(tx, built.value.category);
+      built.value.source = 'email:' + tx.id;
+      touch(built.value);
+      state.transactions.unshift(built.value);
       state.settings.lastAccountId = accId;
-      viewTxPeriod = null;
+
+      const items = pendingPickedItems(txId);
+      if (items.length) {
+        const share = round2(remainder / items.length);
+        const now = nowStamp();
+        for (const s of items) {
+          s.checked = true;
+          s.checkedAt = now;
+          s.boughtTxId = built.value.id;
+          s.cost = share;
+        }
+      }
+
+      jumpToStamp(stamp);
       save();
       await finishApproval();
-      toast(res === 'settled'
-        ? 'Settled with ' + debt.person + ' — ' + formatMoney(amount) + ' into ' + accountName(accId)
-        : 'Recorded ' + formatMoney(amount) + ' from ' + debt.person + '. ' + formatMoney(debt.amount) + ' still outstanding.');
+      toast('Settled ' + formatMoney(debtAmount) + ' with ' + debt.person +
+        ' and filed ' + formatMoney(remainder) + ' as ' + (tx.type === 'income' ? 'income' : 'expense'));
       return;
     }
 

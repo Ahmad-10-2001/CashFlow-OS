@@ -746,6 +746,8 @@ window.CashFlowSync = (function () {
    *  distinction being made. */
   async function refresh() {
     if (!session || !session.refreshToken) return false;
+    if (refreshPromise) return refreshPromise;
+    refreshPromise = (async () => {
     try {
       const out = await http(authPath('/token?grant_type=refresh_token'), {
         method: 'POST', headers: headers(), body: JSON.stringify({ refresh_token: session.refreshToken })
@@ -760,8 +762,12 @@ window.CashFlowSync = (function () {
       if (!serverSaidNo) throw err;   // unreachable: keep the login
       session = null;
       saveSession();
+      setStatus({ signedIn: false, email: null, error: 'Session expired — sign in again' });
       return false;
+    } finally {
+      refreshPromise = null;
     }
+    })();
   }
 
   function ensureFreshToken() {
@@ -921,7 +927,7 @@ window.CashFlowSync = (function () {
       try {
         await ensureFreshToken();
         const r = await httpWithHeaders(
-          restPath(table) + '?select=id&limit=1',
+          restPath(table) + '?select=id&deleted=eq.false&limit=1',
           { headers: Object.assign({}, headers(), { Prefer: 'count=exact' }) });
         remoteCount = r.count;
       } catch (err) {
@@ -1242,23 +1248,42 @@ window.CashFlowSync = (function () {
     const list = state[table] || (state[table] = []);
     const myBook = book;
     let applied = 0;
-    let cursor = book.lastPulled[table];
-
+    let rawCursor = book.lastPulled[table];
+    let cursorTs = null;
+    let cursorId = null;
+    if (typeof rawCursor === 'string' && rawCursor) {
+      if (rawCursor.indexOf('|') !== -1) {
+        const parts = rawCursor.split('|');
+        cursorTs = parts[0] || null;
+        cursorId = parts[1] || null;
+      } else {
+        cursorTs = rawCursor;
+      }
+    }
+ 
     for (let page = 0; page < MAX_PAGES; page++) {
-      const q = new URLSearchParams({ select: '*', order: 'updated_at.asc' });
-      if (cursor) q.set('updated_at', 'gt.' + cursor);
+      const q = new URLSearchParams({ select: '*', order: 'updated_at.asc,id.asc' });
+      if (cursorTs) {
+        if (cursorId) {
+          q.set('or', '(updated_at.gt.' + cursorTs + ',and(updated_at.eq.' + cursorTs + ',id.gt.' + cursorId + '))');
+        } else {
+          q.set('updated_at', 'gte.' + cursorTs);
+        }
+      }
       q.set('limit', String(PAGE));
 
       await ensureFreshToken();
       const rows = await http(restPath(table) + '?' + q.toString(), { headers: headers() });
       if (!Array.isArray(rows) || !rows.length) break;
 
-      let newest = cursor;
+      let lastTs = cursorTs;
+      let lastId = cursorId;
       let consumed = 0;
 
       for (const row of rows) {
         if (!row.updated_at) continue;
-        if (!newest || Date.parse(row.updated_at) > Date.parse(newest)) newest = row.updated_at;
+        lastTs = row.updated_at;
+        lastId = row.id;
         consumed++;
 
         const idx = list.findIndex((r) => r.id === row.id);
@@ -1283,12 +1308,13 @@ window.CashFlowSync = (function () {
       }
 
       if (!consumed) break;
-      cursor = newest;
+      cursorTs = lastTs;
+      cursorId = lastId;
       // An in-flight pull must not write into a book that is no longer this
       // account's: sign-out swaps in a fresh book, and without this check the
       // old user's cursor landed on the new account's book, hiding its rows.
       if (book !== myBook) return applied;
-      book.lastPulled[table] = newest;
+      book.lastPulled[table] = (cursorTs || '') + '|' + (cursorId || '');
       absorbShadow(table, list);
       saveBook();
 
@@ -1413,19 +1439,25 @@ window.CashFlowSync = (function () {
     }
   }
 
+  let listenersAttached = false;
+  let visibilityHandler = null;
+  let onlineHandler = null;
+  let offlineHandler = null;
   function start(provider) {
     stop();
     if (!session) return;
     setStateProvider(provider);
     timer = setInterval(() => cycle(provider()), CFG.pollIntervalMs || 60000);
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) cycle(stateProvider());
-      });
-    }
-    if (typeof window !== 'undefined') {
-      window.addEventListener('online', () => { setStatus({ online: true, error: null }); cycle(stateProvider()); });
-      window.addEventListener('offline', () => setStatus({ online: false }));
+    if (!listenersAttached) {
+      listenersAttached = true;
+      visibilityHandler = () => { if (!document.hidden) cycle(stateProvider()); };
+      onlineHandler = () => { setStatus({ online: true, error: null }); cycle(stateProvider()); };
+      offlineHandler = () => setStatus({ online: false });
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', visibilityHandler);
+      if (typeof window !== 'undefined') {
+        window.addEventListener('online', onlineHandler);
+        window.addEventListener('offline', offlineHandler);
+      }
     }
     cycle(stateProvider());
   }
