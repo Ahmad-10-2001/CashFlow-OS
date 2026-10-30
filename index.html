@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v45">
+  <meta name="app-build" content="v46">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -59,6 +59,43 @@
       <div id="udhaarLine"></div>
     </section>
 
+    <section class="card" aria-labelledby="todayHeading">
+      <h2 class="card-title" id="todayHeading">Today</h2>
+      <div class="stat-grid" id="statBox"></div>
+      <p class="field-hint">Safe to spend shows what is left after this month&rsquo;s budgets, shared over the days still to come. The streak counts days in a row with no expense.</p>
+      <div class="btn-row mt-10">
+        <button class="btn-mini" type="button" data-act="undo" title="Take back the last action (Ctrl+Z also works)">Undo last action</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="quickHeading">
+      <h2 class="card-title" id="quickHeading">Quick add</h2>
+      <p class="card-subtitle">One tap files the whole entry. Save the expenses you make again and again.</p>
+      <div class="chip-row" id="chipRow"></div>
+      <form class="inline-add-form" id="templateForm" novalidate>
+        <div class="form-group">
+          <label class="sr-only" for="tplLabel">Template name</label>
+          <input id="tplLabel" type="text" placeholder="Name (e.g. Tea)" maxlength="80" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="tplAmount">Template amount</label>
+          <input id="tplAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="tplType">Template type</label>
+          <select id="tplType">
+            <option value="expense" selected>Expense</option>
+            <option value="income">Income</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="tplCategory">Template category</label>
+          <select id="tplCategory"></select>
+        </div>
+        <button class="btn btn-dark" type="submit">Save template</button>
+      </form>
+    </section>
+
     <form class="card" id="txForm" novalidate>
       <h2 class="card-title">Add Transaction</h2>
       <div class="form-group">
@@ -70,8 +107,12 @@
         </select>
       </div>
       <div class="form-group">
-        <label class="sr-only" for="txAmount">Amount</label>
-        <input id="txAmount" name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount (e.g. 5000)" autocomplete="off">
+        <div class="amount-row">
+          <label class="sr-only" for="txAmount">Amount</label>
+          <input id="txAmount" name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount (e.g. 5000)" autocomplete="off">
+          <button class="voice-btn" type="button" id="txVoice" aria-label="Voice entry (needs an internet connection)" title="Voice entry — needs an internet connection">&#127897;</button>
+        </div>
+        <p class="field-hint">Type a sum like 120+80 and it is worked out when you save.</p>
       </div>
       <div class="form-group" id="txAccountGroup">
         <label class="field-label" id="txAccountLabel" for="txAccount">Account</label>
@@ -90,6 +131,17 @@
         <label class="sr-only" for="txComment">Comment</label>
         <input id="txComment" name="comment" type="text" placeholder="Comment (optional)" maxlength="300" autocomplete="off">
       </div>
+      <div class="form-group" id="txSplitGroup">
+        <label class="check" for="txSplitOn">
+          <input type="checkbox" id="txSplitOn">
+          <span>Split this expense with others</span>
+        </label>
+        <div id="txSplitNamesWrap" hidden>
+          <label class="field-label" for="txSplitNames">Who shares it</label>
+          <input id="txSplitNames" type="text" placeholder="Names, comma separated (e.g. Ali, Sara)" maxlength="200" autocomplete="off">
+          <p class="field-hint">Every person gets their own entry on the Udhaar tab. Your own share stays with this expense.</p>
+        </div>
+      </div>
       <div class="form-group">
         <label class="field-label" for="txDate">Date &amp; time</label>
         <input id="txDate" name="date" type="datetime-local">
@@ -97,6 +149,23 @@
       </div>
       <button class="btn btn-primary" type="submit">Save Transaction</button>
     </form>
+
+    <section class="card" aria-labelledby="goalsHeading">
+      <h2 class="card-title" id="goalsHeading">Savings goals</h2>
+      <p class="card-subtitle">Set a target and add to it whenever money is free.</p>
+      <div id="goalList"></div>
+      <form class="inline-add-form" id="goalForm" novalidate>
+        <div class="form-group">
+          <label class="sr-only" for="goalName">Goal name</label>
+          <input id="goalName" type="text" placeholder="Goal name (e.g. New phone)" maxlength="40" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="goalTarget">Target amount</label>
+          <input id="goalTarget" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Target amount" autocomplete="off">
+        </div>
+        <button class="btn btn-dark" type="submit">Add goal</button>
+      </form>
+    </section>
 
   </div>
 
@@ -139,6 +208,37 @@
 
   <!-- ══════════════ TRANSACTIONS ══════════════ -->
   <div id="panel-transactions" data-panel="transactions" role="tabpanel" aria-labelledby="tab-transactions" hidden>
+    <section class="card" aria-labelledby="recHeading">
+      <h2 class="card-title" id="recHeading">Recurring entries</h2>
+      <p class="card-subtitle">Salary, rent, subscriptions — filed on their own every month on the day you pick. A missed month is filed once, in the current month.</p>
+      <div id="recList"></div>
+      <form class="inline-add-form" id="recForm" novalidate>
+        <div class="form-group">
+          <label class="sr-only" for="recType">Recurring type</label>
+          <select id="recType">
+            <option value="expense" selected>Expense</option>
+            <option value="income">Income</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="recLabel">Recurring label</label>
+          <input id="recLabel" type="text" placeholder="Label (e.g. Rent)" maxlength="80" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="recAmount">Recurring amount</label>
+          <input id="recAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="recDay">Day of month</label>
+          <select id="recDay"></select>
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="recCategory">Recurring category</label>
+          <select id="recCategory"></select>
+        </div>
+        <button class="btn btn-dark" type="submit">Add plan</button>
+      </form>
+    </section>
     <section class="card" aria-labelledby="txListHeading">
       <h2 class="card-title" id="txListHeading">Transactions</h2>
       <div class="tx-top-row">
@@ -191,6 +291,27 @@
       <div class="budget-repeat-row">
         <button class="btn-mini" type="button" data-act="budget-repeat">Repeat last month's budgets</button>
       </div>
+      <label class="check rollover-row" for="rolloverToggle" title="When a new month starts, whatever was left unused is added to that month's limit">
+        <input type="checkbox" id="rolloverToggle">
+        <span>Carry unused budget to next month</span>
+      </label>
+    </section>
+
+    <section class="card" aria-labelledby="chalHeading">
+      <h2 class="card-title" id="chalHeading">Monthly challenges</h2>
+      <p class="card-subtitle">Keep a category under a cap for the month shown on the Budgets card.</p>
+      <div id="challengeList"></div>
+      <form class="inline-add-form" id="challengeForm" novalidate>
+        <div class="form-group">
+          <label class="sr-only" for="challengeCategory">Challenge category</label>
+          <select id="challengeCategory"></select>
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="challengeCap">Challenge cap</label>
+          <input id="challengeCap" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Cap (e.g. 8000)" autocomplete="off">
+        </div>
+        <button class="btn btn-dark" type="submit">Add challenge</button>
+      </form>
     </section>
   </div>
 
@@ -252,6 +373,7 @@
         </div>
         <button class="btn btn-dark" type="submit" data-act="report-custom">Show range</button>
       </form>
+      <div id="insightBox"></div>
       <div id="reportOutput" aria-live="polite"></div>
     </section>
   </div>
@@ -504,6 +626,9 @@
       <h2 class="card-title" id="appearanceHeading">Appearance</h2>
       <p class="card-subtitle">Warm paper or night — kept on this device only, so your phone and laptop can differ.</p>
       <div class="btn-row" id="themeButtons"></div>
+      <p class="field-label mt-10" id="accentLabel">Accent color</p>
+      <div class="btn-row" id="accentRow" role="group" aria-labelledby="accentLabel"></div>
+      <p class="field-hint">Shows on buttons and highlights, this device only.</p>
     </section>
 
     <section class="card danger-zone" aria-labelledby="dangerHeading">
@@ -595,6 +720,22 @@
     </label>
     <button class="btn btn-primary" type="submit">Update</button>
     <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="editDebtModal">Cancel</button>
+  </form>
+</div>
+
+<!-- ═══ Add to goal modal ═══ -->
+<div class="modal-overlay" id="goalModal" role="dialog" aria-modal="true" aria-labelledby="goalModalHeading" aria-hidden="true" tabindex="-1">
+  <form class="modal" id="goalModalForm" novalidate>
+    <h2 class="card-title" id="goalModalHeading">Add to goal</h2>
+    <input type="hidden" id="goalModalId">
+    <p class="card-subtitle" id="goalModalSub"></p>
+    <div class="form-group">
+      <label class="field-label" for="goalModalAmount">Amount to set aside</label>
+      <input id="goalModalAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
+    </div>
+    <p class="field-hint">Sitting money aside here is only a progress note — nothing moves in your accounts or budgets.</p>
+    <button class="btn btn-primary" type="submit">Save</button>
+    <button class="btn btn-cancel" type="button" data-act="close-modal" data-target="goalModal">Cancel</button>
   </form>
 </div>
 

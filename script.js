@@ -128,6 +128,26 @@
       account ("All transactions"), anything else is an account id. Never
       persisted, so a new load always starts unfiltered. */
    let viewTxAccount = '';
+   /* Undo: the last few edits of this session, as whole-state snapshots.
+      Session-only on purpose — it backs out mistakes, it does not time-travel
+      across reloads. A restore goes through sanitizeState so the snapshot
+      lands back as valid app state, budget prototypes and all. */
+   let undoStack = [];
+   function pushUndo() {
+     try {
+       undoStack.unshift(JSON.stringify(state));
+       if (undoStack.length > 10) undoStack.length = 10;
+     } catch (err) { /* storage blocked — undo simply does nothing */ }
+   }
+   function undoLast() {
+     if (!undoStack.length) { toast('Nothing to undo'); return; }
+     try {
+       state = sanitizeState(JSON.parse(undoStack.shift())).state;
+     } catch (err) { toast('Could not undo'); return; }
+     save();
+     renderAll();
+     toast('Undone');
+   }
    /* Records category filter. Same contract: '' means every category ("All
       categories"). Transfers carry no category, so an active filter hides them —
       they belong to no bucket, which is exactly what the filter asks for. */
@@ -236,11 +256,30 @@
      return Number.isNaN(d.getTime()) ? null : d;
    }
    
+   /** Amount fields take plain numbers — and, as a convenience, simple sums
+    *  like "120+80", which are worked out here. Deliberately narrow: a safe
+    *  expression is digits, spaces, dots, round brackets and the four
+    *  operators — nothing else ever reaches the evaluator, so crafted input
+    *  has nothing to execute. A plain number, the usual case, skips the
+    *  evaluator entirely and keeps the old exact behaviour. */
+   function evalAmountExpr(v) {
+     const s = String(v == null ? '' : v).trim().replace(/,/g, '');
+     if (s === '') return NaN;
+     if (!/^[0-9.+\-*/ ()]+$/.test(s)) return NaN;
+     if (!/[+\-*/]/.test(s)) return Number(s);
+     try {
+       const result = Function('"use strict"; return (' + s + ')')();
+       return typeof result === 'number' && Number.isFinite(result) ? result : NaN;
+     } catch (err) {
+       return NaN;
+     }
+   }
+
    /** Coerce anything into a usable positive amount, or null. Rejects NaN/Infinity/0/negatives. */
    function toPositiveNumber(v) {
      let n;
      if (typeof v === 'number') n = v;
-     else if (typeof v === 'string' && v.trim() !== '') n = Number(v.replace(/,/g, '').trim());
+     else if (typeof v === 'string' && v.trim() !== '') n = evalAmountExpr(v);
      else return null;
      if (!Number.isFinite(n) || n <= 0 || n > MAX_AMOUNT) return null;
      return round2(n);
@@ -465,7 +504,11 @@
        // table, no migration and no RLS to configure. Whole-document
        // last-write-wins applies, same as budgets: fine at family scale.
        // shoppingPeriod remembers which month the list was last prepared for.
-       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [] },
+       // The feature lists below (recurring plans, goals, quick-add templates,
+       // challenges) ride the same synced prefs document the notes and timers
+       // already use — no new server table, no migration. budgetRollover +
+       // budgetRolloverPeriod make the rollover fire once per new month.
+       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], recurring: [], goals: [], templates: [], challenges: [] },
        closedPeriods: []
      };
    }
@@ -679,6 +722,107 @@
        });
      }
    
+     // ── feature settings ────────────────────────────────────
+     // Recurring plans, savings goals, quick-add templates and monthly
+     // challenges. Validated field by field, capped in size, and deduped by
+     // id — the same rules every other list in state follows.
+
+     const withId = (pool, candidate) => {
+       let id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : newId();
+       if (pool.has(id)) id = newId();
+       pool.add(id);
+       return id;
+     };
+     const catOr = (name) => {
+       const match = typeof name === 'string' && categories.find((c) => c.toLowerCase() === name.toLowerCase());
+       return match || fallbackCategory;
+     };
+
+     // A standing instruction that files itself each month (salary, rent,
+     // subscriptions). Never files twice in one month — that is lastFiled's job.
+     const recurring = [];
+     const recSeen = new Set();
+     const rawRecurring = Array.isArray(rawSettings.recurring) ? rawSettings.recurring : [];
+     for (const r of rawRecurring) {
+       if (!isObject(r)) { note('skipped a malformed recurring plan'); continue; }
+       if (recurring.length >= 24) { note('kept the first 24 recurring plans'); break; }
+       const amount = toPositiveNumber(r.amount);
+       if (amount === null) { note('skipped a recurring plan with an unusable amount'); continue; }
+       const label = cleanText(r.label, ITEM_LIMIT);
+       recurring.push({
+         id: withId(recSeen, r),
+         type: r.type === 'income' ? 'income' : 'expense',
+         amount,
+         category: catOr(r.category),
+         label,
+         dayOfMonth: clampNumber(r.dayOfMonth, 1, 28),
+         active: r.active !== false,
+         lastFiled: typeof r.lastFiled === 'string' && PERIOD_RE.test(r.lastFiled) ? r.lastFiled : null
+       });
+     }
+
+     // Savings goals: a target plus what is already set aside. Set-aside is a
+     // progress note, not money — it never touches accounts or budgets.
+     const goals = [];
+     const goalSeen = new Set();
+     const rawGoals = Array.isArray(rawSettings.goals) ? rawSettings.goals : [];
+     for (const g of rawGoals) {
+       if (!isObject(g)) { note('skipped a malformed goal'); continue; }
+       if (goals.length >= 12) { note('kept the first 12 savings goals'); break; }
+       const name = cleanText(g.name, NAME_LIMIT);
+       const target = toPositiveNumber(g.target);
+       if (!name) { note('skipped a goal with no name'); continue; }
+       if (target === null) { note('skipped a goal with an unusable target'); continue; }
+       goals.push({
+         id: withId(goalSeen, g),
+         name,
+         target,
+         saved: round2(clampNumber(g.saved, 0, target))
+       });
+     }
+
+     // Quick-add templates: one tap files a whole income or expense.
+     const templates = [];
+     const tplSeen = new Set();
+     const rawTemplates = Array.isArray(rawSettings.templates) ? rawSettings.templates : [];
+     for (const t of rawTemplates) {
+       if (!isObject(t)) { note('skipped a malformed template'); continue; }
+       if (templates.length >= 12) { note('kept the first 12 templates'); break; }
+       const amount = toPositiveNumber(t.amount);
+       if (amount === null) { note('skipped a template with an unusable amount'); continue; }
+       const label = cleanText(t.label, ITEM_LIMIT);
+       if (!label) { note('skipped a template with no name'); continue; }
+       templates.push({
+         id: withId(tplSeen, t),
+         label,
+         type: t.type === 'income' ? 'income' : 'expense',
+         amount,
+         category: catOr(t.category)
+       });
+     }
+
+     // Monthly challenges: keep one category under a cap for one month.
+     const challenges = [];
+     const chalSeen = new Set();
+     const rawChallenges = Array.isArray(rawSettings.challenges) ? rawSettings.challenges : [];
+     for (const c of rawChallenges) {
+       if (!isObject(c)) { note('skipped a malformed challenge'); continue; }
+       if (challenges.length >= 12) { note('kept the first 12 challenges'); break; }
+       if (typeof c.period !== 'string' || !PERIOD_RE.test(c.period)) { note('skipped a challenge with no month'); continue; }
+       const cap = toPositiveNumber(c.cap);
+       if (cap === null) { note('skipped a challenge with an unusable cap'); continue; }
+       const catMatch = typeof c.category === 'string' && categories.find((x) => x.toLowerCase() === c.category.toLowerCase());
+       if (!catMatch) { note('skipped a challenge for a missing category'); continue; }
+       challenges.push({ id: withId(chalSeen, c), period: c.period, category: catMatch, cap });
+     }
+
+     // Budget rollover: whether unused limits carry into the next month, and
+     // which month was last processed so it fires exactly once per month.
+     const budgetRollover = rawSettings.budgetRollover === true;
+     const budgetRolloverPeriod = typeof rawSettings.budgetRolloverPeriod === 'string' && PERIOD_RE.test(rawSettings.budgetRolloverPeriod)
+       ? rawSettings.budgetRolloverPeriod
+       : null;
+
      // Personal notes: sticky-note cards with a color, an icon, a pin and an
      // updated stamp. Timer fields on a note are from before Timers became their
      // own section — they are lifted into a timer below instead of dropped, so
@@ -955,7 +1099,7 @@
          version: SCHEMA_VERSION,
          transactions, debts, budgets, categories, shopping, custody,
          accounts,
-         settings: { budgetOffset, lastAccountId, shoppingPeriod, notes, timers, catMemory, budgetMoves },
+         settings: { budgetOffset, lastAccountId, shoppingPeriod, budgetRollover, budgetRolloverPeriod, notes, timers, catMemory, budgetMoves, recurring, goals, templates, challenges },
          closedPeriods
        },
        problems
@@ -1378,11 +1522,27 @@
       ============================================================ */
    
    let toastTimer = null;
-   function toast(msg) {
+   function toast(msg, action) {
      const existing = document.querySelector('.toast');
      if (existing) existing.remove();
      if (toastTimer) clearTimeout(toastTimer);
      const el = h('div', { class: 'toast show', role: 'status', 'aria-live': 'polite' }, msg);
+     // Optional follow-up (Undo). The toast itself ignores clicks; the button
+     // is the one thing inside it that opts back in.
+     if (action && typeof action.fn === 'function') {
+       const btn = h('button', {
+         type: 'button',
+         class: 'toast-btn',
+         text: (typeof action.label === 'string' && action.label) ? action.label : 'Undo'
+       });
+       btn.addEventListener('click', () => {
+         el.classList.remove('show');
+         if (toastTimer) clearTimeout(toastTimer);
+         setTimeout(() => el.remove(), 300);
+         action.fn();
+       });
+       el.append(btn);
+     }
      document.body.append(el);
      toastTimer = setTimeout(() => {
        el.classList.remove('show');
@@ -1418,6 +1578,8 @@
      try {
        document.documentElement.setAttribute('data-theme', t);
      } catch (err) { /* headless test env: nothing to paint on */ }
+     // The accent reads differently on each theme, so it re-applies here.
+     if (typeof applyAccent === 'function') applyAccent();
    }
    
    function setTheme(name) {
@@ -1601,6 +1763,12 @@
      orphans.forEach(add);
      state.categories.forEach(add);
    
+     /* The value the control already holds is read BEFORE the option list is
+        rebuilt: replacing the options resets the selection to the first one,
+        so reading afterwards would always "hold" the first category and
+        silently undo the user's pick on every re-render. */
+     const heldBeforeMount = typeof select.value === 'string' ? select.value : '';
+   
      mount(select, names.map((name) => {
        const isOrphan = !state.categories.some((c) => c.toLowerCase() === name.toLowerCase());
        return h('option', { value: name }, isOrphan ? name + ' (removed)' : name);
@@ -1613,7 +1781,7 @@
         whenever a budget or category changed elsewhere. A control with nothing
         held yet (first fill) takes `fallback` when it exists, so the udhaar form
         opens on "Udhaar" rather than whatever category happens to be first. */
-     const held = typeof select.value === 'string' ? select.value : '';
+     const held = heldBeforeMount;
      const wanted = typeof o.selected === 'string' ? o.selected
        : held || (typeof o.fallback === 'string' && names.some((n) => n.toLowerCase() === o.fallback.toLowerCase())
          ? o.fallback
@@ -2071,17 +2239,19 @@
      const amount = readAmountField($('budgetAmount'), 'Budget');
      if (amount.error) { toast(amount.error); return; }
    
+     pushUndo();
      budgetsFor(period)[cat] = amount.value;
      $('budgetAmount').value = '';
-     if (save()) toast('Budget set for ' + cat + ' in ' + periodLabel(period));
+     if (save()) toast('Budget set for ' + cat + ' in ' + periodLabel(period), { label: 'Undo', fn: undoLast });
    }
    
    function removeBudget(cat) {
      const period = activeBudgetPeriod();
      if (!Object.prototype.hasOwnProperty.call(budgetsFor(period), cat)) return;
      if (!confirm('Remove the budget for "' + cat + '" in ' + periodLabel(period) + '?')) return;
+     pushUndo();
      delete state.budgets[period][cat];
-     if (save()) toast('Budget removed for ' + cat);
+     if (save()) toast('Budget removed for ' + cat, { label: 'Undo', fn: undoLast });
    }
    
    /** Copy the previous month's limits into the month being viewed — but only
@@ -2255,8 +2425,8 @@
    function readAmountField(input, label) {
      const raw = String(input.value == null ? '' : input.value).trim().replace(/,/g, '');
      if (raw === '') return { error: label + ' is required' };
-     const n = Number(raw);
-     if (!Number.isFinite(n)) return { error: label + ' must be a number' };
+     const n = evalAmountExpr(raw);
+     if (!Number.isFinite(n)) return { error: label + ' must be a number or a sum like 120+80' };
      if (n <= 0) return { error: label + ' must be more than zero' };
      if (n > MAX_AMOUNT) return { error: label + ' is too large' };
      return { value: round2(n) };
@@ -2325,6 +2495,19 @@
      const type = ['income', 'expense', 'transfer'].indexOf($('txType').value) !== -1 ? $('txType').value : 'expense';
      const fromId = $('txAccount').value;
      const toId = $('txToAccount').value;
+
+     // Split expense, validated with the other form values so a bad names line
+     // fails before anything is written. Each name becomes its own "owes me"
+     // udhaar entry for an even share; the user's share stays with the expense.
+     const splitNames = $('txSplitOn') && $('txSplitOn').checked && type === 'expense'
+       ? splitNameList($('txSplitNames') ? $('txSplitNames').value : '')
+       : [];
+     if ($('txSplitOn') && $('txSplitOn').checked && type !== 'expense') {
+       toast('Splitting works for expenses only — switched off for this save.');
+       $('txSplitOn').checked = false;
+       setHiddenSplit(false);
+     }
+     if (splitNames.length > 15) { toast('Splitting is limited to 15 people'); return; }
    
      const built = buildTransaction(
        type,
@@ -2337,13 +2520,38 @@
      );
      if (built.error) { toast(built.error); return; }
    
+     pushUndo();
      state.transactions.unshift(built.value);
      state.settings.lastAccountId = fromId;
    
+     let share = 0;
+     if (splitNames.length) {
+       // Each named person gets an even share; the user's own share is what
+       // the expense above already spent. Ledger stays false: the money left
+       // with the expense, these are records of who owes what back.
+       const splitCat = ensureUdhaarCategory();
+       share = round2(amount.value / (splitNames.length + 1));
+       for (const name of splitNames) {
+         state.debts.push({
+           id: newId(),
+           type: 'receive',
+           person: name,
+           amount: share,
+           note: cleanText('Split share' + (built.value.comment ? ' of ' + built.value.comment : ''), COMMENT_LIMIT),
+           date: built.value.date,
+           settled: false,
+           settledAt: null,
+           ledger: false,
+           accountId: null,
+           category: splitCat
+         });
+       }
+     }
      $('txAmount').value = '';
      $('txComment').value = '';
      $('txType').value = 'expense';
      $('txDate').value = stampToInput(nowStamp());
+     resetSplitInputs();
      setTxTypeFields();
      // No focus() here on purpose: after saving, no field re-activates itself —
      // the keyboard popping back up uninvited is the complaint this removes.
@@ -2351,7 +2559,9 @@
      if (!save()) return;
      toast(type === 'transfer'
        ? 'Moved ' + formatMoney(amount.value) + ' from ' + accountName(fromId) + ' to ' + accountName(toId)
-       : 'Transaction saved');
+       : (splitNames.length
+         ? 'Split into ' + (splitNames.length + 1) + ' shares of ' + formatMoney(share) + ' — see Udhaar'
+         : 'Transaction saved'), { label: 'Undo', fn: undoLast });
    }
    
    /** Show only the fields that apply to the selected type. A transfer has no
@@ -2363,6 +2573,12 @@
      setHidden('txCategoryGroup', isTransfer);
      setHidden('txToAccountGroup', !isTransfer);
      setHidden('txAccountGroup', false);
+     const splitGroup = $('txSplitGroup');
+     if (splitGroup) {
+       const expense = $('txType').value === 'expense';
+       splitGroup.hidden = !expense;
+       if (!expense) setHiddenSplit(true);
+     }
      if (isTransfer) {
        const to = $('txToAccount');
        const from = $('txAccount');
@@ -2393,8 +2609,9 @@
        ? 'transfer of ' + formatMoney(tx.amount) + ' from ' + accountName(tx.accountId) + ' to ' + accountName(tx.toAccountId)
        : tx.type + ' of ' + formatMoney(tx.amount);
      if (!confirm('Delete this ' + what + '?')) return;
+     pushUndo();
      dropRecord('transactions', id);
-     if (save()) toast('Transaction deleted');
+     if (save()) toast('Transaction deleted', { label: 'Undo', fn: undoLast });
    }
    
    /* ---------- transaction edit modal ---------- */
@@ -2520,6 +2737,7 @@
      }
      const ledger = moveNow;
    
+     pushUndo();
      const d = {
        id: newId(),
        type,
@@ -2579,6 +2797,7 @@
      );
      if (choice === null) return;
    
+     pushUndo();
      dropRecord('debts', id);
      if (choice === 'all') {
        syncLedgerForDebt(d, { forceRemove: true });
@@ -3369,9 +3588,632 @@
          h('span', { class: totals.net < 0 ? 'neg' : 'pos' }, formatMoney(totals.net, { signed: true })))
      );
    
+     renderInsights();
      mount(out, section);
    }
    
+   /* ============================================================
+       Home extras, quick add, goals, recurring, challenges
+       ------------------------------------------------------------
+       Plans and goals live in the synced prefs settings (see
+       sanitizeState): no new tables, no migration. Safe-to-spend
+       and the no-spend streak are derived from records on every
+       render — never stored, never stale.
+       ============================================================ */
+
+   /** Days left in the current month, counting today. */
+   function daysLeftThisMonth() {
+     const n = new Date();
+     return new Date(n.getFullYear(), n.getMonth() + 1, 0).getDate() - n.getDate() + 1;
+   }
+
+   /** Money you can still spend today without eating into a budget:
+    *  what the budget summary leaves over, shared across the days
+    *  still to come. Even with no budgets the number is meaningful —
+    *  the whole balance, day-shared. */
+   function safeToSpend() {
+     const sum = budgetSummary(currentPeriod());
+     const days = daysLeftThisMonth();
+     return {
+       perDay: round2(sum.remaining / days),
+       remaining: sum.remaining,
+       reserved: sum.reserved,
+       days,
+       hasBudgets: Object.keys(budgetsFor(currentPeriod())).length > 0
+     };
+   }
+
+   /** Consecutive days ending today with no expense. Transfers never break
+      it — they move money, not spend it. A today that already has an
+      expense gives 0, which is the honest answer. */
+   function noSpendStreak() {
+     const spentDays = new Set();
+     // A streak older than the records themselves would be fiction, so the
+     // count is capped at how long anything has been recorded at all. No
+     // records yet means no claim — a zero.
+     let earliest = null;
+     for (const t of state.transactions) {
+       const d = new Date(t.date);
+       if (Number.isNaN(d.getTime())) continue;
+       if (!earliest || d < earliest) earliest = d;
+       if (t.type !== 'expense') continue;
+       spentDays.add(d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate());
+     }
+     if (!earliest) return 0;
+     const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+     const cap = Math.max(1, Math.round((midnight(new Date()) - midnight(earliest)) / 86400000) + 1);
+     let count = 0;
+     const today = new Date();
+     for (let i = 0; i < cap; i++) {
+       const d = addDays(today, -i);
+       if (spentDays.has(d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate())) break;
+       count++;
+     }
+     return count;
+   }
+
+   function ordinal(n) {
+     const s = ['th', 'st', 'nd', 'rd'];
+     const v = n % 100;
+     return n + (s[(v - 20) % 10] || s[v] || s[0]);
+   }
+
+   /** Names line of the split control → clean name list, in the order typed. */
+   function splitNameList(v) {
+     return String(v || '').split(',')
+       .map((s) => cleanText(s, NAME_LIMIT))
+       .filter(Boolean);
+   }
+
+   function setHiddenSplit(hidden) {
+     const w = $('txSplitNamesWrap');
+     if (w) w.hidden = hidden;
+   }
+   function resetSplitInputs() {
+     const on = $('txSplitOn');
+     if (on) on.checked = false;
+     const names = $('txSplitNames');
+     if (names) names.value = '';
+     setHiddenSplit(true);
+   }
+
+
+   /* ---------- home: stats, quick add, goals ---------- */
+
+   function renderHomeExtras() {
+     const box = $('statBox');
+     if (box) {
+       const sts = safeToSpend();
+       const streak = noSpendStreak();
+       mount(box,
+         h('div', { class: 'stat-card' },
+           h('span', { class: 'stat-label', title: 'Balance left after this month’s budgets, shared over the days still to come' }, 'Safe to spend today'),
+           h('span', { class: 'stat-value' }, formatMoney(sts.perDay)),
+           h('span', { class: 'stat-sub' }, sts.hasBudgets
+             ? formatMoney(sts.remaining) + ' over ' + sts.days + ' day' + (sts.days === 1 ? '' : 's') + ' · ' + formatMoney(sts.reserved) + ' reserved'
+             : 'no budgets set — the whole balance, day-shared')),
+         h('div', { class: 'stat-card' },
+           h('span', { class: 'stat-label', title: 'Days in a row with no expense, counting today. Transfers do not break it.' }, 'No-spend streak'),
+           h('span', { class: 'stat-value' }, streak + ' day' + (streak === 1 ? '' : 's')),
+           h('span', { class: 'stat-sub' }, streak > 0 ? 'In a row so far' : 'Spend nothing today to start'))
+       );
+     }
+     renderChips();
+     renderGoals();
+     fillCategorySelect($('tplCategory'));
+   }
+
+   function renderChips() {
+     const box = $('chipRow');
+     if (!box) return;
+     const list = state.settings.templates || [];
+     if (!list.length) {
+       mount(box, h('div', { class: 'empty-state' }, 'No templates yet — save one below and this row becomes one-tap entries.'));
+       return;
+     }
+     mount(box, list.map((t) =>
+       h('button', {
+         type: 'button',
+         class: 'chip',
+         dataset: { act: 'tpl-use', id: t.id },
+         title: 'Files a ' + t.type + ' of ' + formatMoney(t.amount) + ' in ' + t.category + ', from the account last used here',
+         'aria-label': 'Add ' + t.label + ', ' + formatMoney(t.amount)
+       },
+         t.label + ' · ' + formatMoney(t.amount),
+         h('span', { class: 'chip-type ' + t.type }, t.type === 'income' ? 'in' : 'out'),
+         h('span', { class: 'chip-x', role: 'button', title: 'Remove template', 'aria-label': 'Remove template ' + t.label, dataset: { act: 'tpl-remove', id: t.id } }, '✕')
+       )
+     ));
+   }
+
+   function renderGoals() {
+     const box = $('goalList');
+     if (!box) return;
+     const list = state.settings.goals || [];
+     if (!list.length) {
+       mount(box, h('div', { class: 'empty-state' }, 'No goals yet. Name something worth saving for and give it a target.'));
+       return;
+     }
+     mount(box, list.map((g) => {
+       const pct = g.target > 0 ? Math.min(100, (g.saved / g.target) * 100) : 0;
+       const done = g.saved >= g.target;
+       return h('div', { class: 'mini-item' },
+         h('div', { class: 'mini-head' },
+           h('span', { class: 'label' }, g.name),
+           h('span', { class: 'value' + (done ? ' pos' : '') }, formatMoney(g.saved) + ' of ' + formatMoney(g.target))),
+         h('div', { class: 'progress-bar', role: 'progressbar', 'aria-valuenow': String(Math.round(pct)), 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': g.name + ' progress' },
+           h('div', { class: 'progress-fill ' + (done ? 'ok' : 'warn'), style: 'width:' + pct + '%' })),
+         h('div', { class: 'mini-status ' + (done ? 'ok' : 'warn') }, done ? 'Done — target reached' : formatMoney(round2(g.target - g.saved)) + ' to go'),
+         h('div', { class: 'mini-actions' },
+           done ? null : button('Set aside…', 'goal-add', { id: g.id, title: 'Note money as set aside for this goal — a progress note, accounts and budgets stay untouched' }),
+           button('Delete', 'goal-remove', { id: g.id, class: 'btn-mini danger' }))
+       );
+     }));
+   }
+
+   function addGoal() {
+     if ((state.settings.goals || []).length >= 12) { toast('12 goals is the limit'); return; }
+     const name = cleanText($('goalName').value, NAME_LIMIT);
+     const target = readAmountField($('goalTarget'), 'Target');
+     if (!name) { toast('Give the goal a name'); return; }
+     if (target.error) { toast(target.error); return; }
+     if ((state.settings.goals || []).some((g) => g.name.toLowerCase() === name.toLowerCase())) { toast('A goal with that name already exists'); return; }
+     pushUndo();
+     state.settings.goals.push({ id: newId(), name, target: target.value, saved: 0 });
+     $('goalName').value = '';
+     $('goalTarget').value = '';
+     if (save()) toast('Goal added', { label: 'Undo', fn: undoLast });
+   }
+
+   function openGoalModal(id) {
+     const g = (state.settings.goals || []).find((x) => x.id === id);
+     if (!g) return;
+     $('goalModalId').value = id;
+     $('goalModalSub').textContent = g.name + ' — ' + formatMoney(g.saved) + ' of ' + formatMoney(g.target) +
+       ' saved so far (' + formatMoney(round2(g.target - g.saved)) + ' to go).';
+     $('goalModalAmount').value = '';
+     openModal('goalModal');
+   }
+
+   function saveGoalPayment() {
+     const g = (state.settings.goals || []).find((x) => x.id === $('goalModalId').value);
+     if (!g) { closeModal('goalModal'); return; }
+     const amount = readAmountField($('goalModalAmount'), 'Amount');
+     if (amount.error) { toast(amount.error); return; }
+     pushUndo();
+     const wasDone = g.saved >= g.target;
+     g.saved = round2(Math.min(g.target, g.saved + amount.value));
+     closeModal('goalModal');
+     const done = g.saved >= g.target;
+     if (save()) {
+       toast(done && !wasDone
+         ? 'Goal reached — ' + g.name + ' is fully saved up'
+         : 'Noted for ' + g.name, { label: 'Undo', fn: undoLast });
+     }
+   }
+
+   function removeGoal(id) {
+     const g = (state.settings.goals || []).find((x) => x.id === id);
+     if (!g) return;
+     if (!confirm('Delete the goal "' + g.name + '"? The progress noted so far goes with it.')) return;
+     pushUndo();
+     state.settings.goals = (state.settings.goals || []).filter((x) => x.id !== id);
+     if (save()) toast('Goal deleted', { label: 'Undo', fn: undoLast });
+   }
+
+   function addTemplate() {
+     if ((state.settings.templates || []).length >= 12) { toast('12 templates is the limit'); return; }
+     const label = cleanText($('tplLabel').value, ITEM_LIMIT);
+     const amount = readAmountField($('tplAmount'), 'Amount');
+     if (!label) { toast('Give the template a name'); return; }
+     if (amount.error) { toast(amount.error); return; }
+     pushUndo();
+     state.settings.templates.push({
+       id: newId(),
+       label,
+       type: $('tplType').value === 'income' ? 'income' : 'expense',
+       amount: amount.value,
+       category: $('tplCategory').value
+     });
+     $('tplLabel').value = '';
+     $('tplAmount').value = '';
+     if (save()) toast('Template saved — its chip can file entries now', { label: 'Undo', fn: undoLast });
+   }
+
+   function useTemplate(id) {
+     const t = (state.settings.templates || []).find((x) => x.id === id);
+     if (!t) return;
+     const accId = findAccount(state.settings.lastAccountId) ? state.settings.lastAccountId : cashAccountId();
+     const built = buildTransaction(t.type, t.amount, t.category, t.label, nowStamp(), accId, null);
+     if (built.error) { toast(built.error); return; }
+     pushUndo();
+     state.transactions.unshift(built.value);
+     state.settings.lastAccountId = accId;
+     if (save()) toast('Filed ' + t.label + ' — ' + formatMoney(t.amount), { label: 'Undo', fn: undoLast });
+   }
+
+   function removeTemplate(id) {
+     const list = state.settings.templates || [];
+     if (!list.some((x) => x.id === id)) return;
+     pushUndo();
+     state.settings.templates = list.filter((x) => x.id !== id);
+     if (save()) toast('Template removed', { label: 'Undo', fn: undoLast });
+   }
+
+
+   /* ---------- records: recurring plans ---------- */
+
+   function renderRecurring() {
+     const box = $('recList');
+     fillRecDays();
+     fillCategorySelect($('recCategory'));
+     if (!box) return;
+     const list = (state.settings.recurring || []).slice()
+       .sort((a, b) => (a.active === b.active ? a.dayOfMonth - b.dayOfMonth : (a.active ? -1 : 1)));
+     if (!list.length) {
+       mount(box, h('div', { class: 'empty-state' }, 'No plans yet. Rent, salary, subscriptions — say how much and which day.'));
+       return;
+     }
+     mount(box, list.map((r) =>
+       h('div', { class: 'mini-item' },
+         h('div', { class: 'mini-head' },
+           h('span', { class: 'label' }, r.label || r.category),
+           h('span', { class: 'value ' + (r.type === 'income' ? 'pos' : 'neg') },
+             formatMoney(r.amount, { signed: r.type === 'income' }))),
+         h('div', { class: 'mini-meta' },
+           (r.type === 'income' ? 'Income' : 'Expense') + ' · ' + r.category + ' · the ' + ordinal(r.dayOfMonth) +
+           ' of every month' + (r.active ? '' : ' · paused')),
+         h('div', { class: 'mini-actions' },
+           button(r.active ? 'Pause' : 'Resume', 'rec-toggle', { id: r.id }),
+           button('Delete', 'rec-delete', { id: r.id, class: 'btn-mini danger' }))
+       )
+     ));
+   }
+
+   function fillRecDays() {
+     const sel = $('recDay');
+     if (!sel) return;
+     const held = sel.value;
+     mount(sel, Array.from({ length: 28 }, (_, i) => h('option', { value: String(i + 1) }, 'Day ' + (i + 1) + ' of the month')));
+     if (held) sel.value = held;
+     if (!sel.value) sel.value = '1';
+   }
+
+   function addRecurring() {
+     if ((state.settings.recurring || []).length >= 24) { toast('24 plans is the limit'); return; }
+     const label = cleanText($('recLabel').value, ITEM_LIMIT);
+     const amount = readAmountField($('recAmount'), 'Amount');
+     if (amount.error) { toast(amount.error); return; }
+     pushUndo();
+     state.settings.recurring.push({
+       id: newId(),
+       type: $('recType').value === 'income' ? 'income' : 'expense',
+       amount: amount.value,
+       category: $('recCategory').value,
+       label,
+       dayOfMonth: clampNumber($('recDay').value, 1, 28),
+       active: true,
+       lastFiled: null
+     });
+     $('recLabel').value = '';
+     $('recAmount').value = '';
+     if (save()) {
+       toast('Plan added — it files itself on the ' + ordinal(clampNumber($('recDay').value, 1, 28)), { label: 'Undo', fn: undoLast });
+     }
+   }
+
+   function toggleRecurring(id) {
+     const r = (state.settings.recurring || []).find((x) => x.id === id);
+     if (!r) return;
+     pushUndo();
+     r.active = !r.active;
+     if (save()) toast(r.active ? 'Plan resumed' : 'Plan paused — nothing files until it is resumed');
+   }
+
+   function deleteRecurring(id) {
+     const r = (state.settings.recurring || []).find((x) => x.id === id);
+     if (!r) return;
+     if (!confirm('Delete this plan? Entries it already filed stay in your records.')) return;
+     pushUndo();
+     state.settings.recurring = (state.settings.recurring || []).filter((x) => x.id !== id);
+     if (save()) toast('Plan deleted', { label: 'Undo', fn: undoLast });
+   }
+
+   /** Files every active plan whose day has come in a month it has not yet
+      filed for. One entry per plan per run in the current month, whatever
+      earlier months were missed; filed entries carry the plan's day, at 09:00,
+      into the account last used on this device. Returns how many were filed —
+      the caller persists and announces. */
+   function maybeFileRecurring() {
+     const cur = currentPeriod();
+     const today = new Date();
+     let filed = 0;
+     for (const r of state.settings.recurring || []) {
+       if (!r.active) continue;
+       if (r.lastFiled === cur) continue;
+       if (r.dayOfMonth > today.getDate()) continue;
+       const accId = findAccount(state.settings.lastAccountId) ? state.settings.lastAccountId : cashAccountId();
+       const built = buildTransaction(r.type, r.amount, r.category, r.label || r.category, cur + '-' + pad2(r.dayOfMonth) + 'T09:00', accId, null);
+       if (built.error) continue;
+       pushUndo();
+       built.value.source = 'plan:' + r.id;
+       state.transactions.unshift(built.value);
+       r.lastFiled = cur;
+       filed++;
+     }
+     return filed;
+   }
+
+
+   /* ---------- budget: rollover + challenges ---------- */
+
+   /** Carries unused budget room into the current month once per month, when
+      the toggle is on. Only fills categories that are still real and have no
+      limit in the new month yet — nothing is ever overwritten. Fires
+      regardless of when the toggle was turned on; budgetRolloverPeriod marks
+      the month as processed. */
+   function maybeRolloverBudgets() {
+     const cur = currentPeriod();
+     const s = state.settings;
+     if (s.budgetRolloverPeriod === cur) return false;
+     const willRoll = s.budgetRollover === true;
+     if (willRoll) {
+       const prev = previousPeriod(cur);
+       const src = state.budgets[prev];
+       if (src) {
+         const dest = budgetsFor(cur);
+         for (const cat of Object.keys(src)) {
+           if (Object.prototype.hasOwnProperty.call(dest, cat)) continue;
+           if (!findCategory(cat)) continue;
+           dest[cat] = round2((src[cat] || 0) + budgetFreeRoom(cat, prev));
+         }
+       }
+     }
+     s.budgetRolloverPeriod = cur;
+     return willRoll;
+   }
+
+   function renderChallenges() {
+     const box = $('challengeList');
+     fillCategorySelect($('challengeCategory'));
+     if (!box) return;
+     const period = activeBudgetPeriod();
+     const list = (state.settings.challenges || []).filter((c) => c.period === period);
+     if (!list.length) {
+       mount(box, h('div', { class: 'empty-state' }, 'No challenges for ' + periodLabel(period) + ' — pick a category and a cap below.'));
+       return;
+     }
+     mount(box, list.map((c) => {
+       const used = budgetCounted(c.category, c.period);
+       const pct = c.cap > 0 ? Math.min(100, (used / c.cap) * 100) : 0;
+       const over = used > c.cap;
+       return h('div', { class: 'mini-item' },
+         h('div', { class: 'mini-head' },
+           h('span', { class: 'label' }, c.category),
+           h('span', { class: 'value' + (over ? ' neg' : '') }, formatMoney(used) + ' of ' + formatMoney(c.cap))),
+         h('div', { class: 'progress-bar', role: 'progressbar', 'aria-valuenow': String(Math.round(pct)), 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': c.category + ' challenge' },
+           h('div', { class: 'progress-fill ' + (over ? 'over' : (pct >= 70 ? 'warn' : 'ok')), style: 'width:' + pct + '%' })),
+         h('div', { class: 'mini-status ' + (over ? 'over' : 'ok') },
+           over ? 'Over by ' + formatMoney(round2(used - c.cap)) : formatMoney(round2(c.cap - used)) + ' left under the cap'),
+         h('div', { class: 'mini-actions' },
+           button('Delete', 'challenge-remove', { id: c.id, class: 'btn-mini danger' }))
+       );
+     }));
+   }
+
+   function addChallenge() {
+     if ((state.settings.challenges || []).length >= 12) { toast('12 challenges is the limit'); return; }
+     const cat = $('challengeCategory').value;
+     if (!findCategory(cat)) { toast('Choose a category'); return; }
+     const cap = readAmountField($('challengeCap'), 'Challenge cap');
+     if (cap.error) { toast(cap.error); return; }
+     const period = activeBudgetPeriod();
+     if ((state.settings.challenges || []).some((c) => c.period === period && c.category === cat)) {
+       toast('That category already has a challenge for ' + periodLabel(period));
+       return;
+     }
+     pushUndo();
+     state.settings.challenges.push({ id: newId(), period, category: cat, cap: cap.value });
+     $('challengeCap').value = '';
+     if (save()) toast('Challenge on — keep ' + cat + ' under ' + formatMoney(cap.value), { label: 'Undo', fn: undoLast });
+   }
+
+   function removeChallenge(id) {
+     const c = (state.settings.challenges || []).find((x) => x.id === id);
+     if (!c) return;
+     if (!confirm('Remove the ' + c.category + ' challenge for ' + periodLabel(c.period) + '?')) return;
+     pushUndo();
+     state.settings.challenges = (state.settings.challenges || []).filter((x) => x.id !== id);
+     if (save()) toast('Challenge removed', { label: 'Undo', fn: undoLast });
+   }
+
+
+   /* ---------- reports: insights + spending pattern ---------- */
+
+   function renderInsights() {
+     const box = $('insightBox');
+     if (!box) return;
+     const { start, end } = periodBounds(reportRange.mode);
+     const totals = ledgerTotals(start, end);
+     const byCat = spendByCategory(start, end);
+     const ranked = Array.from(byCat.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+     if (!ranked.length) { mount(box); return; }
+
+     const rows = [];
+     if (totals.income > 0) {
+       rows.push(['Savings rate', Math.round(((totals.income - totals.expense) / totals.income) * 100) + '% of income kept']);
+     }
+     const topShare = totals.expense > 0 ? Math.round((ranked[0][1] / totals.expense) * 100) : 0;
+     rows.push(['Biggest category', ranked[0][0] + ' — ' + formatMoney(ranked[0][1]) + ' (' + topShare + '% of spending)']);
+
+     const byDay = [0, 0, 0, 0, 0, 0, 0];
+     let big = null;
+     for (const t of state.transactions) {
+       if (t.type !== 'expense') continue;
+       const d = new Date(t.date);
+       if (start && d < start) continue;
+       if (end && d > end) continue;
+       byDay[d.getDay()] = round2(byDay[d.getDay()] + t.amount);
+       if (!big || t.amount > big.amount) big = t;
+     }
+     const heaviest = Math.max.apply(null, byDay);
+     if (heaviest > 0) {
+       rows.push(['Most expensive weekday', ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][byDay.indexOf(heaviest)] + ' — ' + formatMoney(heaviest)]);
+     }
+     if (big) rows.push(['Largest entry', formatMoney(big.amount) + (big.category ? ' in ' + big.category : '')]);
+
+     let persona = 'Balanced';
+     if (totals.income > 0 && totals.net < 0) persona = 'Outspending income';
+     else if (totals.income > 0 && totals.net >= round2(totals.income * 0.35)) persona = 'Strong saver';
+
+     mount(box, h('section', { class: 'insight-card', 'aria-label': 'Insights' },
+       h('h3', { class: 'insight-title' }, 'Insights'),
+       rows.map(([k, v]) => h('div', { class: 'report-row' }, h('span', { class: 'label' }, k), h('span', { class: 'value' }, v))),
+       h('div', { class: 'insight-persona' },
+         h('span', { class: 'persona', title: 'Read off the range shown: money kept versus money coming in' }, 'Pattern'),
+         h('span', null, persona))));
+   }
+
+
+   /* ---------- voice entry (online only) ---------- */
+
+   /** Online-only by nature: browser speech recognition runs on a server, so
+      offline the button is disabled rather than half-working. */
+   function updateVoiceAvailability() {
+     const mic = $('txVoice');
+     if (!mic) return;
+     const SR = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+     const ok = !!SR && navigator.onLine !== false;
+     mic.disabled = !ok;
+     mic.title = !SR
+       ? 'Voice entry needs Chrome or Edge'
+       : (ok
+         ? 'Speak like "bought chai 120 cash" — it fills the form, you still press Save'
+         : 'Voice entry needs an internet connection');
+   }
+
+   function setupVoice() {
+     const mic = $('txVoice');
+     if (!mic) return;
+     mic.addEventListener('click', () => {
+       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+       if (!SR || navigator.onLine === false) { updateVoiceAvailability(); return; }
+       let rec;
+       try {
+         rec = new SR();
+       } catch (err) { updateVoiceAvailability(); return; }
+       rec.lang = 'en-US';
+       rec.interimResults = false;
+       rec.maxAlternatives = 1;
+       mic.classList.add('listening');
+       rec.onresult = (e) => {
+         const alt = e.results && e.results[0] && e.results[0][0];
+         const text = String((alt && alt.transcript) || '').trim();
+         if (text) applyVoiceText(text);
+       };
+       rec.onerror = () => {
+         mic.classList.remove('listening');
+         toast('Voice did not come through — type it instead');
+       };
+       rec.onend = () => mic.classList.remove('listening');
+       try { rec.start(); } catch (err) { mic.classList.remove('listening'); updateVoiceAvailability(); }
+     });
+     window.addEventListener('online', updateVoiceAvailability);
+     window.addEventListener('offline', updateVoiceAvailability);
+     updateVoiceAvailability();
+   }
+
+   /** Text → form. The first number heard is the amount; an income word
+      switches the type; a recognised account name fills the account; the
+      transcript lands in the comment. Category and date stay as the form
+      already has them — guessing those was too often wrong. Saving stays a
+      button press: speech is fast, but filing money quietly is a mistake. */
+   function applyVoiceText(text) {
+     const lower = text.toLowerCase();
+     const heard = (String(text).match(/d[d,]*/) || [])[0];
+     const amount = heard ? toPositiveNumber(heard) : null;
+     if (amount === null) {
+       toast('Could not hear an amount — say the number first, like "chai 120 cash"');
+       return;
+     }
+     if (/(salary|received|got|earned|deposit|refund|refunded)/.test(lower)) $('txType').value = 'income';
+     else if (/(spent|paid|bought|expense|gave)/.test(lower)) $('txType').value = 'expense';
+     // Account names are matched as whole words: the text is padded so "Sada"
+     // does not hide inside "SadaPay" and vice versa.
+     const padded = ' ' + lower.replace(/[^p{L}p{N}]+/gu, ' ').replace(/s+/g, ' ').trim() + ' ';
+     const acc = state.accounts.find((a) => !a.archived &&
+       a.name.toLowerCase().trim().length >= 3 && padded.indexOf(' ' + a.name.toLowerCase().trim() + ' ') !== -1);
+     if (acc) $('txAccount').value = acc.id;
+     $('txAmount').value = String(amount);
+     const commentBox = $('txComment');
+     if (commentBox && !commentBox.value) commentBox.value = cleanText(text, COMMENT_LIMIT);
+     setTxTypeFields();
+     toast('Heard: "' + text + '" — press Save when it looks right');
+   }
+
+
+   /* ---------- accent color (Settings → Appearance) ---------- */
+
+   /* Per-device like the theme: it is how this screen looks, not what the
+      money says. The palette is fixed and dark enough for white text, so
+      contrast survives any pick; in dark mode the text accent is lifted
+      toward white while fills stay as chosen. */
+   const ACCENT_KEY = 'cashflow:accent';
+   const ACCENTS = ['#0a58ca', '#127531', '#6b21a8', '#8a5200', '#0e7490', '#be185d', '#4338ca', '#c0271d'];
+
+   function getAccent() {
+     try {
+       const a = localStorage.getItem(ACCENT_KEY);
+       return ACCENTS.indexOf(a) !== -1 ? a : null;
+     } catch (err) { return null; }
+   }
+
+   /** #rrggbb mixed toward white by amt (0..1). */
+   function lightenHex(hex, amt) {
+     const n = parseInt(hex.slice(1), 16);
+     const mix = (c) => Math.round(c + (255 - c) * amt);
+     const r = mix((n >> 16) & 255);
+     const g = mix((n >> 8) & 255);
+     const b = mix(n & 255);
+     return '#' + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+   }
+
+   function applyAccent() {
+     const a = getAccent();
+     const root = document.documentElement;
+     if (!a) {
+       root.style.removeProperty('--accent');
+       root.style.removeProperty('--accent-solid');
+       return;
+     }
+     root.style.setProperty('--accent', getTheme() === 'dark' ? lightenHex(a, 0.55) : a);
+     root.style.setProperty('--accent-solid', a);
+   }
+
+   function setAccent(color) {
+     if (ACCENTS.indexOf(color) === -1) return;
+     try { localStorage.setItem(ACCENT_KEY, color); } catch (err) { /* ignore */ }
+     applyAccent();
+     renderAccentSwatches();
+     toast('Accent updated');
+   }
+
+   function renderAccentSwatches() {
+     const box = $('accentRow');
+     if (!box) return;
+     const cur = getAccent();
+     mount(box, ACCENTS.map((c) =>
+       h('button', {
+         type: 'button',
+         class: 'swatch' + (c === cur ? ' is-active' : ''),
+         style: 'background:' + c,
+         dataset: { act: 'accent-set', arg: c },
+         'aria-pressed': c === cur ? 'true' : 'false',
+         'aria-label': 'Accent color ' + c,
+         title: 'Accent ' + c
+       })));
+   }
+
    /* ============================================================
       Month archive
       ============================================================ */
@@ -3545,6 +4387,13 @@
      const cash = accounts.rows.find((a) => a && a.kind === 'cash') || accounts.rows[0];
      const notes = unionById(curS.notes, incS.notes);
      const timers = unionById(curS.timers, incS.timers);
+     // Feature lists merge like every other by-id collection: current rows win
+     // each id, the rest is appended. Both sides are already validated shapes.
+     const rec = unionById(curS.recurring, incS.recurring);
+     const goalRows = unionById(curS.goals, incS.goals);
+     const tpl = unionById(curS.templates, incS.templates);
+     const chal = unionById(curS.challenges, incS.challenges);
+     const rolloverOn = curS.budgetRollover === true || incS.budgetRollover === true;
      // Moves merge like everything else: current rows win each id, the rest is
      // appended. sanitizeState already validated both sides' shapes.
      const moves = unionById(curS.budgetMoves, incS.budgetMoves);
@@ -3574,10 +4423,18 @@
            shoppingPeriod: (typeof curS.shoppingPeriod === 'string' && PERIOD_RE.test(curS.shoppingPeriod))
              ? curS.shoppingPeriod
              : null,
+           budgetRollover: rolloverOn,
+           budgetRolloverPeriod: (typeof curS.budgetRolloverPeriod === 'string' && PERIOD_RE.test(curS.budgetRolloverPeriod))
+             ? curS.budgetRolloverPeriod
+             : (typeof incS.budgetRolloverPeriod === 'string' && PERIOD_RE.test(incS.budgetRolloverPeriod) ? incS.budgetRolloverPeriod : null),
            notes: notes.rows,
            timers: timers.rows,
            catMemory: mem,
-           budgetMoves: moves.rows
+           budgetMoves: moves.rows,
+           recurring: rec.rows,
+           goals: goalRows.rows,
+           templates: tpl.rows,
+           challenges: chal.rows
          },
          closedPeriods: Array.from(cp).sort()
        },
@@ -4686,9 +5543,12 @@
    
    function renderAll() {
      renderBalance();
+     renderHomeExtras();
      renderAccounts();
      renderBudgets();
+     renderChallenges();
      renderTransactions();
+     renderRecurring();
      renderDebts();
      renderTimers();
      renderNotes();
@@ -4697,6 +5557,7 @@
      renderReport();
      renderSyncPanel();
      renderThemeButtons();
+     renderAccentSwatches();
      if ($('storageWarning')) $('storageWarning').hidden = storageUsable;
    }
    
@@ -4747,6 +5608,15 @@
      'email-copy-url': () => copyEmailWebhookUrl(),
      'build-check': () => checkForNewerBuild(true),
      'theme-set': (el) => setTheme(el.dataset.arg),
+     'accent-set': (el) => setAccent(el.dataset.arg),
+     'undo': () => undoLast(),
+     'tpl-use': (el) => useTemplate(el.dataset.id),
+     'tpl-remove': (el) => removeTemplate(el.dataset.id),
+     'goal-add': (el) => openGoalModal(el.dataset.id),
+     'goal-remove': (el) => removeGoal(el.dataset.id),
+     'rec-toggle': (el) => toggleRecurring(el.dataset.id),
+     'rec-delete': (el) => deleteRecurring(el.dataset.id),
+     'challenge-remove': (el) => removeChallenge(el.dataset.id),
      'export': () => exportBackup(),
      'import': importBackup,
      'reset': resetAll,
@@ -4776,6 +5646,16 @@
        e.preventDefault();
        fn(el);
      });
+
+     // Ctrl+Z backs out the last action — the Undo button's keyboard twin.
+     // Inside a text field the browser's own editing-undo stays untouched.
+     document.addEventListener('keydown', (e) => {
+       if (!((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z'))) return;
+       const tag = document.activeElement && document.activeElement.tagName;
+       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+       e.preventDefault();
+       undoLast();
+     });
    
      // change events (checkboxes, month pickers) need their own listener.
      // Order matters: a control with no data-act must not bail out early, or the
@@ -4790,6 +5670,18 @@
        if (e.target.id === 'acctPeriod') { changeAcctPeriod(e.target.value); return; }
        if (e.target.id === 'txType') { setTxTypeFields(); return; }
        if (e.target.id === 'editType') { setEditTypeFields(); return; }
+       if (e.target.id === 'txSplitOn') {
+         setHiddenSplit(!e.target.checked);
+         return;
+       }
+       if (e.target.id === 'rolloverToggle') {
+         state.settings.budgetRollover = e.target.checked;
+         toast(e.target.checked
+           ? 'On — the next new month keeps whatever is unused now'
+           : 'Off — each month starts from the limits you set');
+         save();
+         return;
+       }
    
        const el = e.target.closest('[data-act]');
        if (!el) return;
@@ -4833,7 +5725,12 @@
        ['editForm', saveEdit],
        ['editDebtForm', saveDebtEdit],
        ['noteEditForm', saveNoteEdit],
-       ['budgetFixForm', saveBudgetFix]
+       ['budgetFixForm', saveBudgetFix],
+       ['templateForm', addTemplate],
+       ['goalForm', addGoal],
+       ['recForm', addRecurring],
+       ['challengeForm', addChallenge],
+       ['goalModalForm', saveGoalPayment]
      ];
      forms.forEach(([id, handler]) => {
        const form = $(id);
@@ -4858,7 +5755,7 @@
      }
    
      // close modals on backdrop click
-     ['editModal', 'editDebtModal', 'noteEditModal', 'budgetFixModal', 'choiceModal'].forEach((id) => {
+     ['editModal', 'editDebtModal', 'noteEditModal', 'budgetFixModal', 'choiceModal', 'goalModal'].forEach((id) => {
        const overlay = $(id);
        if (overlay) overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(id); });
      });
@@ -5051,8 +5948,25 @@
          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* ignore */ }
        }
      } catch (err) { /* never block boot */ }
+
+     // Month rollovers: budgets carry first (if the toggle is on), then any
+     // recurring plans whose day has come file themselves. Also calendar work
+     // — persisted here, announced with undo, never blocking the boot.
+     try {
+       const rolled = maybeRolloverBudgets();
+       const filedCount = maybeFileRecurring();
+       if (rolled || filedCount) {
+         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* ignore */ }
+       }
+       if (filedCount) {
+         toast(filedCount === 1
+           ? '1 recurring entry filed'
+           : filedCount + ' recurring entries filed', { label: 'Undo', fn: undoLast });
+       }
+     } catch (err) { /* never block boot */ }
    
      wireEvents();
+     setupVoice();
    
      /* Decide what the sync panel should show, before the first render paints it.
         Two ways to arrive here with a valid recovery token: a link the user just
