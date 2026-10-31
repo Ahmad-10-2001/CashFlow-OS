@@ -1134,6 +1134,7 @@ select {
   color: var(--muted);
   line-height: 1.5;
   margin: 0 0 16px;
+  white-space: pre-line;
 }
 .choice-buttons { display: flex; flex-direction: column; gap: 8px; }
 .choice-buttons .btn {

@@ -133,17 +133,98 @@
       across reloads. A restore goes through sanitizeState so the snapshot
       lands back as valid app state, budget prototypes and all. */
    let undoStack = [];
-   function pushUndo() {
+   function pushUndo(label) {
      try {
-       undoStack.unshift(JSON.stringify(state));
+       undoStack.unshift({ snapshot: JSON.stringify(state), label: typeof label === 'string' ? label : '' });
        if (undoStack.length > 10) undoStack.length = 10;
      } catch (err) { /* storage blocked — undo simply does nothing */ }
    }
-   function undoLast() {
+   /** Plain-language lines for what restoring a snapshot would change: rows
+      that vanish, come back, or are lifted back to an older copy. Pure —
+      the modal reads it before anything is touched, cancelling is free. */
+   function undoDetailLines(prev, cur) {
+     const lines = [];
+     const byId = (rows) => {
+       const m = new Map();
+       (rows || []).forEach((r) => { if (r && r.id) m.set(r.id, r); });
+       return m;
+     };
+     const diffRows = (prevRows, curRows, one, many) => {
+       const pm = byId(prevRows);
+       const cm = byId(curRows);
+       let added = 0;
+       let removed = 0;
+       let edited = 0;
+       pm.forEach((row, id) => {
+         if (!cm.has(id)) removed++;
+         else if (JSON.stringify(row) !== JSON.stringify(cm.get(id))) edited++;
+       });
+       cm.forEach((row, id) => { if (!pm.has(id)) added++; });
+       if (removed) lines.push(removed + ' ' + (removed === 1 ? one : many) + ' taken back');
+       if (added) lines.push(added + ' ' + (added === 1 ? one : many) + ' removed');
+       if (edited) lines.push(edited + ' ' + (edited === 1 ? one : many) + ' changed back');
+     };
+     diffRows(prev.transactions, cur.transactions, 'transaction', 'transactions');
+     diffRows(prev.debts, cur.debts, 'udhaar entry', 'udhaar entries');
+     diffRows((prev.settings || {}).notes, (cur.settings || {}).notes, 'note', 'notes');
+     diffRows((prev.settings || {}).timers, (cur.settings || {}).timers, 'timer', 'timers');
+     diffRows((prev.settings || {}).recurring, (cur.settings || {}).recurring, 'recurring plan', 'recurring plans');
+     diffRows((prev.settings || {}).goals, (cur.settings || {}).goals, 'goal', 'goals');
+     diffRows((prev.settings || {}).templates, (cur.settings || {}).templates, 'template', 'templates');
+     diffRows((prev.settings || {}).challenges, (cur.settings || {}).challenges, 'challenge', 'challenges');
+     diffRows(prev.shopping, cur.shopping, 'shopping item', 'shopping items');
+     const pb = prev.budgets || {};
+     const cb = cur.budgets || {};
+     let budgets = 0;
+     let first = '';
+     Array.from(new Set(Object.keys(pb).concat(Object.keys(cb)))).forEach((p) => {
+       const A = pb[p] || {};
+       const B = cb[p] || {};
+       Object.keys(Object.assign({}, A, B)).forEach((cat) => {
+         if (A[cat] === B[cat]) return;
+         budgets++;
+         if (!first) first = cat + ' in ' + periodLabel(p) + ': ' + formatMoney(B[cat] || 0) + ' -> ' + formatMoney(A[cat] || 0);
+       });
+     });
+     if (budgets) lines.push(budgets + ' budget limit' + (budgets === 1 ? '' : 's') + ' set back' + (first ? ' — ' + first : ''));
+     if ((prev.categories || []).join('|') !== (cur.categories || []).join('|')) lines.push('the category list set back');
+     if (lines.length > 6) lines.splice(5, lines.length, '(+' + (lines.length - 5) + ' more changes)');
+     return lines;
+   }
+
+   /* Undo asks first: a modal shows what is being backed out and exactly what
+      changes that takes back, so Undo is never a silent risk. */
+   async function undoLast() {
      if (!undoStack.length) { toast('Nothing to undo'); return; }
+     const entry = undoStack[0];
+     let snap = null;
+     try { snap = JSON.parse(entry.snapshot); } catch (err) { snap = null; }
+     if (!snap) { undoStack.shift(); toast('Could not undo'); return; }
+     const lines = undoDetailLines(snap, state);
+     const what = (entry.label ? 'Last change: ' + entry.label + '.\n' : '') +
+       (lines.length
+         ? 'Undoing it would:\n' + lines.map((l) => '- ' + l).join('\n')
+         : 'This takes the whole app state back to how it was just before that change.');
+     const answer = await askChoice('Undo', what, [
+       { value: 'undo', kind: 'primary', label: 'Undo it' },
+       { value: 'keep', kind: 'cancel', label: 'Keep it' }
+     ]);
+     if (answer !== 'undo') return;
+     const done = undoStack.shift();
+     if (!done || done.snapshot !== entry.snapshot) {
+       // The queue moved while the modal was open — refuse rather than undo
+       // the wrong step, and put the entry back so a retry still works.
+       if (done) undoStack.unshift(done);
+       toast('The undo queue moved — try again');
+       return;
+     }
      try {
-       state = sanitizeState(JSON.parse(undoStack.shift())).state;
-     } catch (err) { toast('Could not undo'); return; }
+       state = sanitizeState(snap).state;
+     } catch (err) {
+       undoStack.unshift(done);
+       toast('Could not undo');
+       return;
+     }
      save();
      renderAll();
      toast('Undone');
@@ -754,6 +835,7 @@
          type: r.type === 'income' ? 'income' : 'expense',
          amount,
          category: catOr(r.category),
+         accountId: accountIdSet.has(r.accountId) ? r.accountId : null,
          label,
          dayOfMonth: clampNumber(r.dayOfMonth, 1, 28),
          active: r.active !== false,
@@ -2239,7 +2321,7 @@
      const amount = readAmountField($('budgetAmount'), 'Budget');
      if (amount.error) { toast(amount.error); return; }
    
-     pushUndo();
+     pushUndo('Budget set for ' + cat);
      budgetsFor(period)[cat] = amount.value;
      $('budgetAmount').value = '';
      if (save()) toast('Budget set for ' + cat + ' in ' + periodLabel(period), { label: 'Undo', fn: undoLast });
@@ -2249,7 +2331,7 @@
      const period = activeBudgetPeriod();
      if (!Object.prototype.hasOwnProperty.call(budgetsFor(period), cat)) return;
      if (!confirm('Remove the budget for "' + cat + '" in ' + periodLabel(period) + '?')) return;
-     pushUndo();
+     pushUndo('Budget removed for ' + cat);
      delete state.budgets[period][cat];
      if (save()) toast('Budget removed for ' + cat, { label: 'Undo', fn: undoLast });
    }
@@ -2520,7 +2602,7 @@
      );
      if (built.error) { toast(built.error); return; }
    
-     pushUndo();
+     pushUndo('Transaction saved');
      state.transactions.unshift(built.value);
      state.settings.lastAccountId = fromId;
    
@@ -2609,7 +2691,7 @@
        ? 'transfer of ' + formatMoney(tx.amount) + ' from ' + accountName(tx.accountId) + ' to ' + accountName(tx.toAccountId)
        : tx.type + ' of ' + formatMoney(tx.amount);
      if (!confirm('Delete this ' + what + '?')) return;
-     pushUndo();
+     pushUndo('Transaction deleted');
      dropRecord('transactions', id);
      if (save()) toast('Transaction deleted', { label: 'Undo', fn: undoLast });
    }
@@ -2737,7 +2819,7 @@
      }
      const ledger = moveNow;
    
-     pushUndo();
+     pushUndo('Udhaar entry added');
      const d = {
        id: newId(),
        type,
@@ -2797,7 +2879,7 @@
      );
      if (choice === null) return;
    
-     pushUndo();
+     pushUndo('Udhaar entry deleted');
      dropRecord('debts', id);
      if (choice === 'all') {
        syncLedgerForDebt(d, { forceRemove: true });
@@ -3758,7 +3840,7 @@
      if (!name) { toast('Give the goal a name'); return; }
      if (target.error) { toast(target.error); return; }
      if ((state.settings.goals || []).some((g) => g.name.toLowerCase() === name.toLowerCase())) { toast('A goal with that name already exists'); return; }
-     pushUndo();
+     pushUndo('Goal added');
      state.settings.goals.push({ id: newId(), name, target: target.value, saved: 0 });
      $('goalName').value = '';
      $('goalTarget').value = '';
@@ -3780,7 +3862,7 @@
      if (!g) { closeModal('goalModal'); return; }
      const amount = readAmountField($('goalModalAmount'), 'Amount');
      if (amount.error) { toast(amount.error); return; }
-     pushUndo();
+     pushUndo('Goal progress noted');
      const wasDone = g.saved >= g.target;
      g.saved = round2(Math.min(g.target, g.saved + amount.value));
      closeModal('goalModal');
@@ -3796,7 +3878,7 @@
      const g = (state.settings.goals || []).find((x) => x.id === id);
      if (!g) return;
      if (!confirm('Delete the goal "' + g.name + '"? The progress noted so far goes with it.')) return;
-     pushUndo();
+     pushUndo('Goal deleted');
      state.settings.goals = (state.settings.goals || []).filter((x) => x.id !== id);
      if (save()) toast('Goal deleted', { label: 'Undo', fn: undoLast });
    }
@@ -3807,7 +3889,7 @@
      const amount = readAmountField($('tplAmount'), 'Amount');
      if (!label) { toast('Give the template a name'); return; }
      if (amount.error) { toast(amount.error); return; }
-     pushUndo();
+     pushUndo('Template saved');
      state.settings.templates.push({
        id: newId(),
        label,
@@ -3826,7 +3908,7 @@
      const accId = findAccount(state.settings.lastAccountId) ? state.settings.lastAccountId : cashAccountId();
      const built = buildTransaction(t.type, t.amount, t.category, t.label, nowStamp(), accId, null);
      if (built.error) { toast(built.error); return; }
-     pushUndo();
+     pushUndo('Filed from template');
      state.transactions.unshift(built.value);
      state.settings.lastAccountId = accId;
      if (save()) toast('Filed ' + t.label + ' — ' + formatMoney(t.amount), { label: 'Undo', fn: undoLast });
@@ -3835,7 +3917,7 @@
    function removeTemplate(id) {
      const list = state.settings.templates || [];
      if (!list.some((x) => x.id === id)) return;
-     pushUndo();
+     pushUndo('Template removed');
      state.settings.templates = list.filter((x) => x.id !== id);
      if (save()) toast('Template removed', { label: 'Undo', fn: undoLast });
    }
@@ -3847,6 +3929,7 @@
      const box = $('recList');
      fillRecDays();
      fillCategorySelect($('recCategory'));
+     fillAccountSelect($('recAccount'));
      if (!box) return;
      const list = (state.settings.recurring || []).slice()
        .sort((a, b) => (a.active === b.active ? a.dayOfMonth - b.dayOfMonth : (a.active ? -1 : 1)));
@@ -3861,7 +3944,8 @@
            h('span', { class: 'value ' + (r.type === 'income' ? 'pos' : 'neg') },
              formatMoney(r.amount, { signed: r.type === 'income' }))),
          h('div', { class: 'mini-meta' },
-           (r.type === 'income' ? 'Income' : 'Expense') + ' · ' + r.category + ' · the ' + ordinal(r.dayOfMonth) +
+           (r.type === 'income' ? 'Income' : 'Expense') + ' · ' + r.category + ' · ' +
+           (findAccount(r.accountId) ? accountName(r.accountId) : 'last-used account') + ' · the ' + ordinal(r.dayOfMonth) +
            ' of every month' + (r.active ? '' : ' · paused')),
          h('div', { class: 'mini-actions' },
            button(r.active ? 'Pause' : 'Resume', 'rec-toggle', { id: r.id }),
@@ -3884,12 +3968,15 @@
      const label = cleanText($('recLabel').value, ITEM_LIMIT);
      const amount = readAmountField($('recAmount'), 'Amount');
      if (amount.error) { toast(amount.error); return; }
-     pushUndo();
+     pushUndo('Recurring plan added');
+     const recAcc = $('recAccount');
+     const recPlanAccount = recAcc && findAccount(recAcc.value) ? recAcc.value : null;
      state.settings.recurring.push({
        id: newId(),
        type: $('recType').value === 'income' ? 'income' : 'expense',
        amount: amount.value,
        category: $('recCategory').value,
+       accountId: recPlanAccount,
        label,
        dayOfMonth: clampNumber($('recDay').value, 1, 28),
        active: true,
@@ -3905,7 +3992,7 @@
    function toggleRecurring(id) {
      const r = (state.settings.recurring || []).find((x) => x.id === id);
      if (!r) return;
-     pushUndo();
+     pushUndo('Recurring plan ' + (r.active ? 'paused' : 'resumed'));
      r.active = !r.active;
      if (save()) toast(r.active ? 'Plan resumed' : 'Plan paused — nothing files until it is resumed');
    }
@@ -3914,7 +4001,7 @@
      const r = (state.settings.recurring || []).find((x) => x.id === id);
      if (!r) return;
      if (!confirm('Delete this plan? Entries it already filed stay in your records.')) return;
-     pushUndo();
+     pushUndo('Recurring plan deleted');
      state.settings.recurring = (state.settings.recurring || []).filter((x) => x.id !== id);
      if (save()) toast('Plan deleted', { label: 'Undo', fn: undoLast });
    }
@@ -3932,10 +4019,11 @@
        if (!r.active) continue;
        if (r.lastFiled === cur) continue;
        if (r.dayOfMonth > today.getDate()) continue;
-       const accId = findAccount(state.settings.lastAccountId) ? state.settings.lastAccountId : cashAccountId();
+       const accId = findAccount(r.accountId) ? r.accountId
+         : findAccount(state.settings.lastAccountId) ? state.settings.lastAccountId : cashAccountId();
        const built = buildTransaction(r.type, r.amount, r.category, r.label || r.category, cur + '-' + pad2(r.dayOfMonth) + 'T09:00', accId, null);
        if (built.error) continue;
-       pushUndo();
+       pushUndo('Recurring entry filed');
        built.value.source = 'plan:' + r.id;
        state.transactions.unshift(built.value);
        r.lastFiled = cur;
@@ -4012,7 +4100,7 @@
        toast('That category already has a challenge for ' + periodLabel(period));
        return;
      }
-     pushUndo();
+     pushUndo('Challenge added');
      state.settings.challenges.push({ id: newId(), period, category: cat, cap: cap.value });
      $('challengeCap').value = '';
      if (save()) toast('Challenge on — keep ' + cat + ' under ' + formatMoney(cap.value), { label: 'Undo', fn: undoLast });
@@ -4022,7 +4110,7 @@
      const c = (state.settings.challenges || []).find((x) => x.id === id);
      if (!c) return;
      if (!confirm('Remove the ' + c.category + ' challenge for ' + periodLabel(c.period) + '?')) return;
-     pushUndo();
+     pushUndo('Challenge removed');
      state.settings.challenges = (state.settings.challenges || []).filter((x) => x.id !== id);
      if (save()) toast('Challenge removed', { label: 'Undo', fn: undoLast });
    }
@@ -4098,6 +4186,7 @@
      mic.addEventListener('click', () => {
        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
        if (!SR || navigator.onLine === false) { updateVoiceAvailability(); return; }
+       if (window.isSecureContext === false) { toast('Voice entry needs a https:// address'); return; }
        let rec;
        try {
          rec = new SR();
@@ -4111,9 +4200,15 @@
          const text = String((alt && alt.transcript) || '').trim();
          if (text) applyVoiceText(text);
        };
-       rec.onerror = () => {
+       rec.onerror = (e) => {
          mic.classList.remove('listening');
-         toast('Voice did not come through — type it instead');
+         const kind = e && e.error;
+         // Each refusal says why — the message is the fix, not just an apology.
+         if (kind === 'not-allowed') toast('Microphone is blocked — allow mic access for this site, then tap again');
+         else if (kind === 'no-speech') toast('Nothing was heard — tap and speak again, closer to the mic');
+         else if (kind === 'audio-capture') toast('No microphone found on this device');
+         else if (kind === 'network-error' || kind === 'service-not-allowed') toast('Voice entry needs a working internet connection');
+         else toast('Voice did not come through — type it instead');
        };
        rec.onend = () => mic.classList.remove('listening');
        try { rec.start(); } catch (err) { mic.classList.remove('listening'); updateVoiceAvailability(); }
@@ -4130,17 +4225,17 @@
       button press: speech is fast, but filing money quietly is a mistake. */
    function applyVoiceText(text) {
      const lower = text.toLowerCase();
-     const heard = (String(text).match(/d[d,]*/) || [])[0];
+     const heard = (String(text).match(/\d[\d,]*/) || [])[0];
      const amount = heard ? toPositiveNumber(heard) : null;
      if (amount === null) {
        toast('Could not hear an amount — say the number first, like "chai 120 cash"');
        return;
      }
-     if (/(salary|received|got|earned|deposit|refund|refunded)/.test(lower)) $('txType').value = 'income';
-     else if (/(spent|paid|bought|expense|gave)/.test(lower)) $('txType').value = 'expense';
+     if (/\b(salary|received|got|earned|deposit|refund|refunded)\b/.test(lower)) $('txType').value = 'income';
+     else if (/\b(spent|paid|bought|expense|gave)\b/.test(lower)) $('txType').value = 'expense';
      // Account names are matched as whole words: the text is padded so "Sada"
      // does not hide inside "SadaPay" and vice versa.
-     const padded = ' ' + lower.replace(/[^p{L}p{N}]+/gu, ' ').replace(/s+/g, ' ').trim() + ' ';
+     const padded = ' ' + lower.replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim() + ' ';
      const acc = state.accounts.find((a) => !a.archived &&
        a.name.toLowerCase().trim().length >= 3 && padded.indexOf(' ' + a.name.toLowerCase().trim() + ' ') !== -1);
      if (acc) $('txAccount').value = acc.id;
@@ -5653,6 +5748,7 @@
        if (!((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z'))) return;
        const tag = document.activeElement && document.activeElement.tagName;
        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+       if (activeModalId) return;
        e.preventDefault();
        undoLast();
      });

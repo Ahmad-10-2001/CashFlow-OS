@@ -768,6 +768,7 @@ window.CashFlowSync = (function () {
       refreshPromise = null;
     }
     })();
+    return refreshPromise;
   }
 
   function ensureFreshToken() {
