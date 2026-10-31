@@ -238,6 +238,12 @@ window.CashFlowSync = (function () {
   /* ---------- session ---------- */
   const SESSION_KEY = 'cashflow:session';
   let session = null;
+  /* A refresh that is already running is parked here so several failing calls
+     share one request instead of stampeding the token endpoint. It must live
+     at THIS scope, next to `session`: it was missing entirely, so the first
+     token expiry crashed with "refreshPromise is not defined" and every
+     table's sync was faulted out until a sign-out wiped the session. */
+  let refreshPromise = null;
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     if (raw) session = JSON.parse(raw);
