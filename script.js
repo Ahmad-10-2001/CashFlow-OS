@@ -904,12 +904,21 @@
        if (amount === null) { note('skipped a template with an unusable amount'); continue; }
        const label = cleanText(t.label, ITEM_LIMIT);
        if (!label) { note('skipped a template with no name'); continue; }
+       // accountId is remembered per-template so one-tap entries land in the
+       // right wallet (Cash / NayaPay / Easypaisa / etc.) instead of always
+       // following state.settings.lastAccountId. Validated against the known
+       // accounts in `accounts`; if a template references an account that
+       // was deleted, we drop the pin (useTemplate() will fall back to the
+       // last-used wallet) rather than silently misfiling the money.
+       const tplAccountId = typeof t.accountId === 'string'
+         && accounts.some((a) => a.id === t.accountId) ? t.accountId : null;
        templates.push({
          id: withId(tplSeen, t),
          label,
          type: t.type === 'income' ? 'income' : 'expense',
          amount,
-         category: catOr(t.category)
+         category: catOr(t.category),
+         accountId: tplAccountId
        });
      }
 
@@ -3522,7 +3531,7 @@
      pushUndo('Qaza missed: ' + prayer);
      q.recent[prayer] += 1;
      logQaza({ prayer, kind: 'missed', bucket: 'recent', amount: 1 });
-     if (save()) toast('+1 ' + prayer + ' recent qaza · ' + qazaCountText(prayer), { label: 'Undo', fn: undoLast });
+     if (save()) toast('+1 ' + prayer + ' added to recent qaza · ' + qazaCountText(prayer), { label: 'Undo', fn: undoLast });
    }
 
    /** Pay back N of a prayer, LIFO: eats recent first, then backlog.
@@ -3549,7 +3558,7 @@
    function payQazaOne(prayer) {
      const q = qazaData();
      if ((q.recent[prayer] || 0) <= 0 && (q.backlog[prayer] || 0) <= 0) {
-       toast(prayer + ' ki koi qaza baki nahi — MashaAllah');
+       toast('No ' + prayer + ' qaza remaining — Alhamdulillah');
        return;
      }
      pushUndo('Qaza paid: ' + prayer);
@@ -3559,12 +3568,12 @@
      }
    }
 
-   /** Prompt and pay many. Used for payback sessions ("parhein 10 Fajr"). */
+   /** Prompt and pay many. Used for payback sessions (e.g. "offered 10 Fajr"). */
    function payQazaManyAsk(prayer) {
      const q = qazaData();
      const outstanding = (q.recent[prayer] || 0) + (q.backlog[prayer] || 0);
-     if (outstanding <= 0) { toast(prayer + ' ki koi qaza baki nahi — MashaAllah'); return; }
-     const raw = window.prompt('Kitni ' + prayer + ' parhi? (' + outstanding + ' baki hain)', '');
+     if (outstanding <= 0) { toast('No ' + prayer + ' qaza remaining — Alhamdulillah'); return; }
+     const raw = window.prompt('How many ' + prayer + ' prayers offered? (' + outstanding + ' outstanding)', '');
      if (raw === null) return;
      const asked = Math.floor(Number(String(raw).trim()) || 0);
      if (!(asked > 0)) { toast('Enter a positive number'); return; }
@@ -3583,8 +3592,8 @@
      const q = qazaData();
      const current = q.backlog[prayer] || 0;
      const raw = window.prompt(
-       'Puraani (backlog) ' + prayer + ' kitni hain?\n\n' +
-       'Yeh aap ki apni count hai — jab bhi aap "Parhi" karo ge aur recent zero ho, backlog kam hoga.',
+       'How many old (backlog) ' + prayer + ' qaza do you have?\n\n' +
+       'This is your own count. Whenever you tap "Prayed" and recent is zero, backlog goes down.',
        String(current)
      );
      if (raw === null) return;
@@ -3653,7 +3662,7 @@
      const q = qazaData();
      const r = q.recent[prayer] || 0;
      const b = q.backlog[prayer] || 0;
-     return (r + b) + ' baki (' + r + ' recent + ' + b + ' backlog)';
+     return (r + b) + ' outstanding (' + r + ' recent + ' + b + ' backlog)';
    }
 
    function renderQaza() {
@@ -3690,7 +3699,7 @@
            'aria-label': p + (on ? ' prayed on time' : ' not yet marked')
          },
            h('span', { class: 'qaza-tile-name' }, p),
-           h('span', { class: 'qaza-tile-status' }, on ? '✓ Parhi' : 'Tap karo')
+           h('span', { class: 'qaza-tile-status' }, on ? '✓ Prayed' : 'Tap to mark')
          );
        }));
      }
@@ -3699,10 +3708,10 @@
        const done = todayList.length;
        const left = QAZA_PRAYERS.length - done;
        statusBox.textContent = done === 0
-         ? 'Aaj abhi tak koi namaz tick nahi ki. Jo parh li wo tap karo.'
+         ? 'None marked yet today. Tap the prayers you have offered.'
          : done === QAZA_PRAYERS.length
-           ? '✓ Alhamdulillah — aaj ki saari 5 namazen on time.'
-           : done + ' of ' + QAZA_PRAYERS.length + ' parhi · ' + left + ' baki aaj.';
+           ? '✓ Alhamdulillah — all 5 prayers offered on time today.'
+           : done + ' of ' + QAZA_PRAYERS.length + ' offered · ' + left + ' left today.';
      }
 
      // Totals strip across all prayers
@@ -3736,7 +3745,7 @@
            h('div', { class: 'qaza-head' },
              h('span', { class: 'qaza-name' }, p),
              h('span', { class: 'qaza-total' + (total === 0 ? ' is-clear' : '') },
-               total === 0 ? '✓ Clear' : total + ' baki')
+               total === 0 ? '✓ Clear' : total + ' outstanding')
            ),
            h('div', { class: 'qaza-chips' },
              h('span', { class: 'qaza-chip recent' }, 'Recent: ' + r),
@@ -3748,27 +3757,27 @@
                class: 'btn-mini' + (total === 0 ? ' is-disabled' : ''),
                disabled: total === 0 ? '' : null,
                dataset: { act: 'qaza-pay-one', arg: p },
-               title: 'Pay one back (recent-first)'
-             }, '✓ Parhi 1'),
+               title: 'Mark one as prayed (recent-first)'
+             }, '✓ Prayed 1'),
              h('button', {
                type: 'button',
                class: 'btn-mini' + (total === 0 ? ' is-disabled' : ''),
                disabled: total === 0 ? '' : null,
                dataset: { act: 'qaza-pay-many', arg: p },
-               title: 'Pay several at once'
-             }, 'Parhi N…'),
+               title: 'Mark several as prayed at once'
+             }, 'Prayed N…'),
              h('button', {
                type: 'button',
                class: 'btn-mini danger',
                dataset: { act: 'qaza-miss', arg: p },
-               title: 'Manually add a missed one'
-             }, '+ Miss'),
+               title: 'Manually add a missed prayer'
+             }, '+ Missed'),
              h('button', {
                type: 'button',
                class: 'btn-mini',
                dataset: { act: 'qaza-set-backlog', arg: p },
                title: 'Set the backlog count'
-             }, 'Backlog set')
+             }, 'Set backlog')
            )
          );
        }));
@@ -4107,6 +4116,7 @@
        perDay: round2(sum.remaining / days),
        remaining: sum.remaining,
        reserved: sum.reserved,
+       shortfall: sum.shortfall,
        days,
        hasBudgets: Object.keys(budgetsFor(currentPeriod())).length > 0
      };
@@ -4175,11 +4185,13 @@
        const sts = safeToSpend();
        const streak = noSpendStreak();
        mount(box,
-         h('div', { class: 'stat-card' },
-           h('span', { class: 'stat-label', title: 'Balance left after this month’s budgets, shared over the days still to come' }, 'Safe to spend today'),
+         h('div', { class: 'stat-card' + (sts.shortfall > 0 ? ' is-warn' : '') },
+           h('span', { class: 'stat-label', title: 'Balance left after this month’s budgets, shared over the days still to come. Shows Rs 0 when budgets exceed your balance.' }, 'Safe to spend today'),
            h('span', { class: 'stat-value' }, formatMoney(sts.perDay)),
            h('span', { class: 'stat-sub' }, sts.hasBudgets
-             ? formatMoney(sts.remaining) + ' over ' + sts.days + ' day' + (sts.days === 1 ? '' : 's') + ' · ' + formatMoney(sts.reserved) + ' reserved'
+             ? (sts.shortfall > 0
+                 ? '⚠ Budgets exceed balance by ' + formatMoney(sts.shortfall) + ' · ' + formatMoney(sts.reserved) + ' reserved'
+                 : formatMoney(sts.remaining) + ' over ' + sts.days + ' day' + (sts.days === 1 ? '' : 's') + ' · ' + formatMoney(sts.reserved) + ' reserved')
              : 'no budgets set — the whole balance, day-shared')),
          h('div', { class: 'stat-card' },
            h('span', { class: 'stat-label', title: 'Days in a row with no expense, counting today. Transfers do not break it.' }, 'No-spend streak'),
@@ -4190,6 +4202,7 @@
      renderChips();
      renderGoals();
      fillCategorySelect($('tplCategory'));
+     fillAccountSelect($('tplAccount'));
    }
 
    function renderChips() {
@@ -4200,19 +4213,21 @@
        mount(box, h('div', { class: 'empty-state' }, 'No templates yet — save one below and this row becomes one-tap entries.'));
        return;
      }
-     mount(box, list.map((t) =>
-       h('button', {
+     mount(box, list.map((t) => {
+       const pinnedAcct = t.accountId && findAccount(t.accountId);
+       const acctHint = pinnedAcct ? pinnedAcct.name : 'last-used account';
+       return h('button', {
          type: 'button',
          class: 'chip',
          dataset: { act: 'tpl-use', id: t.id },
-         title: 'Files a ' + t.type + ' of ' + formatMoney(t.amount) + ' in ' + t.category + ', from the account last used here',
-         'aria-label': 'Add ' + t.label + ', ' + formatMoney(t.amount)
+         title: 'Files a ' + t.type + ' of ' + formatMoney(t.amount) + ' in ' + t.category + ' · ' + acctHint,
+         'aria-label': 'Add ' + t.label + ', ' + formatMoney(t.amount) + ', from ' + acctHint
        },
          t.label + ' · ' + formatMoney(t.amount),
          h('span', { class: 'chip-type ' + t.type }, t.type === 'income' ? 'in' : 'out'),
          h('span', { class: 'chip-x', role: 'button', title: 'Remove template', 'aria-label': 'Remove template ' + t.label, dataset: { act: 'tpl-remove', id: t.id } }, '✕')
-       )
-     ));
+       );
+     }));
    }
 
    function renderGoals() {
@@ -4296,13 +4311,20 @@
      const amount = readAmountField($('tplAmount'), 'Amount');
      if (!label) { toast('Give the template a name'); return; }
      if (amount.error) { toast(amount.error); return; }
+     // Account is remembered per-template so each chip debits/credits the
+     // right wallet without first switching accounts globally. Fall back to
+     // null (useTemplate() will then use the last-used wallet) when the pick
+     // is empty or points at an unknown account.
+     const rawAcc = ($('tplAccount') && $('tplAccount').value) || '';
+     const tplAccountId = rawAcc && findAccount(rawAcc) ? rawAcc : null;
      pushUndo('Template saved');
      state.settings.templates.push({
        id: newId(),
        label,
        type: $('tplType').value === 'income' ? 'income' : 'expense',
        amount: amount.value,
-       category: $('tplCategory').value
+       category: $('tplCategory').value,
+       accountId: tplAccountId
      });
      $('tplLabel').value = '';
      $('tplAmount').value = '';
@@ -4312,7 +4334,12 @@
    function useTemplate(id) {
      const t = (state.settings.templates || []).find((x) => x.id === id);
      if (!t) return;
-     const accId = findAccount(state.settings.lastAccountId) ? state.settings.lastAccountId : cashAccountId();
+     // Template-pinned account wins when it's still a known wallet. Falls back
+     // to the last-used account, then to cash, so a deleted-wallet template
+     // still files instead of erroring out.
+     const pinned = t.accountId && findAccount(t.accountId) ? t.accountId : null;
+     const accId = pinned
+       || (findAccount(state.settings.lastAccountId) ? state.settings.lastAccountId : cashAccountId());
      const built = buildTransaction(t.type, t.amount, t.category, t.label, nowStamp(), accId, null);
      if (built.error) { toast(built.error); return; }
      pushUndo('Filed from template');
@@ -5206,11 +5233,18 @@
     *  with 3,000 spent still reserves only 7,000. The spent money already left
     *  the accounts, so reserving the full limit would count it twice — once gone
     *  from the balance, once more as "set aside". Hence:
-    *  Remaining = balance − Σ max(0, limit − used).
+    *  Remaining = max(0, balance − Σ max(0, limit − used)).
     *  Overspending reserves nothing further (there is nothing left to reserve);
     *  it already shrank the balance, so it needs no extra subtraction — it is
     *  reported separately, purely as information. A pure function so the maths
-    *  is testable without rendering. */
+    *  is testable without rendering.
+    *
+    *  Clamp-at-zero: when planned budgets exceed current cash (common early in
+    *  the month, before salary lands), raw remaining would be a big negative
+    *  number — and dividing that over the days left makes "safe to spend"
+    *  look like a huge negative daily figure, which is nonsense. Clamping to
+    *  zero gives the honest answer ("Rs 0 safe today") and the shortfall is
+    *  surfaced separately as `shortfall` so the UI can warn about it. */
    function budgetSummary(period) {
      // Counted, not just spent: moved spending applies here exactly as on the
      // rows, so the summary and the list can never disagree.
@@ -5226,7 +5260,14 @@
        overExtra = round2(overExtra + Math.max(0, round2(catUsed - limit)));
      }
      const available = allAccountBalances().total;
-     return { available, used, reserved, overExtra, remaining: round2(available - reserved) };
+     const raw = round2(available - reserved);
+     // Shortfall is "how much more cash would be needed to fully fund the
+     // remaining budgets" — strictly positive when budgets outrun the balance,
+     // zero otherwise. Separate from remaining so the UI can show it as a
+     // warning without the main number lying.
+     const shortfall = raw < 0 ? round2(-raw) : 0;
+     const remaining = raw < 0 ? 0 : raw;
+     return { available, used, reserved, overExtra, remaining, shortfall };
    }
    
    function renderBudgets() {
@@ -5340,7 +5381,17 @@
                : null,
              h('div', { class: 'budget-sum-row remaining' },
                h('span', {}, 'Remaining (saving)'),
-               h('span', {}, formatMoney(sum.remaining)))
+               h('span', {}, formatMoney(sum.remaining))),
+             // When the planned budgets reserve more money than the balance
+             // actually holds, remaining is clamped at zero (see
+             // budgetSummary). We surface the gap here so the user doesn't
+             // mistake "Remaining 0" for "I'm exactly balanced" — it means
+             // "I'm already short by this much on my plan".
+             sum.shortfall > 0
+               ? h('div', { class: 'budget-sum-row over' },
+                 h('span', {}, '⚠ Budgets exceed balance by'),
+                 h('span', {}, formatMoney(sum.shortfall)))
+               : null
            )
          );
        }

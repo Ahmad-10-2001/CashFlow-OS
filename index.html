@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v49">
+  <meta name="app-build" content="v51">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -91,6 +91,10 @@
         <div class="form-group">
           <label class="sr-only" for="tplCategory">Template category</label>
           <select id="tplCategory"></select>
+        </div>
+        <div class="form-group">
+          <label class="sr-only" for="tplAccount">Template account</label>
+          <select id="tplAccount"></select>
         </div>
         <button class="btn btn-dark" type="submit">Save template</button>
       </form>
@@ -483,36 +487,36 @@
     </section>
   </div>
 
-  <!-- ══════════════ QAZA NAMAZ ══════════════ -->
+  <!-- ══════════════ QAZA PRAYERS ══════════════ -->
   <div id="panel-qaza" data-panel="qaza" role="tabpanel" aria-labelledby="qazaHeading" hidden>
     <section class="card" aria-labelledby="qazaHeading">
-      <h2 class="card-title" id="qazaHeading">🕌 Qaza Namaz</h2>
+      <h2 class="card-title" id="qazaHeading">🕌 Qaza Prayers</h2>
       <p class="card-subtitle">
-        Puraani (backlog) aur naee (recent) qaza alag track hoti hain.
-        Jab bhi “Parhi” tap karoge — pehle recent kam hoti hai, uske baad backlog.
+        Old (backlog) and new (recent) qaza are tracked separately.
+        Each time you tap “Prayed”, the recent count comes down first — backlog only drops once recent reaches zero.
       </p>
     </section>
 
     <section class="card" aria-label="Today's prayers">
-      <h3 class="card-title">Aaj ki Namazen</h3>
+      <h3 class="card-title">Today's Prayers</h3>
       <p class="card-subtitle" id="qazaTodayDate" style="margin-bottom:4px"></p>
-      <p class="card-subtitle" id="qazaTodayStatus">Jo parh li wo tap karo.</p>
+      <p class="card-subtitle" id="qazaTodayStatus">Tap the prayers you've offered on time.</p>
       <div id="qazaDaily" class="qaza-grid" role="group" aria-label="Daily prayer checklist"></div>
       <p class="card-subtitle" style="margin-top:10px; font-size:12px">
-        Note: Jo namaz aaj tick nahi karoge, aglay din woh khud recent qaza mein chali jaayegi.
+        Note: any prayer left unticked by day's end automatically moves to recent qaza.
       </p>
     </section>
 
     <section class="card" aria-label="Qaza summary">
-      <h3 class="card-title">Total Baki</h3>
+      <h3 class="card-title">Total Outstanding</h3>
       <div id="qazaSummary" class="qaza-sum"></div>
     </section>
 
     <section class="card" aria-label="Per prayer qaza list">
       <h3 class="card-title">Breakdown</h3>
       <p class="card-subtitle" style="margin-bottom:12px">
-        Har namaz ke do counters — recent (naee) aur backlog (puraani).
-        “Parhi 1” / “Parhi N” se adaa karo; “Backlog set” se apni puraani count daalo.
+        Each prayer has two counters — recent (new) and backlog (old).
+        Use “Prayed 1” / “Prayed N” to repay; use “Set backlog” to enter your initial count.
       </p>
       <div id="qazaList"></div>
     </section>

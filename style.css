@@ -1379,6 +1379,15 @@ select {
   padding: 12px 14px;
   min-width: 0;
 }
+/* Warn state: planned budgets exceed cash balance. Light red tint so the
+   number isn't the only cue — colourblind readers also see a background
+   shift. Uses the pastel --neg-tint which already reads well in every
+   theme because it's a themed input chip surface elsewhere. */
+.stat-card.is-warn {
+  background: var(--neg-tint);
+  border-color: var(--neg);
+}
+.stat-card.is-warn .stat-sub { color: var(--neg-tint-ink); }
 .stat-label {
   display: block;
   font-size: 12px;
