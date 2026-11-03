@@ -51,6 +51,23 @@
    
    const DEFAULT_CATEGORIES = ['Salary', 'Food', 'Bike/Fuel', 'Groceries', 'Bills', 'Shopping', 'Health', 'Travel', 'Family', 'Udhaar', 'Other'];
    const DEFAULT_BUDGETS = { Food: 10000, 'Bike/Fuel': 10000, Groceries: 8000, Bills: 5000 };
+
+   /* Qaza namaz tracker. Fixed five obligatory daily prayers, in daily order
+      — the array order is also the display order on screen, so changing it
+      changes the UI. QAZA_LOG_LIMIT caps the per-action log at a few KB in
+      storage; one entry is ~80 bytes so 300 ≈ 24 KB, well under localStorage
+      and the synced prefs document limits. */
+   const QAZA_PRAYERS = ['Fajr', 'Zuhr', 'Asr', 'Maghrib', 'Isha'];
+   const QAZA_LOG_LIMIT = 300;
+   /* Count ceiling for one prayer bucket. 100,000 covers more than a lifetime
+      of missed prayers (5 × 365 × 55 ≈ 100k) and keeps every arithmetic step
+      inside safe integer range. */
+   const QAZA_COUNT_MAX = 100000;
+   /* How long the "aaj ki namazen" daily ticks are kept once the day has
+      rolled up into recent qaza. 60 days of history is enough to back-fill a
+      forgotten day — anything older is too stale to correct and would only
+      bloat storage. */
+   const QAZA_DAILY_KEEP_DAYS = 60;
    
    /* Seeded accounts. These are only a starting point — every account can be
       renamed, added, archived or deleted from the Accounts tab, so nothing about
@@ -90,6 +107,7 @@
      { id: 'budget',       label: 'Budget',     glyph: '◎' },
      { id: 'udhaar',       label: 'Udhaar',     glyph: '⇄' },
      { id: 'notes',        label: 'Notes',      glyph: '✎' },
+     { id: 'qaza',         label: 'Qaza',       glyph: '🕌' },
      { id: 'list',         label: 'List',       glyph: '☑' },
      { id: 'reports',      label: 'Reports',    glyph: '◔' },
      { id: 'categories',   label: 'Categories', glyph: '❑' },
@@ -563,6 +581,18 @@
    function blankAccounts() {
      return DEFAULT_ACCOUNTS.map((a) => ({ ...a }));
    }
+
+   /* Fresh qaza structure. Everything starts at zero on purpose — a new install
+      MUST NOT claim a 500-prayer backlog that nobody entered. The user types
+      their own counts under "Backlog set" in the Qaza tab. The daily map holds
+      per-date ticks that will later roll up (see maybeRollupDailyQaza), and the
+      log carries the per-action history that powers Undo and the recent list. */
+   function blankQaza() {
+     const backlog = Object.create(null);
+     const recent = Object.create(null);
+     for (const p of QAZA_PRAYERS) { backlog[p] = 0; recent[p] = 0; }
+     return { backlog, recent, daily: Object.create(null), log: [] };
+   }
    
    function blankState() {
      const budgets = Object.create(null);
@@ -589,7 +619,7 @@
        // challenges) ride the same synced prefs document the notes and timers
        // already use — no new server table, no migration. budgetRollover +
        // budgetRolloverPeriod make the rollover fire once per new month.
-       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], recurring: [], goals: [], templates: [], challenges: [] },
+       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], recurring: [], goals: [], templates: [], challenges: [], qaza: blankQaza() },
        closedPeriods: []
      };
    }
@@ -898,6 +928,71 @@
        challenges.push({ id: withId(chalSeen, c), period: c.period, category: catMatch, cap });
      }
 
+     // Qaza namaz tracker. Two independent buckets per prayer — backlog (old,
+     // user-entered total) and recent (built up by missed daily ticks) — plus
+     // the daily tick map and a bounded action log. Validated field-by-field
+     // like every other list: a prayer name must be one of the five, counts
+     // are non-negative integers clamped at QAZA_COUNT_MAX, log kinds and
+     // buckets are enum-checked. A file from before this existed carries no
+     // qaza object; it comes out as a fresh blankQaza() rather than crashing
+     // or silently inheriting someone else's counts.
+     const qaza = blankQaza();
+     const rawQaza = isObject(rawSettings.qaza) ? rawSettings.qaza : {};
+     const clampCount = (v) => Math.max(0, Math.min(QAZA_COUNT_MAX, Math.floor(Number(v) || 0)));
+     const rawBacklog = isObject(rawQaza.backlog) ? rawQaza.backlog : {};
+     const rawRecent = isObject(rawQaza.recent) ? rawQaza.recent : {};
+     for (const p of QAZA_PRAYERS) {
+       qaza.backlog[p] = clampCount(rawBacklog[p]);
+       qaza.recent[p] = clampCount(rawRecent[p]);
+     }
+     // Daily ticks: keyed by YYYY-MM-DD, each value is an array of prayer
+     // names prayed on time that day. Only valid day keys are kept, and only
+     // the last QAZA_DAILY_KEEP_DAYS worth — older ones are dropped so this
+     // map can never bloat the synced prefs document.
+     const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+     const rawDaily = isObject(rawQaza.daily) ? rawQaza.daily : {};
+     const cutoff = (() => {
+       const d = new Date();
+       d.setDate(d.getDate() - QAZA_DAILY_KEEP_DAYS);
+       return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+     })();
+     for (const date of Object.keys(rawDaily)) {
+       if (!DAY_RE.test(date)) { note('skipped a qaza daily tick with an unreadable date'); continue; }
+       if (date < cutoff) continue;
+       const arr = Array.isArray(rawDaily[date]) ? rawDaily[date] : [];
+       const kept = [];
+       for (const p of arr) {
+         if (QAZA_PRAYERS.indexOf(p) !== -1 && kept.indexOf(p) === -1) kept.push(p);
+       }
+       qaza.daily[date] = kept;
+     }
+     // Action log: capped at QAZA_LOG_LIMIT, newest first on disk. A kind must
+     // be one of the three we write; a bucket is either 'recent' or 'backlog';
+     // amounts clamp into range.
+     const KINDS = ['missed', 'paid', 'backlog_set'];
+     const BUCKETS = ['recent', 'backlog'];
+     const rawQLog = Array.isArray(rawQaza.log) ? rawQaza.log : [];
+     const qLogIds = new Set();
+     for (const e of rawQLog) {
+       if (!isObject(e)) { note('skipped a malformed qaza log entry'); continue; }
+       if (qaza.log.length >= QAZA_LOG_LIMIT) { note('kept the first ' + QAZA_LOG_LIMIT + ' qaza log entries'); break; }
+       if (QAZA_PRAYERS.indexOf(e.prayer) === -1) { note('skipped a qaza log for an unknown prayer'); continue; }
+       if (KINDS.indexOf(e.kind) === -1) { note('skipped a qaza log with an unknown kind'); continue; }
+       if (BUCKETS.indexOf(e.bucket) === -1) { note('skipped a qaza log with an unknown bucket'); continue; }
+       let id = typeof e.id === 'string' && e.id.trim() ? e.id.trim() : newId();
+       if (qLogIds.has(id)) id = newId();
+       qLogIds.add(id);
+       qaza.log.push({
+         id,
+         prayer: e.prayer,
+         kind: e.kind,
+         bucket: e.bucket,
+         amount: clampCount(e.amount),
+         date: toLocalStamp(parseDate(e.date) || new Date()),
+         note: cleanText(e.note, COMMENT_LIMIT)
+       });
+     }
+
      // Budget rollover: whether unused limits carry into the next month, and
      // which month was last processed so it fires exactly once per month.
      const budgetRollover = rawSettings.budgetRollover === true;
@@ -1181,7 +1276,7 @@
          version: SCHEMA_VERSION,
          transactions, debts, budgets, categories, shopping, custody,
          accounts,
-         settings: { budgetOffset, lastAccountId, shoppingPeriod, budgetRollover, budgetRolloverPeriod, notes, timers, catMemory, budgetMoves, recurring, goals, templates, challenges },
+         settings: { budgetOffset, lastAccountId, shoppingPeriod, budgetRollover, budgetRolloverPeriod, notes, timers, catMemory, budgetMoves, recurring, goals, templates, challenges, qaza },
          closedPeriods
        },
        problems
@@ -2385,9 +2480,14 @@
      return round2(Math.max(0, base - out) + inn);
    }
    
-   /** Moves of one month that currently apply: well-formed, positive, and both
-    *  ends live budgets of existing categories. Anything else stays stored but
-    *  inert — never counted, never shown. */
+   /** Moves of one month that currently apply: must belong to THAT month, be
+    *  well-formed and positive, and both ends must be live budgets of existing
+    *  categories. The m.period === per check is essential — without it, a move
+    *  made in October (e.g. "count 2,000 of Food under Bills") kept applying to
+    *  every later month that still had Food and Bills budgets, so November's
+    *  counted spending and safe-to-spend both read wrong on day one. Each month
+    *  must balance its own books. Anything else stays stored but inert — never
+    *  counted, never shown. */
    function liveBudgetMoves(period) {
      const per = period || activeBudgetPeriod();
      const limits = budgetsFor(per);
@@ -2395,6 +2495,7 @@
      return ((state.settings && state.settings.budgetMoves) || []).filter((m) =>
        m && typeof m.id === 'string' && typeof m.from === 'string' && typeof m.to === 'string' &&
        typeof m.amount === 'number' && m.amount > 0 &&
+       m.period === per &&
        has(limits, m.from) && has(limits, m.to) &&
        !!findCategory(m.from) && !!findCategory(m.to));
    }
@@ -3367,7 +3468,313 @@
        )
      )));
    }
-   
+
+   /* ============================================================
+      Qaza namaz tracker
+      ------------------------------------------------------------
+      Two independent buckets per prayer:
+      • backlog — the user's own tally of long-standing missed prayers.
+        Only ever changes by explicit "Backlog set" edits. Never
+        decremented until recent is zero (LIFO: naee pehle, puraani
+        baad me).
+      • recent  — grows one at a time whenever a daily tick rolls up
+        with the prayer unmarked (end-of-day rollup, see below), or
+        when the user manually taps "+ Miss ho gayi".
+
+      The daily tick map keeps today's (and yesterday's, until it rolls)
+      checklist of prayed-on-time prayers. Rollup is lazy: it runs on
+      every save() and on init(), takes any day whose date is strictly
+      less than today's local date, and adds its unticked prayers to
+      recent. A day never seen (user did not open the app that day) is
+      left alone — nothing is auto-added without an explicit tick,
+      otherwise a four-day vacation would silently claim 20 missed
+      prayers.
+      ============================================================ */
+
+   function qazaData() {
+     if (!state.settings) state.settings = {};
+     if (!state.settings.qaza) state.settings.qaza = blankQaza();
+     const q = state.settings.qaza;
+     // Defensive: a sync pull or import could land with one of these empty.
+     if (!q.backlog) q.backlog = Object.create(null);
+     if (!q.recent) q.recent = Object.create(null);
+     if (!q.daily) q.daily = Object.create(null);
+     if (!Array.isArray(q.log)) q.log = [];
+     for (const p of QAZA_PRAYERS) {
+       if (typeof q.backlog[p] !== 'number') q.backlog[p] = 0;
+       if (typeof q.recent[p] !== 'number') q.recent[p] = 0;
+     }
+     return q;
+   }
+
+   /** Append a log entry, oldest-first drop when the ring overflows. */
+   function logQaza(entry) {
+     const q = qazaData();
+     q.log.unshift(Object.assign({ id: newId(), date: nowStamp(), note: '' }, entry));
+     if (q.log.length > QAZA_LOG_LIMIT) q.log.length = QAZA_LOG_LIMIT;
+   }
+
+   /** +1 to recent for a prayer (manual "miss ho gayi" tap). */
+   function addQazaMissed(prayer) {
+     if (QAZA_PRAYERS.indexOf(prayer) === -1) return;
+     const q = qazaData();
+     if (q.recent[prayer] >= QAZA_COUNT_MAX) { toast('Count is at its limit'); return; }
+     pushUndo('Qaza missed: ' + prayer);
+     q.recent[prayer] += 1;
+     logQaza({ prayer, kind: 'missed', bucket: 'recent', amount: 1 });
+     if (save()) toast('+1 ' + prayer + ' recent qaza · ' + qazaCountText(prayer), { label: 'Undo', fn: undoLast });
+   }
+
+   /** Pay back N of a prayer, LIFO: eats recent first, then backlog.
+    *  Returns how many were actually paid. */
+   function payQazaN(prayer, n) {
+     if (QAZA_PRAYERS.indexOf(prayer) === -1) return 0;
+     const q = qazaData();
+     let want = Math.max(0, Math.min(QAZA_COUNT_MAX, Math.floor(Number(n) || 0)));
+     if (want <= 0) return 0;
+     let fromRecent = Math.min(want, q.recent[prayer] || 0);
+     let fromBacklog = Math.min(want - fromRecent, q.backlog[prayer] || 0);
+     const paid = fromRecent + fromBacklog;
+     if (paid <= 0) return 0;
+     q.recent[prayer] -= fromRecent;
+     q.backlog[prayer] -= fromBacklog;
+     // Two separate log entries so Undo can walk back one bucket at a time
+     // and the UI can show accurately where each payment came from.
+     if (fromRecent > 0) logQaza({ prayer, kind: 'paid', bucket: 'recent', amount: fromRecent });
+     if (fromBacklog > 0) logQaza({ prayer, kind: 'paid', bucket: 'backlog', amount: fromBacklog });
+     return paid;
+   }
+
+   /** Pay a single one — the common tap. */
+   function payQazaOne(prayer) {
+     const q = qazaData();
+     if ((q.recent[prayer] || 0) <= 0 && (q.backlog[prayer] || 0) <= 0) {
+       toast(prayer + ' ki koi qaza baki nahi — MashaAllah');
+       return;
+     }
+     pushUndo('Qaza paid: ' + prayer);
+     const paid = payQazaN(prayer, 1);
+     if (paid > 0 && save()) {
+       toast('−1 ' + prayer + ' · ' + qazaCountText(prayer), { label: 'Undo', fn: undoLast });
+     }
+   }
+
+   /** Prompt and pay many. Used for payback sessions ("parhein 10 Fajr"). */
+   function payQazaManyAsk(prayer) {
+     const q = qazaData();
+     const outstanding = (q.recent[prayer] || 0) + (q.backlog[prayer] || 0);
+     if (outstanding <= 0) { toast(prayer + ' ki koi qaza baki nahi — MashaAllah'); return; }
+     const raw = window.prompt('Kitni ' + prayer + ' parhi? (' + outstanding + ' baki hain)', '');
+     if (raw === null) return;
+     const asked = Math.floor(Number(String(raw).trim()) || 0);
+     if (!(asked > 0)) { toast('Enter a positive number'); return; }
+     const want = Math.min(asked, outstanding);
+     pushUndo('Qaza paid many: ' + prayer);
+     const paid = payQazaN(prayer, want);
+     if (paid > 0 && save()) {
+       const extra = asked > paid ? ' (only ' + paid + ' were outstanding)' : '';
+       toast('−' + paid + ' ' + prayer + extra + ' · ' + qazaCountText(prayer), { label: 'Undo', fn: undoLast });
+     }
+   }
+
+   /** Change the backlog figure for a prayer (initial setup / correction). */
+   function setQazaBacklogAsk(prayer) {
+     if (QAZA_PRAYERS.indexOf(prayer) === -1) return;
+     const q = qazaData();
+     const current = q.backlog[prayer] || 0;
+     const raw = window.prompt(
+       'Puraani (backlog) ' + prayer + ' kitni hain?\n\n' +
+       'Yeh aap ki apni count hai — jab bhi aap "Parhi" karo ge aur recent zero ho, backlog kam hoga.',
+       String(current)
+     );
+     if (raw === null) return;
+     const v = Math.max(0, Math.min(QAZA_COUNT_MAX, Math.floor(Number(String(raw).trim()) || 0)));
+     if (v === current) return;
+     pushUndo('Backlog set for ' + prayer);
+     q.backlog[prayer] = v;
+     logQaza({ prayer, kind: 'backlog_set', bucket: 'backlog', amount: v });
+     if (save()) toast(prayer + ' backlog set to ' + v, { label: 'Undo', fn: undoLast });
+   }
+
+   /** Toggle today's checkbox for a prayer. The daily entry is created lazily
+    *  on the first interaction, so a day the user never touches stays absent
+    *  (and will not be assumed-as-missed by the rollup). */
+   function toggleDailyPrayer(prayer) {
+     if (QAZA_PRAYERS.indexOf(prayer) === -1) return;
+     const q = qazaData();
+     const today = localDateStamp();
+     const arr = q.daily[today] ? q.daily[today].slice() : [];
+     const i = arr.indexOf(prayer);
+     if (i === -1) arr.push(prayer);
+     else arr.splice(i, 1);
+     // Preserve prayer order for cleaner diffs.
+     q.daily[today] = QAZA_PRAYERS.filter((p) => arr.indexOf(p) !== -1);
+     save();
+   }
+
+   /** End-of-day rollup. Any daily entry strictly older than today has its
+    *  UNticked prayers added to recent qaza, then the entry is removed. Also
+    *  prunes entries older than the keep-window. Idempotent — safe to call on
+    *  every init and after each save. Returns true when something changed. */
+   function maybeRollupDailyQaza() {
+     const q = qazaData();
+     const today = localDateStamp();
+     let changed = false;
+
+     // Prune anything older than the keep window (silently, these have already
+     // been rolled up and are kept only as a "diary" window for back-fill).
+     const cutoff = (() => {
+       const d = new Date();
+       d.setDate(d.getDate() - QAZA_DAILY_KEEP_DAYS);
+       return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+     })();
+
+     for (const date of Object.keys(q.daily)) {
+       if (date < cutoff) { delete q.daily[date]; changed = true; continue; }
+       if (date >= today) continue;   // today or (shouldn't happen) future
+       const prayed = Array.isArray(q.daily[date]) ? q.daily[date] : [];
+       let missed = 0;
+       for (const p of QAZA_PRAYERS) {
+         if (prayed.indexOf(p) !== -1) continue;
+         q.recent[p] = Math.min(QAZA_COUNT_MAX, (q.recent[p] || 0) + 1);
+         logQaza({
+           prayer: p, kind: 'missed', bucket: 'recent', amount: 1,
+           date: date + 'T23:59', note: 'auto rolled from daily tracker'
+         });
+         missed++;
+       }
+       delete q.daily[date];
+       changed = true;
+     }
+     return changed;
+   }
+
+   function qazaCountText(prayer) {
+     const q = qazaData();
+     const r = q.recent[prayer] || 0;
+     const b = q.backlog[prayer] || 0;
+     return (r + b) + ' baki (' + r + ' recent + ' + b + ' backlog)';
+   }
+
+   function renderQaza() {
+     const list = $('qazaList');
+     const dailyBox = $('qazaDaily');
+     const sumBox = $('qazaSummary');
+     const dateBox = $('qazaTodayDate');
+     const statusBox = $('qazaTodayStatus');
+     // All five render targets live on the Qaza tab; if the panel is missing
+     // this is a headless test environment and nothing to paint.
+     if (!list && !dailyBox) return;
+
+     const q = qazaData();
+     const today = localDateStamp();
+     const todayList = Array.isArray(q.daily[today]) ? q.daily[today] : [];
+
+     // Date + hint at the top
+     if (dateBox) {
+       const d = new Date();
+       dateBox.textContent = d.toLocaleDateString('en-US', {
+         weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+       });
+     }
+
+     // Daily grid: five tap-tiles, one per prayer, in daily order
+     if (dailyBox) {
+       mount(dailyBox, QAZA_PRAYERS.map((p) => {
+         const on = todayList.indexOf(p) !== -1;
+         return h('button', {
+           type: 'button',
+           class: 'qaza-tile' + (on ? ' is-prayed' : ''),
+           dataset: { act: 'qaza-daily-toggle', arg: p },
+           'aria-pressed': on ? 'true' : 'false',
+           'aria-label': p + (on ? ' prayed on time' : ' not yet marked')
+         },
+           h('span', { class: 'qaza-tile-name' }, p),
+           h('span', { class: 'qaza-tile-status' }, on ? '✓ Parhi' : 'Tap karo')
+         );
+       }));
+     }
+
+     if (statusBox) {
+       const done = todayList.length;
+       const left = QAZA_PRAYERS.length - done;
+       statusBox.textContent = done === 0
+         ? 'Aaj abhi tak koi namaz tick nahi ki. Jo parh li wo tap karo.'
+         : done === QAZA_PRAYERS.length
+           ? '✓ Alhamdulillah — aaj ki saari 5 namazen on time.'
+           : done + ' of ' + QAZA_PRAYERS.length + ' parhi · ' + left + ' baki aaj.';
+     }
+
+     // Totals strip across all prayers
+     if (sumBox) {
+       let totalRecent = 0;
+       let totalBacklog = 0;
+       for (const p of QAZA_PRAYERS) {
+         totalRecent += q.recent[p] || 0;
+         totalBacklog += q.backlog[p] || 0;
+       }
+       mount(sumBox,
+         h('div', { class: 'qaza-sum-item' },
+           h('span', { class: 'qaza-sum-label' }, 'Recent'),
+           h('span', { class: 'qaza-sum-value' }, String(totalRecent))),
+         h('div', { class: 'qaza-sum-item' },
+           h('span', { class: 'qaza-sum-label' }, 'Backlog'),
+           h('span', { class: 'qaza-sum-value' }, String(totalBacklog))),
+         h('div', { class: 'qaza-sum-item' },
+           h('span', { class: 'qaza-sum-label' }, 'Grand Total'),
+           h('span', { class: 'qaza-sum-value strong' }, String(totalRecent + totalBacklog)))
+       );
+     }
+
+     // Per-prayer breakdown and controls
+     if (list) {
+       mount(list, QAZA_PRAYERS.map((p) => {
+         const r = q.recent[p] || 0;
+         const b = q.backlog[p] || 0;
+         const total = r + b;
+         return h('div', { class: 'qaza-item' },
+           h('div', { class: 'qaza-head' },
+             h('span', { class: 'qaza-name' }, p),
+             h('span', { class: 'qaza-total' + (total === 0 ? ' is-clear' : '') },
+               total === 0 ? '✓ Clear' : total + ' baki')
+           ),
+           h('div', { class: 'qaza-chips' },
+             h('span', { class: 'qaza-chip recent' }, 'Recent: ' + r),
+             h('span', { class: 'qaza-chip backlog' }, 'Backlog: ' + b)
+           ),
+           h('div', { class: 'qaza-actions' },
+             h('button', {
+               type: 'button',
+               class: 'btn-mini' + (total === 0 ? ' is-disabled' : ''),
+               disabled: total === 0 ? '' : null,
+               dataset: { act: 'qaza-pay-one', arg: p },
+               title: 'Pay one back (recent-first)'
+             }, '✓ Parhi 1'),
+             h('button', {
+               type: 'button',
+               class: 'btn-mini' + (total === 0 ? ' is-disabled' : ''),
+               disabled: total === 0 ? '' : null,
+               dataset: { act: 'qaza-pay-many', arg: p },
+               title: 'Pay several at once'
+             }, 'Parhi N…'),
+             h('button', {
+               type: 'button',
+               class: 'btn-mini danger',
+               dataset: { act: 'qaza-miss', arg: p },
+               title: 'Manually add a missed one'
+             }, '+ Miss'),
+             h('button', {
+               type: 'button',
+               class: 'btn-mini',
+               dataset: { act: 'qaza-set-backlog', arg: p },
+               title: 'Set the backlog count'
+             }, 'Backlog set')
+           )
+         );
+       }));
+     }
+   }
+
    /* ============================================================
       Charts (hand-rolled SVG — no library, so the app stays offline-static)
       ============================================================ */
@@ -5647,6 +6054,7 @@
      renderDebts();
      renderTimers();
      renderNotes();
+     renderQaza();
      renderCategories();
      renderShopping();
      renderReport();
@@ -5683,6 +6091,11 @@
      'note-pin': (el) => toggleNotePin(el.dataset.id),
      'note-edit': (el) => openNoteEdit(el.dataset.id),
      'note-delete': (el) => deleteNote(el.dataset.id),
+     'qaza-daily-toggle': (el) => toggleDailyPrayer(el.dataset.arg),
+     'qaza-pay-one': (el) => payQazaOne(el.dataset.arg),
+     'qaza-pay-many': (el) => payQazaManyAsk(el.dataset.arg),
+     'qaza-miss': (el) => addQazaMissed(el.dataset.arg),
+     'qaza-set-backlog': (el) => setQazaBacklogAsk(el.dataset.arg),
      'timer-reset': (el) => resetTimer(el.dataset.id),
      'timer-delete': (el) => deleteTimer(el.dataset.id),
      'acct-rename': (el) => renameAccount(el.dataset.id),
@@ -6058,6 +6471,15 @@
          toast(filedCount === 1
            ? '1 recurring entry filed'
            : filedCount + ' recurring entries filed', { label: 'Undo', fn: undoLast });
+       }
+     } catch (err) { /* never block boot */ }
+
+     // Daily qaza rollup: unticked prayers from yesterday (and earlier) become
+     // recent qaza. Silent and idempotent — the user already saw the day fall
+     // off their checklist screen, we don't yank them with a toast.
+     try {
+       if (maybeRollupDailyQaza()) {
+         try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* ignore */ }
        }
      } catch (err) { /* never block boot */ }
    
