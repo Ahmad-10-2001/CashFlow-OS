@@ -534,13 +534,20 @@
       <p class="card-subtitle" id="qazaTodayDate" style="margin-bottom:4px"></p>
       <p class="card-subtitle" id="qazaTodayStatus">Tap the prayers you've offered on time.</p>
       <div id="qazaDaily" class="qaza-grid" role="group" aria-label="Daily prayer checklist"></div>
-      <p class="card-subtitle" style="margin-top:10px; font-size:12px">
-        Note: any prayer left unticked by day's end automatically moves to recent qaza.
+      <p class="card-subtitle" style="margin-top:10px; font-size:12px">        Note: any prayer left unticked by day's end automatically moves to recent qaza.
       </p>
     </section>
 
-    <section class="card" aria-label="Qaza summary">
-      <h3 class="card-title">Total Outstanding</h3>
+    <section class="card" aria-label="Recent qaza day memory">
+      <h3 class="card-title">Which Day Was Missed</h3>
+      <p class="card-subtitle" style="margin-bottom:12px">
+        Every recent qaza remembers the day it belongs to — date and day of the week —
+        so a missed prayer can be pinned to the right day.
+      </p>
+      <div id="qazaRecentDays"></div>
+    </section>
+
+    <section class="card" aria-label="Qaza summary">      <h3 class="card-title">Total Outstanding</h3>
       <div id="qazaSummary" class="qaza-sum"></div>
     </section>
 

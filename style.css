@@ -1859,3 +1859,23 @@ select {
   flex-wrap: wrap;
   margin: 4px 0 2px;
 }
+
+/* qaza: day-memory rows (which day each recent miss belongs to) */
+.qaza-day-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.qaza-day-row:last-child { border-bottom: 0; }
+.qaza-day-date {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.qaza-day-prayers {
+  color: var(--muted-2, var(--muted));
+  text-align: right;
+}

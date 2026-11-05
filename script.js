@@ -51,14 +51,12 @@
    
    const DEFAULT_CATEGORIES = ['Salary', 'Food', 'Bike/Fuel', 'Groceries', 'Bills', 'Shopping', 'Health', 'Travel', 'Family', 'Udhaar', 'Other'];
    const DEFAULT_BUDGETS = { Food: 10000, 'Bike/Fuel': 10000, Groceries: 8000, Bills: 5000 };
-
-   /* Qaza namaz tracker. Fixed five obligatory daily prayers, in daily order
-      — the array order is also the display order on screen, so changing it
-      changes the UI. QAZA_LOG_LIMIT caps the per-action log at a few KB in
-      storage; one entry is ~80 bytes so 300 ≈ 24 KB, well under localStorage
-      and the synced prefs document limits. */
-   const QAZA_PRAYERS = ['Fajr', 'Zuhr', 'Asr', 'Maghrib', 'Isha'];
-   const QAZA_LOG_LIMIT = 300;
+   /* Qaza namaz tracker. The five obligatory daily prayers plus Witr, in
+      daily order — the array order is also the display order on screen, so
+      changing it changes the UI. QAZA_LOG_LIMIT caps the per-action log at a
+      few KB in storage; one entry is ~80 bytes so 300 ≈ 24 KB, well under
+      localStorage and the synced prefs document limits. */
+   const QAZA_PRAYERS = ['Fajr', 'Zuhr', 'Asr', 'Maghrib', 'Isha', 'Witr'];   const QAZA_LOG_LIMIT = 300;
    /* Count ceiling for one prayer bucket. 100,000 covers more than a lifetime
       of missed prayers (5 × 365 × 55 ≈ 100k) and keeps every arithmetic step
       inside safe integer range. */
@@ -66,9 +64,12 @@
    /* How long the "aaj ki namazen" daily ticks are kept once the day has
       rolled up into recent qaza. 60 days of history is enough to back-fill a
       forgotten day — anything older is too stale to correct and would only
-      bloat storage. */
-   const QAZA_DAILY_KEEP_DAYS = 60;
-   
+      bloat storage. */   const QAZA_DAILY_KEEP_DAYS = 60;
+   /* Day memory of recent qaza: how many dated misses are kept per prayer
+      (newest first). One calendar day can carry two misses through separate
+      paths (daily rollup plus a manual tap), so the memory tracks EVENTS,
+      one line each, not unique days. */
+   const QAZA_DAYS_MAX = 400;   
    /* Seeded accounts. These are only a starting point — every account can be
       renamed, added, archived or deleted from the Accounts tab, so nothing about
       the app is hard-wired to this list. The ids are fixed on purpose: a v3 file
@@ -591,7 +592,7 @@
      const backlog = Object.create(null);
      const recent = Object.create(null);
      for (const p of QAZA_PRAYERS) { backlog[p] = 0; recent[p] = 0; }
-     return { backlog, recent, daily: Object.create(null), log: [] };
+     return { backlog, recent, daily: Object.create(null), recentDays: Object.create(null), log: [] };
    }
    
    function blankState() {
@@ -972,11 +973,28 @@
        const kept = [];
        for (const p of arr) {
          if (QAZA_PRAYERS.indexOf(p) !== -1 && kept.indexOf(p) === -1) kept.push(p);
-       }
-       qaza.daily[date] = kept;
+       }       qaza.daily[date] = kept;
      }
-     // Action log: capped at QAZA_LOG_LIMIT, newest first on disk. A kind must
-     // be one of the three we write; a bucket is either 'recent' or 'backlog';
+     // Witr joined the tracker late. Remember the first day it counts, so the
+     // daily entries stored before the Witr tile existed cannot roll into
+     // fake Witr qaza — up to two months of phantom debt otherwise.
+     qaza.witrFrom = DAY_RE.test(String(rawQaza.witrFrom || '')) ? rawQaza.witrFrom
+       : (() => {
+         const d = new Date();
+         return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+       })();
+     // Day memory of recent qaza: per prayer, a newest-first list of the
+     // calendar days each recent miss belongs to (rolled-up days carry their
+     // own date, manual taps carry today). Malformed entries are dropped and
+     // each list is capped, so one corrupt export cannot bloat storage.
+     const rawRecentDays = isObject(rawQaza.recentDays) ? rawQaza.recentDays : {};
+     for (const p of QAZA_PRAYERS) {
+       const arr = Array.isArray(rawRecentDays[p]) ? rawRecentDays[p] : [];
+       if (arr.length > QAZA_DAYS_MAX) note('kept only the newest ' + QAZA_DAYS_MAX + ' day marks for ' + p);
+       const keptDays = arr.filter((d) => typeof d === 'string' && DAY_RE.test(d)).slice(0, QAZA_DAYS_MAX);
+       if (keptDays.length) qaza.recentDays[p] = keptDays;
+     }
+     // Action log: capped at QAZA_LOG_LIMIT, newest first on disk. A kind must     // be one of the three we write; a bucket is either 'recent' or 'backlog';
      // amounts clamp into range.
      const KINDS = ['missed', 'paid', 'backlog_set'];
      const BUCKETS = ['recent', 'backlog'];
@@ -3597,12 +3615,12 @@
      if (!state.settings) state.settings = {};
      if (!state.settings.qaza) state.settings.qaza = blankQaza();
      const q = state.settings.qaza;
-     // Defensive: a sync pull or import could land with one of these empty.
-     if (!q.backlog) q.backlog = Object.create(null);
+     // Defensive: a sync pull or import could land with one of these empty.     if (!q.backlog) q.backlog = Object.create(null);
      if (!q.recent) q.recent = Object.create(null);
      if (!q.daily) q.daily = Object.create(null);
-     if (!Array.isArray(q.log)) q.log = [];
-     for (const p of QAZA_PRAYERS) {
+     if (!q.recentDays) q.recentDays = Object.create(null);
+     if (typeof q.witrFrom !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(q.witrFrom)) q.witrFrom = localDateStamp();
+     if (!Array.isArray(q.log)) q.log = [];     for (const p of QAZA_PRAYERS) {
        if (typeof q.backlog[p] !== 'number') q.backlog[p] = 0;
        if (typeof q.recent[p] !== 'number') q.recent[p] = 0;
      }
@@ -3621,10 +3639,9 @@
      if (QAZA_PRAYERS.indexOf(prayer) === -1) return;
      const q = qazaData();
      if (q.recent[prayer] >= QAZA_COUNT_MAX) { toast('Count is at its limit'); return; }
-     pushUndo('Qaza missed: ' + prayer);
-     q.recent[prayer] += 1;
-     logQaza({ prayer, kind: 'missed', bucket: 'recent', amount: 1 });
-     if (save()) toast('+1 ' + prayer + ' added to recent qaza · ' + qazaCountText(prayer), { label: 'Undo', fn: undoLast });
+     pushUndo('Qaza missed: ' + prayer);     q.recent[prayer] += 1;
+     qazaRememberDay(prayer, localDateStamp());
+     logQaza({ prayer, kind: 'missed', bucket: 'recent', amount: 1 });     if (save()) toast('+1 ' + prayer + ' added to recent qaza · ' + qazaCountText(prayer), { label: 'Undo', fn: undoLast });
    }
 
    /** Pay back N of a prayer, LIFO: eats recent first, then backlog.
@@ -3637,10 +3654,11 @@
      let fromRecent = Math.min(want, q.recent[prayer] || 0);
      let fromBacklog = Math.min(want - fromRecent, q.backlog[prayer] || 0);
      const paid = fromRecent + fromBacklog;
-     if (paid <= 0) return 0;
-     q.recent[prayer] -= fromRecent;
-     q.backlog[prayer] -= fromBacklog;
-     // Two separate log entries so Undo can walk back one bucket at a time
+     if (paid <= 0) return 0;     q.recent[prayer] -= fromRecent;
+     // Repaid recent misses stop showing on the day list, newest first —
+     // exactly the order they were paid in.
+     for (let i = 0; i < fromRecent; i++) qazaForgetLatestDay(prayer);
+     q.backlog[prayer] -= fromBacklog;     // Two separate log entries so Undo can walk back one bucket at a time
      // and the UI can show accurately where each payment came from.
      if (fromRecent > 0) logQaza({ prayer, kind: 'paid', bucket: 'recent', amount: fromRecent });
      if (fromBacklog > 0) logQaza({ prayer, kind: 'paid', bucket: 'backlog', amount: fromBacklog });
@@ -3735,22 +3753,26 @@
        if (date < cutoff) { delete q.daily[date]; changed = true; continue; }
        if (date >= today) continue;   // today or (shouldn't happen) future
        const prayed = Array.isArray(q.daily[date]) ? q.daily[date] : [];
-       let missed = 0;
-       for (const p of QAZA_PRAYERS) {
+       let missed = 0;       for (const p of QAZA_PRAYERS) {
          if (prayed.indexOf(p) !== -1) continue;
+         // Witr only counts from its start date: the stored days written
+         // before the Witr tile existed never had that tile, and charging
+         // them would invent old qaza out of nothing.
+         if (p === 'Witr' && date < q.witrFrom) continue;
          q.recent[p] = Math.min(QAZA_COUNT_MAX, (q.recent[p] || 0) + 1);
+         // The rolled-up day is remembered by date — this is what the
+         // "which day was it missed on" card under the daily tracker reads.
+         qazaRememberDay(p, date);
          logQaza({
            prayer: p, kind: 'missed', bucket: 'recent', amount: 1,
            date: date + 'T23:59', note: 'auto rolled from daily tracker'
          });
          missed++;
-       }
-       delete q.daily[date];
+       }       delete q.daily[date];
        changed = true;
      }
      return changed;
    }
-
    function qazaCountText(prayer) {
      const q = qazaData();
      const r = q.recent[prayer] || 0;
@@ -3758,16 +3780,34 @@
      return (r + b) + ' outstanding (' + r + ' recent + ' + b + ' backlog)';
    }
 
-   function renderQaza() {
-     const list = $('qazaList');
+   /** Remember which day a recent miss belongs to: per prayer, a newest-first
+    *  list of calendar days. Payback is LIFO — the newest miss is repaid
+    *  first — so the list always stays level with the count above it. */
+   function qazaRememberDay(prayer, day) {
+     const q = qazaData();
+     if (!Array.isArray(q.recentDays[prayer])) q.recentDays[prayer] = [];
+     const arr = q.recentDays[prayer];
+     arr.unshift(day);
+     if (arr.length > QAZA_DAYS_MAX) arr.length = QAZA_DAYS_MAX;
+   }
+
+   /** Drop the newest remembered day for a prayer. Quietly does nothing when
+    *  the list is empty — counts recorded before day-keeping have no dates
+    *  to forget. */
+   function qazaForgetLatestDay(prayer) {
+     const q = qazaData();
+     const arr = q.recentDays[prayer];
+     if (Array.isArray(arr) && arr.length) arr.shift();
+   }
+   function renderQaza() {     const list = $('qazaList');
      const dailyBox = $('qazaDaily');
+     const daysBox = $('qazaRecentDays');
      const sumBox = $('qazaSummary');
      const dateBox = $('qazaTodayDate');
      const statusBox = $('qazaTodayStatus');
-     // All five render targets live on the Qaza tab; if the panel is missing
+     // All render targets live on the Qaza tab; if the panel is missing
      // this is a headless test environment and nothing to paint.
-     if (!list && !dailyBox) return;
-
+     if (!list && !dailyBox && !daysBox) return;
      const q = qazaData();
      const today = localDateStamp();
      const todayList = Array.isArray(q.daily[today]) ? q.daily[today] : [];
@@ -3793,18 +3833,61 @@
          },
            h('span', { class: 'qaza-tile-name' }, p),
            h('span', { class: 'qaza-tile-status' }, on ? '✓ Prayed' : 'Tap to mark')
-         );
-       }));
+         );       }));
      }
 
-     if (statusBox) {
-       const done = todayList.length;
+     // Day-memory card: which day — with the weekday — every recent miss
+     // belongs to. Grouped across prayers, so one bad evening reads as a
+     // single row the way it was lived.
+     if (daysBox) {
+       const byDate = Object.create(null);
+       let datedCount = 0;
+       for (const p of QAZA_PRAYERS) {
+         const arr = Array.isArray(q.recentDays[p]) ? q.recentDays[p] : [];
+         datedCount += arr.length;
+         for (const d of arr) (byDate[d] || (byDate[d] = [])).push(p);
+       }
+       const dates = Object.keys(byDate).sort().reverse();
+       const shown = dates.slice(0, 60);
+       let recentTotal = 0;
+       for (const p of QAZA_PRAYERS) recentTotal += q.recent[p] || 0;
+       const kids = [];
+       if (!recentTotal) {
+         kids.push(h('div', { class: 'empty-state' },
+           'No recent qaza. When a prayer is missed, the day it belongs to shows up here.'));
+       } else if (!shown.length) {
+         // Counts but no dates: every one predates day-keeping.
+         kids.push(h('div', { class: 'empty-state' },
+           'No day record yet — the existing ' + recentTotal + ' recent missed prayers were counted' +
+           ' before day-keeping. From here on, every miss remembers its day.'));
+       } else {
+         for (const d of shown) {
+           const names = Array.from(new Set(byDate[d]));
+           const dt = new Date(d + 'T12:00');
+           kids.push(h('div', { class: 'qaza-day-row' },
+             h('span', { class: 'qaza-day-date' },
+               dt.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })),
+             h('span', { class: 'qaza-day-prayers' },
+               names.join(', ') + (byDate[d].length > 1 ? ' (' + byDate[d].length + ')' : ''))));
+         }
+         if (dates.length > shown.length) {
+           kids.push(h('div', { class: 'field-hint' },
+             '+ ' + (dates.length - shown.length) + ' more day(s) not shown.'));
+         }
+         if (recentTotal > datedCount) {
+           kids.push(h('div', { class: 'field-hint' },
+             (recentTotal - datedCount) + ' of the recent count were recorded before day-keeping' +
+             ' — counts only, no day attached.'));
+         }
+       }
+       mount(daysBox, kids);
+     }
+
+     if (statusBox) {       const done = todayList.length;
        const left = QAZA_PRAYERS.length - done;
        statusBox.textContent = done === 0
          ? 'None marked yet today. Tap the prayers you have offered.'
-         : done === QAZA_PRAYERS.length
-           ? '✓ Alhamdulillah — all 5 prayers offered on time today.'
-           : done + ' of ' + QAZA_PRAYERS.length + ' offered · ' + left + ' left today.';
+         : done === QAZA_PRAYERS.length           ? '✓ Alhamdulillah — all ' + QAZA_PRAYERS.length + ' prayers offered on time today.'           : done + ' of ' + QAZA_PRAYERS.length + ' offered · ' + left + ' left today.';
      }
 
      // Totals strip across all prayers
