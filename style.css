@@ -1815,3 +1815,47 @@ select {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* person rows: split-expense and multi-udhaar share one widget */
+.people-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.people-row .people-name {
+  flex: 1 1 55%;
+  min-width: 0;
+}
+.people-row .people-amt {
+  flex: 0 0 38%;
+  min-width: 0;
+}
+.people-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 2px;
+}
+
+/* person rows: split-expense and multi-udhaar share one widget */
+.people-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.people-row .people-name {
+  flex: 1 1 55%;
+  min-width: 0;
+}
+.people-row .people-amt {
+  flex: 0 0 38%;
+  min-width: 0;
+}
+.people-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 4px 0 2px;
+}

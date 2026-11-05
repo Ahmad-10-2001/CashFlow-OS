@@ -141,9 +141,13 @@
           <span>Split this expense with others</span>
         </label>
         <div id="txSplitNamesWrap" hidden>
-          <label class="field-label" for="txSplitNames">Who shares it</label>
-          <input id="txSplitNames" type="text" placeholder="Names, comma separated (e.g. Ali, Sara)" maxlength="200" autocomplete="off">
-          <p class="field-hint">Every person gets their own entry on the Udhaar tab. Your own share stays with this expense.</p>
+          <label class="field-label">Who shares it</label>
+          <div id="txSplitRows"></div>
+          <div class="people-row-actions">
+            <button class="btn btn-dark" type="button" data-act="tx-split-add">Add person</button>
+            <button class="btn btn-dark" type="button" data-act="tx-split-even">Split equally</button>
+          </div>
+          <p class="field-hint">“Split equally” divides the amount between everyone including you; change any figure — your own share is whatever stays back. Every person still gets their own entry on the Udhaar tab.</p>
         </div>
       </div>
       <div class="form-group">
@@ -345,6 +349,34 @@
       <div class="form-group">
         <label class="sr-only" for="debtNote">Reason</label>
         <input id="debtNote" type="text" placeholder="Reason (optional)" maxlength="300" autocomplete="off">
+      </div>
+      <div class="form-group">
+        <label class="check" for="debtMultiOn">
+          <input type="checkbox" id="debtMultiOn">
+          <span>Same udhaar for several people at once</span>
+        </label>
+        <div id="debtMultiWrap" hidden>
+          <div id="debtMultiRows"></div>
+          <div class="people-row-actions">
+            <button class="btn btn-dark" type="button" data-act="debt-multi-add">Add person</button>
+            <button class="btn btn-dark" type="button" data-act="debt-multi-even">Split equally</button>
+          </div>
+          <p class="field-hint">One udhaar entry per person. “Split equally” divides the amount above between them; then change any figure.</p>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="check" for="debtMultiOn">
+          <input type="checkbox" id="debtMultiOn">
+          <span>Same udhaar for several people at once</span>
+        </label>
+        <div id="debtMultiWrap" hidden>
+          <div id="debtMultiRows"></div>
+          <div class="people-row-actions">
+            <button class="btn btn-dark" type="button" data-act="debt-multi-add">Add person</button>
+            <button class="btn btn-dark" type="button" data-act="debt-multi-even">Split equally</button>
+          </div>
+          <p class="field-hint">One udhaar entry per person. “Split equally” divides the amount above between them; then change any figure.</p>
+        </div>
       </div>
       <div class="form-group">
         <label class="field-label" for="debtAccount">Account <span class="field-opt">(optional — empty records without moving)</span></label>
@@ -756,6 +788,10 @@
     <div class="form-group">
       <label class="field-label" for="editDebtNote">Reason</label>
       <input id="editDebtNote" type="text" maxlength="300" autocomplete="off">
+    </div>
+    <div class="form-group">
+      <label class="field-label" for="editDebtAccount">Account <span class="field-opt">(empty records without moving)</span></label>
+      <select id="editDebtAccount"></select>
     </div>
     <label class="check">
       <input id="editDebtLedger" type="checkbox">

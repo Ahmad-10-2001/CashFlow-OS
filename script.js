@@ -2025,6 +2025,7 @@
      // real, deliberate answer ("this udhaar does not move money"), and it was
      // the value that snapped back to the last-used wallet on every save.
      fillAccountSelect($('debtAccount'), { emptyLabel: 'No account movement' });
+     fillAccountSelect($('editDebtAccount'), { emptyLabel: 'No account movement' });
      fillAccountSelect($('editAccount'));
      fillAccountSelect($('editToAccount'));
    }
@@ -2220,7 +2221,7 @@
     *  identical. Partial slices carry their own source marker, so settle /
     *  unsettle — which rebuilds only the 'debt:<id>' link — never touches them.
     *  Deleting the entry takes the whole trail (upfront, slices, link) with it. */
-   function returnDebtSome(id) {
+   async function returnDebtSome(id) {
      const d = state.debts.find((x) => x.id === id);
      if (!d) { toast('That entry is already gone'); return; }
      if (d.settled) { toast('That entry is already settled'); return; }
@@ -2237,17 +2238,26 @@
      let amount = toPositiveNumber(input);
      if (amount === null) amount = out;   // blank means "all of it"
      if (amount > out) { toast('That is more than the ' + formatMoney(out) + ' still outstanding'); return; }
-   
-     if (amount >= out) { settleDebt(id); return; }
-   
+        if (amount >= out) { settleDebt(id); return; }
+
+     // A part return can pass through a different account than the entry was
+     // filed under — the money may have come back to another wallet. Ask,
+     // starting on the entry's own account.
+     const accId = await askAccountPick(
+       'Where did it change hands?',
+       'Recording a part-return of ' + formatMoney(amount) + (d.type === 'receive'
+         ? ' received back from ' : ' paid to ') + d.person + '. Through which account?',
+       debtAccountId(d)
+     );
+     if (accId === null) return;
+
      // The prompt-and-confirm already happened above, so this only moves the
      // money. applyDebtPayment answers 'settled' (amount reached the remainder —
      // not possible here, settleDebt handled it) or 'partial'. Checking for 'ok'
      // matched neither, so a part-return was written to memory and then thrown
      // away without save() — the balance moved on screen and snapped back on
      // reload. Save on every real answer.
-     const res = applyDebtPayment(d, amount, debtAccountId(d), debtCategory(d));
-     if (res === 'partial' && save()) {
+     const res = applyDebtPayment(d, amount, accId, debtCategory(d));     if (res === 'partial' && save()) {
        toast('Recorded ' + formatMoney(amount) + '. ' + formatMoney(d.amount) + ' still outstanding with ' + d.person + '.');
      } else if (res === null) {
        toast('That entry is already settled');
@@ -2327,6 +2337,26 @@
      const last = state.settings && state.settings.lastAccountId;
      if (last && findAccount(last)) return last;
      return cashAccountId();
+   }
+
+   /** Open (non-archived) accounts: the list a udhaar movement may choose
+      from, the same rule every account picker follows. */
+   function pickableAccounts() {
+     return state.accounts.filter((a) => !a.archived);
+   }
+
+   /** Ask which account a udhaar movement should run through. One open
+      account means there is nothing to choose, so the question is skipped
+      and the current answer just comes back; cancelling answers null. */
+   async function askAccountPick(title, message, current) {
+     const list = pickableAccounts();
+     if (list.length <= 1) return current;
+     const picked = await askChoice(title, message, list.map((a) => ({
+       value: a.id,
+       kind: a.id === current ? 'primary' : 'default',
+       label: accountName(a.id)
+     })));
+     return picked || null;
    }
    
    function addCategory(nameInput) {
@@ -2687,20 +2717,33 @@
      const type = ['income', 'expense', 'transfer'].indexOf($('txType').value) !== -1 ? $('txType').value : 'expense';
      const fromId = $('txAccount').value;
      const toId = $('txToAccount').value;
-
-     // Split expense, validated with the other form values so a bad names line
-     // fails before anything is written. Each name becomes its own "owes me"
-     // udhaar entry for an even share; the user's share stays with the expense.
-     const splitNames = $('txSplitOn') && $('txSplitOn').checked && type === 'expense'
-       ? splitNameList($('txSplitNames') ? $('txSplitNames').value : '')
-       : [];
+     // Split expense, validated with the other form values so a bad row fails
+     // before anything is written. Each person carries the share typed on
+     // their row; the user's own share is whatever is left of the expense.
+     const splitOn = $('txSplitOn') && $('txSplitOn').checked && type === 'expense';
+     let splitPeople = [];
+     if (splitOn) {
+       splitPeople = readPeopleRows('txSplitRows');
+       if (!splitPeople.length) { toast('Add at least one person to split with'); return; }
+       if (splitPeople.length > 15) { toast('Splitting is limited to 15 people'); return; }
+       for (const p of splitPeople) {
+         if (!p.name) { toast('One of the people is missing a name'); return; }
+         if (p.amount.error) { toast(p.name + ', share: ' + p.amount.error); return; }
+       }
+       // Balanced before any write: the shares may never eat more than the
+       // expense itself, or my own share would go negative in the ledger.
+       const shareSum = round2(splitPeople.reduce((s, p) => s + p.amount.value, 0));
+       if (shareSum > amount.value + 0.001) {
+         toast('The shares add to ' + formatMoney(shareSum) + ' — more than the expense itself');
+         return;
+       }
+     }
+     const splitNames = splitOn ? splitPeople.map((p) => p.name) : [];
      if ($('txSplitOn') && $('txSplitOn').checked && type !== 'expense') {
        toast('Splitting works for expenses only — switched off for this save.');
        $('txSplitOn').checked = false;
        setHiddenSplit(false);
      }
-     if (splitNames.length > 15) { toast('Splitting is limited to 15 people'); return; }
-   
      const built = buildTransaction(
        type,
        amount.value,
@@ -2716,19 +2759,20 @@
      state.transactions.unshift(built.value);
      state.settings.lastAccountId = fromId;
    
-     let share = 0;
-     if (splitNames.length) {
-       // Each named person gets an even share; the user's own share is what
-       // the expense above already spent. Ledger stays false: the money left
-       // with the expense, these are records of who owes what back.
+     let myShare = amount.value;
+     if (splitPeople.length) {
+       // Each person carries the share typed on their row; the user's own
+       // share is the remainder. Ledger stays false: the money left with the
+       // expense, these are records of who owes what back.
        const splitCat = ensureUdhaarCategory();
-       share = round2(amount.value / (splitNames.length + 1));
-       for (const name of splitNames) {
+       const shareSum = round2(splitPeople.reduce((s, p) => s + p.amount.value, 0));
+       myShare = round2(amount.value - shareSum);
+       for (const p of splitPeople) {
          state.debts.push({
            id: newId(),
            type: 'receive',
-           person: name,
-           amount: share,
+           person: p.name,
+           amount: p.amount.value,
            note: cleanText('Split share' + (built.value.comment ? ' of ' + built.value.comment : ''), COMMENT_LIMIT),
            date: built.value.date,
            settled: false,
@@ -2752,7 +2796,7 @@
      toast(type === 'transfer'
        ? 'Moved ' + formatMoney(amount.value) + ' from ' + accountName(fromId) + ' to ' + accountName(toId)
        : (splitNames.length
-         ? 'Split into ' + (splitNames.length + 1) + ' shares of ' + formatMoney(share) + ' — see Udhaar'
+         ? 'Split with ' + splitNames.length + ' — your share is ' + formatMoney(myShare) + ' (see Udhaar)'
          : 'Transaction saved'), { label: 'Undo', fn: undoLast });
    }
    
@@ -2891,10 +2935,27 @@
       ============================================================ */
    
    async function addDebt() {
-     const person = cleanText($('debtPerson').value, NAME_LIMIT);
-     if (!person) { toast('Enter the person’s name'); return; }
-     const amount = readAmountField($('debtAmount'), 'Amount');
-     if (amount.error) { toast(amount.error); return; }
+     const multiOn = $('debtMultiOn') && $('debtMultiOn').checked;
+     // Multi mode: every row is one udhaar entry — its own person, own figure.
+     // Single mode: the original one-name-one-amount path, untouched.
+     let people = [];
+     if (multiOn) {
+       people = readPeopleRows('debtMultiRows');
+       if (!people.length) { toast('Add at least one person'); return; }
+       if (people.length > 25) { toast('One save covers up to 25 people'); return; }
+       for (const p of people) {
+         if (!p.name) { toast('One of the rows is missing a name'); return; }
+         if (p.amount.error) { toast(p.name + ', amount: ' + p.amount.error); return; }
+       }
+     } else {
+       const solo = { name: cleanText($('debtPerson').value, NAME_LIMIT) };
+       if (!solo.name) { toast('Enter the person’s name'); return; }
+       const amount = readAmountField($('debtAmount'), 'Amount');
+       if (amount.error) { toast(amount.error); return; }
+       solo.amount = amount;
+       people.push(solo);
+     }
+     const total = round2(people.reduce((s, p) => s + p.amount.value, 0));
      const type = $('debtType').value === 'pay' ? 'pay' : 'receive';
      // Account is optional: picked means the money can move through it, empty
      // means this only records the debt (an old one, or money handled outside any
@@ -2912,14 +2973,20 @@
      // move through, so only the record lands and no question is asked.
      let moveNow = false;
      if (accId) {
+       const headline = type === 'receive'
+         ? (people.length === 1
+           ? people[0].name + ' owes you ' + formatMoney(total)
+           : 'Together they owe you ' + formatMoney(total) + ' — one entry for each')
+         : (people.length === 1
+           ? 'You owe ' + people[0].name + ' ' + formatMoney(total)
+           : 'Together you owe ' + formatMoney(total) + ' — one entry for each');
        const choice = await askChoice(
          'Add udhaar',
-         (type === 'receive' ? person + ' owes you ' : 'You owe ' + person + ' ') + formatMoney(amount.value) +
-           '. Move it through ' + accountName(accId) + ' now, or just record the udhaar?',
+         headline + '. Move it through ' + accountName(accId) + ' now, or just record the udhaar?',
          [
            {
              value: 'move', kind: 'primary',
-             label: 'Move ' + formatMoney(amount.value) + ' ' + (type === 'receive' ? 'out of ' : 'into ') + accountName(accId)
+             label: 'Move ' + formatMoney(total) + ' ' + (type === 'receive' ? 'out of ' : 'into ') + accountName(accId)
            },
            { value: 'record', label: 'Just record — no money moves' }
          ]
@@ -2928,53 +2995,60 @@
        moveNow = choice === 'move';
      }
      const ledger = moveNow;
-   
-     pushUndo('Udhaar entry added');
-     const d = {
-       id: newId(),
-       type,
-       person,
-       amount: amount.value,
-       note: cleanText($('debtNote').value, COMMENT_LIMIT),
-       date: nowStamp(),
-       settled: false,
-       settledAt: null,
-       ledger,
-       accountId: accId,
-       category
-     };
-     state.debts.push(d);
-   
-     // Lending pays out of the account immediately, borrowing lands in it. Settle
-     // later records the reverse, so the two always net out and no second manual
-     // entry is ever needed. Only when the user just above asked for the movement.
-     if (ledger && accId) {
-       state.transactions.unshift({
+        pushUndo(people.length === 1 ? 'Udhaar entry added' : 'Udhaar entries added');
+     const note = cleanText($('debtNote').value, COMMENT_LIMIT);
+     for (const p of people) {
+       const d = {
          id: newId(),
-         type: type === 'receive' ? 'expense' : 'income',
-         amount: amount.value,
-         category,
-         comment: (type === 'receive' ? 'Lent to ' + person : 'Borrowed from ' + person).slice(0, COMMENT_LIMIT),
-         date: d.date,
+         type,
+         person: p.name,
+         amount: p.amount.value,
+         note,
+         date: nowStamp(),
+         settled: false,
+         settledAt: null,
+         ledger,
          accountId: accId,
-         toAccountId: null,
-         source: 'debtout:' + d.id
-       });
-       state.settings.lastAccountId = accId;
+         category
+       };
+       state.debts.push(d);
+
+       // Lending pays out of the account immediately, borrowing lands in it.
+       // Settle later records the reverse, so the two always net out — one
+       // upfront movement per person, so deleting one entry still removes
+       // exactly its own money trail.
+       if (ledger && accId) {
+         state.transactions.unshift({
+           id: newId(),
+           type: type === 'receive' ? 'expense' : 'income',
+           amount: p.amount.value,
+           category,
+           comment: (type === 'receive' ? 'Lent to ' + p.name : 'Borrowed from ' + p.name).slice(0, COMMENT_LIMIT),
+           date: d.date,
+           accountId: accId,
+           toAccountId: null,
+           source: 'debtout:' + d.id
+         });
+       }
      }
-   
+     if (ledger && accId) state.settings.lastAccountId = accId;
+
      $('debtPerson').value = '';
      $('debtAmount').value = '';
      $('debtNote').value = '';
+     if (multiOn) resetDebtMultiInputs();
      // No focus() here on purpose — see addTransaction.
-   
-     if (save()) toast(!ledger
-       ? 'Udhaar recorded (no money moved)'
-       : accId
-         ? 'Udhaar added — ' + formatMoney(amount.value) + (type === 'receive' ? ' out of ' : ' into ') + accountName(accId)
-         : 'Udhaar added — no money moved yet');
+
+     if (save()) toast(people.length === 1
+       ? (!ledger
+         ? 'Udhaar recorded (no money moved)'
+         : accId
+           ? 'Udhaar added — ' + formatMoney(total) + (type === 'receive' ? ' out of ' : ' into ') + accountName(accId)
+           : 'Udhaar added — no money moved yet')
+       : (people.length + ' udhaar entries added' + (ledger && accId
+         ? ' — ' + formatMoney(total) + (type === 'receive' ? ' out of ' : ' into ') + accountName(accId)
+         : ' (no money moved)')));
    }
-   
    async function deleteDebt(id) {
      const d = state.debts.find((x) => x.id === id);
      if (!d) { toast('That entry is already gone'); return; }
@@ -3028,27 +3102,37 @@
        if (save()) toast('Marked as unsettled');
        return;
      }
-   
-     const accId = debtAccountId(d);
+        // The settlement can run through any account: the money may have come
+     // back through, or gone out of, a different wallet than the entry was
+     // filed under. The entry's own account leads the list; every other open
+     // account sits behind it, one tap away.
+     const defAcc = debtAccountId(d);
+     const otherAccs = pickableAccounts().filter((a) => a.id !== defAcc);
+     const options = [
+       { value: 'ledger:' + defAcc, kind: 'primary',
+         label: 'Record ' + formatMoney(d.amount) + ' in ' + accountName(defAcc) }
+     ].concat(otherAccs.map((a) => ({
+       value: 'ledger:' + a.id,
+       label: 'Record in ' + accountName(a.id) + ' instead'
+     })));
+     options.push({ value: 'record', label: 'Only close the record (no money moves)' });
      const choice = await askChoice(
        'Settle udhaar',
-       'Settle ' + d.person + '’s ' + formatMoney(d.amount) + '. Record it in ' + accountName(accId) + ' as ' +
-         (d.type === 'receive' ? 'income' : 'an expense') + ', or only close the record (no money moves)?',
-       [
-         { value: 'ledger', kind: 'primary', label: 'Record ' + formatMoney(d.amount) + ' in ' + accountName(accId) },
-         { value: 'record', label: 'Only close the record' }
-       ]
+       'Settle ' + d.person + '’s ' + formatMoney(d.amount) + ' as ' +
+         (d.type === 'receive' ? 'income' : 'an expense') + '. Which account does the money move through?',
+       options
      );
      if (choice === null) return;
-   
+
      d.settled = true;
      d.settledAt = nowStamp();
-     if (choice === 'ledger') {
+     if (choice !== 'record') {
+       const accId = String(choice).split(':')[1];
+       if (accId && findAccount(accId)) d.accountId = accId;
        d.ledger = true;
        syncLedgerForDebt(d);
      }
-     if (save()) toast('Marked as settled');
-   }
+     if (save()) toast('Marked as settled');   }
    
    /**
     * Keep the ledger in step with a debt. Idempotent: any previously linked
@@ -3093,6 +3177,7 @@
      $('editDebtAmount').value = d.amount;
      $('editDebtNote').value = d.note || '';
      $('editDebtLedger').checked = d.ledger;
+     fillAccountSelect($('editDebtAccount'), { emptyLabel: 'No account movement', selected: d.accountId || '' });
      openModal('editDebtModal');
    }
    
@@ -3105,29 +3190,37 @@
      if (!person) { toast('Enter the person’s name'); return; }
      const amount = readAmountField($('editDebtAmount'), 'Amount');
      if (amount.error) { toast(amount.error); return; }
-   
-     const ledgerChanged = d.ledger !== $('editDebtLedger').checked;
+        const ledgerChanged = d.ledger !== $('editDebtLedger').checked;
+     // The account can change here too: the money may actually move through
+     // another wallet than the first save recorded. Repointing it moves the
+     // written rows with the entry instead of leaving them behind.
+     const accPick = $('editDebtAccount') ? $('editDebtAccount').value : '';
+     const newAccId = accPick && findAccount(accPick) ? accPick : null;
+     const accountChanged = newAccId !== (d.accountId || null);
      d.type = $('editDebtType').value === 'pay' ? 'pay' : 'receive';
      d.person = person;
      d.amount = amount.value;
      d.note = cleanText($('editDebtNote').value, COMMENT_LIMIT);
      d.ledger = $('editDebtLedger').checked;
-   
-     // Re-link the ledger entry if the amount/direction/ledger flag changed, so a
-     // settled debt's balance effect never disagrees with the record.
-     if (ledgerChanged || d.settled) syncLedgerForDebt(d);
-   
-     // The upfront entry from adding is real money too: if the amount was edited,
-     // follow it instead of leaving a stale figure behind.
+     d.accountId = newAccId;
+
+     // Re-link the ledger entry if the amount/direction/ledger flag/account
+     // changed, so a settled debt's balance effect never disagrees with the record.
+     if (ledgerChanged || accountChanged || d.settled) syncLedgerForDebt(d);
+
+     // The upfront entry from adding is real money too: if the amount or the
+     // account was edited, follow it instead of leaving a stale figure behind.
      if (d.ledger) {
        const upfront = state.transactions.find((t) => t.source === 'debtout:' + d.id);
-       if (upfront && upfront.amount !== d.amount) {
-         upfront.amount = d.amount;
-         upfront.type = d.type === 'receive' ? 'expense' : 'income';
-         touch(upfront);
+       const upfrontWas = upfront ? { a: upfront.amount, t: upfront.type, acc: upfront.accountId } : null;
+       if (upfront) {
+         const wantedType = d.type === 'receive' ? 'expense' : 'income';
+         if (upfront.amount !== d.amount) upfront.amount = d.amount;
+         if (upfront.type !== wantedType) upfront.type = wantedType;
+         if (accountChanged && upfront.accountId !== newAccId) upfront.accountId = newAccId;
+         if (upfrontWas && (upfront.amount !== upfrontWas.a || upfront.type !== upfrontWas.t || upfront.accountId !== upfrontWas.acc)) touch(upfront);
        }
-     } else {
-       state.transactions.filter((t) => t.source === 'debtout:' + d.id)
+     } else {       state.transactions.filter((t) => t.source === 'debtout:' + d.id)
          .forEach((t) => dropRecord('transactions', t.id));
      }
    
@@ -4157,23 +4250,76 @@
      return n + (s[(v - 20) % 10] || s[v] || s[0]);
    }
 
-   /** Names line of the split control → clean name list, in the order typed. */
+   /** Names line of the split control → clean name list, in the order typed.
+    *  (Only kept for old callers; the forms now use the person rows below.) */
    function splitNameList(v) {
      return String(v || '').split(',')
        .map((s) => cleanText(s, NAME_LIMIT))
        .filter(Boolean);
    }
 
+   /* ---------- shared person-rows widget ----------
+      "Split this expense" (home form) and "several people at once" (udhaar
+      form) need the same thing: a stack of name + amount rows the user can
+      add to, edit freely, and delete from. One widget, two containers. */
+   function addPeopleRow(containerId, name, amount) {
+     const box = $(containerId);
+     if (!box) return;
+     box.appendChild(h('div', { class: 'people-row' },
+       h('input', { type: 'text', class: 'people-name', placeholder: 'Name', maxlength: NAME_LIMIT, value: name || '', autocomplete: 'off' }),
+       h('input', { type: 'number', inputmode: 'decimal', step: '0.01', min: '0', class: 'people-amt', placeholder: 'Amount', value: (amount != null && amount > 0) ? String(amount) : '', autocomplete: 'off' }),
+       iconButton('×', 'people-row-drop', { title: 'Remove this person' })
+     ));
+   }
+
+   function readPeopleRows(containerId) {
+     const box = $(containerId);
+     if (!box) return [];
+     return Array.from(box.querySelectorAll('.people-row'))
+       .map((row) => ({
+         name: cleanText((row.querySelector('.people-name') || {}).value, NAME_LIMIT),
+         amount: readAmountField(row.querySelector('.people-amt'), 'Amount')
+       }));
+   }
+
+   function clearPeopleRows(containerId) {
+     const box = $(containerId);
+     if (box) mount(box);
+   }
+
+   /* Fill every row of a person widget with an even share of totalEl's value.
+      countMine adds one extra part for the user's own share — true on the
+      expense split (everyone pays amount/(n+1) and yours is implicit), false
+      on the udhaar form (the whole amount divides between the named people). */
+   function fillPeopleRowsEvenly(containerId, totalEl, countMine) {
+     const rows = Array.from(document.querySelectorAll('#' + containerId + ' .people-amt'));
+     if (!rows.length) { toast('Add people first'); return; }
+     const total = readAmountField(totalEl, 'Amount');
+     if (total.error) { toast(total.error); return; }
+     const share = round2(total.value / (rows.length + (countMine ? 1 : 0)));
+     if (!(share > 0)) { toast('Too small to divide — enter a bigger amount'); return; }
+     rows.forEach((el) => { el.value = String(share); });
+   }
+
    function setHiddenSplit(hidden) {
      const w = $('txSplitNamesWrap');
+     if (w) w.hidden = hidden;
+   }
+   function setHiddenDebtMulti(hidden) {
+     const w = $('debtMultiWrap');
      if (w) w.hidden = hidden;
    }
    function resetSplitInputs() {
      const on = $('txSplitOn');
      if (on) on.checked = false;
-     const names = $('txSplitNames');
-     if (names) names.value = '';
+     clearPeopleRows('txSplitRows');
      setHiddenSplit(true);
+   }
+   function resetDebtMultiInputs() {
+     const on = $('debtMultiOn');
+     if (on) on.checked = false;
+     clearPeopleRows('debtMultiRows');
+     setHiddenDebtMulti(true);
    }
 
 
@@ -6147,6 +6293,11 @@
      'note-pin': (el) => toggleNotePin(el.dataset.id),
      'note-edit': (el) => openNoteEdit(el.dataset.id),
      'note-delete': (el) => deleteNote(el.dataset.id),
+     'tx-split-add': () => addPeopleRow('txSplitRows'),
+     'tx-split-even': () => fillPeopleRowsEvenly('txSplitRows', $('txAmount'), true),
+     'debt-multi-add': () => addPeopleRow('debtMultiRows'),
+     'debt-multi-even': () => fillPeopleRowsEvenly('debtMultiRows', $('debtAmount'), false),
+     'people-row-drop': (el) => { const row = el.closest('.people-row'); if (row) row.remove(); },
      'qaza-daily-toggle': (el) => toggleDailyPrayer(el.dataset.arg),
      'qaza-pay-one': (el) => payQazaOne(el.dataset.arg),
      'qaza-pay-many': (el) => payQazaManyAsk(el.dataset.arg),
@@ -6237,6 +6388,14 @@
        if (e.target.id === 'editType') { setEditTypeFields(); return; }
        if (e.target.id === 'txSplitOn') {
          setHiddenSplit(!e.target.checked);
+         // Open the split with one row already waiting, so the first tap on
+         // the checkbox never lands on an empty panel.
+         if (e.target.checked && !document.querySelector('#txSplitRows .people-row')) addPeopleRow('txSplitRows');
+         return;
+       }
+       if (e.target.id === 'debtMultiOn') {
+         setHiddenDebtMulti(!e.target.checked);
+         if (e.target.checked && !document.querySelector('#debtMultiRows .people-row')) addPeopleRow('debtMultiRows');
          return;
        }
        if (e.target.id === 'rolloverToggle') {
@@ -7469,14 +7628,38 @@
        class: 'pending-kind',
        'aria-label': 'How to file this transaction',
        dataset: { pendingKind: tx.id }
-     });
-     mount(kindSel,
+     });     mount(kindSel,
        h('option', { value: 'normal' }, isExpense ? 'File as expense' : 'File as income'),
-       isExpense ? h('option', { value: 'transfer' }, 'File as transfer to my own account') : null);
-   
+       h('option', { value: 'transfer' }, 'File as transfer to my own account'));        // "Move between accounts" is offered on every row now, whatever the
+     // email parsed as: an ATM withdrawal is a pocket-to-pocket move even
+     // when the bank words it like income. The account block below keeps its
+     // labels honest about what it is asking for on the chosen kind.
+     const acctHint = h('span', { class: 'pending-section-hint' },
+       isExpense ? 'Where the money left from' : 'Where the money landed');
+     const fromLabel = h('label', { class: 'field-label' },
+       isExpense ? 'From account' : 'To account');
+     const fromGroup = h('div', { class: 'form-group' }, fromLabel, acctSel);
+     const toGroup = h('div', { class: 'form-group' },
+       h('label', { class: 'field-label' }, 'To account (transfer)'), toSel);
+     const accountSection = h('div', { class: 'pending-section' },
+       h('div', { class: 'pending-section-head' },
+         h('span', { class: 'pending-section-title' }, 'Which account'),
+         acctHint),
+       h('div', { class: 'pending-section-body' }, fromGroup, toGroup));
+
+     function syncKindUI() {
+       const transfer = kindSel.value === 'transfer';
+       toGroup.hidden = !transfer;
+       fromLabel.textContent = (transfer || isExpense) ? 'From account' : 'To account (where it landed)';
+       acctHint.textContent = transfer
+         ? 'The money leaves the first account and lands in the second'
+         : (isExpense ? 'Where the money left from' : 'Where the money landed');
+     }
+     kindSel.addEventListener('change', syncKindUI);
+     syncKindUI();
+
      const openDebts = (state.debts || []).filter((d) => !d.settled);
-     const debtSel = h('select', {
-       class: 'pending-debt',
+     const debtSel = h('select', {       class: 'pending-debt',
        'aria-label': 'Link to an udhaar entry',
        dataset: { pendingDebt: tx.id }
      });
@@ -7504,17 +7687,7 @@
        section('How to file', 'Expense, income, or a transfer between your own accounts',
          h('div', { class: 'form-group' },
            h('label', { class: 'field-label' }, 'Type'),
-           kindSel)),
-       section('Which account', isExpense ? 'Where the money left from' : 'Where the money landed',
-         h('div', { class: 'form-group' },
-           h('label', { class: 'field-label' }, isExpense ? 'From account' : 'To account'),
-           acctSel),
-         isExpense
-           ? h('div', { class: 'form-group' },
-             h('label', { class: 'field-label' }, 'To account (transfers only)'),
-             toSel)
-           : null),
-       openDebts.length
+           kindSel)),       accountSection,       openDebts.length
          ? section('Udhaar link', 'Settles part of an open debt instead of filing a new record',
            h('div', { class: 'form-group' },
              h('label', { class: 'field-label' }, 'Link to entry'),
@@ -7651,9 +7824,10 @@
        const accId = pendingPickedAccount(txId, tx);
        const stamp = pendingDateStamp(tx);
        const comment = cleanText(tx.description, COMMENT_LIMIT);
-       const kindEl = pendingControl(txId, 'pending-kind');
-       const kind = (kindEl && kindEl.value === 'transfer' && tx.type !== 'income') ? 'transfer' : 'normal';
-       const debt = pendingLinkedDebt(txId);
+       const kindEl = pendingControl(txId, 'pending-kind');       // The transfer kind is read exactly as chosen: an income-typed email
+       // may still actually be a pocket-to-pocket move, and saying no to that
+       // is what forced a fake expense plus a manual top-up entry before.
+       const kind = (kindEl && kindEl.value === 'transfer') ? 'transfer' : 'normal';       const debt = pendingLinkedDebt(txId);
    
        if (debt) {
          const debtAmount = debt.amount;
