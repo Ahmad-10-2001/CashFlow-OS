@@ -6076,9 +6076,11 @@
        if (e.state === 'ok') {
          lines.push(e.label + ': ' + e.local + ' here, ' + e.remote + ' on the cloud — in step ✓');
        } else if (e.state === 'reupload') {
-         const missing = e.local - e.remote;
+         const parts = [];
+         if (e.rescued && e.rescued > 0) parts.push(e.rescued + ' row(s) the cloud had lost');
+         if (e.local > e.remote) parts.push((e.local - e.remote) + ' missing there');
          lines.push(e.label + ': ' + e.local + ' here, ' + e.remote + ' on the cloud — ' +
-           missing + ' missing there, re-uploaded ↑');
+           (parts.join(' · ') || 'out of step') + ', re-uploaded ↑');
        } else {
          lines.push(e.label + ': could not be checked (' + (e.detail || 'failed') + ')');
        }
@@ -6086,7 +6088,10 @@
      repairReport = lines.join('\n');
      renderAll();
    
-     if (res.reset) {
+     if (res.reset || (res.rescued && res.rescued > 0)) {
+       // Re-stamped rows carry a fresh updatedAt — write them down, or the
+       // next reload sees the old stamps and considers the work undone.
+       save();
        renderSyncPanel();
        toast('Re-uploaded ' + res.totalRows + ' record(s) from this device');
      } else {
@@ -7554,13 +7559,41 @@
        .filter(Boolean);
    }
    
+   /* One approval in flight per pending row. Two quick taps both read the
+      server while the row still says "pending" and both file the money —
+      the first tap's PATCH lands only after its network round-trips, so the
+      status check alone cannot see the second one coming. */
+   const approvingIds = new Set();
    async function approveTransaction(txId) {
+     if (approvingIds.has(txId)) return;
+     approvingIds.add(txId);
+     try { await approveTransactionNow(txId); } finally { approvingIds.delete(txId); }
+   }
+
+   async function approveTransactionNow(txId) {
      const userId = getCurrentUserId();
      if (!userId) return;
    
      const tx = pendingTransactions.find(t => t.id === txId);
      if (!tx) return;
    
+     // This ledger already holds an entry filed from the very same email:
+     // a double-tap that raced ahead of the status check, a PATCH that failed
+     // (the row still shows pending), or a simultaneous approval on another
+     // device — every one of these used to write a second copy. The money is
+     // in the ledger; just mark the queue row handled.
+     if (state.transactions.some((t) => t && t.source === 'email:' + tx.id)) {
+       pendingTransactions = pendingTransactions.filter((t) => t.id !== tx.id);
+       renderPendingQueue();
+       try {
+         await sbFetch('pending_transactions?id=eq.' + encodeURIComponent(tx.id), {
+           method: 'PATCH',
+           body: JSON.stringify({ status: 'approved', approved_at: new Date().toISOString() })
+         });
+       } catch (err) { /* the row can wait; the ledger is already right */ }
+       toast('Already filed from this email — nothing added');
+       return;
+     }
      // The row came from the server, so its amount is not trusted to be a number.
      // Approving a NaN would write a poisoned row straight into the ledger.
      const amount = toPositiveNumber(tx.amount);

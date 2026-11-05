@@ -923,6 +923,7 @@ window.CashFlowSync = (function () {
     const report = [];
     let reset = 0;
     let totalRows = 0;
+    let rescuedTotal = 0;
 
     // Plain words, not table slugs: this report is shown to the user verbatim.
     const LABELS = { transactions: 'Transactions', accounts: 'Accounts', debts: 'Udhaar', custody: 'Amanat', shopping: 'Shopping list' };
@@ -942,6 +943,22 @@ window.CashFlowSync = (function () {
         continue;
       }
       if (remoteCount === null) { report.push({ label, state: 'error', detail: 'the server did not report a count' }); continue; }
+      // Counts can tie while the tables disagree: one row deleted here, one
+      // created there, and both tallies read equal. The old check called that
+      // "in step" over a real hole — exactly how a row one device holds
+      // never reached the cloud and no other device ever saw it again. So
+      // compare ids as well as totals, and re-send what the cloud is missing.
+      let remoteIds = null;
+      try {
+        const r2 = await httpWithHeaders(
+          restPath(table) + '?select=id&deleted=eq.false&max_rows=50000',
+          { headers: headers() });
+        // httpWithHeaders hands back { body, count } — the rows live in .body.
+        remoteIds = (r2 && Array.isArray(r2.body))
+          ? new Set(r2.body.map((x) => (x && x.id) ? x.id : null).filter(Boolean))
+          : null;
+      } catch (err) { remoteIds = null; }
+
       if (localCount > remoteCount) {
         // The server is missing rows this device has. Forget the claim and let
         // the next push send everything.
@@ -950,6 +967,20 @@ window.CashFlowSync = (function () {
         reset++;
         report.push({ label, state: 'reupload', local: localCount, remote: remoteCount });
         totalRows += localCount;
+      } else if (remoteIds) {
+        // Same total, different contents: the cloud is short on rows only this
+        // device holds. Re-stamp them so the cursor sees them as dirty and a
+        // targeted push sends just the hole, not the whole table.
+        const lost = (state[table] || []).filter((r) => r && r.id && !remoteIds.has(r.id));
+        if (lost.length) {
+          for (const r of lost) r.updatedAt = touch();
+          try { await pushAll(state); } catch (err) { /* the push reports itself */ }
+          rescuedTotal += lost.length;
+          report.push({ label, state: 'reupload', local: localCount, remote: remoteCount, rescued: lost.length });
+          totalRows += lost.length;
+        } else {
+          report.push({ label, state: 'ok', local: localCount, remote: remoteCount });
+        }
       } else {
         report.push({ label, state: 'ok', local: localCount, remote: remoteCount });
       }
@@ -967,7 +998,7 @@ window.CashFlowSync = (function () {
       try { await pushAll(state); } catch (err) { /* reported by pushAll's own status */ }
     }
 
-    return { ok: true, reset, report, totalRows };
+    return { ok: true, reset, report, totalRows, rescued: rescuedTotal };
   }
 
   function dirtyRecords(state, table) {
