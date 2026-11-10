@@ -8,20 +8,74 @@ Open the page and it runs.
 ## What it does
 
 Track where your money is, what came in, what went out, and who owes whom.
+There are twelve tabs:
 
-| Tab | What it is for |
-|---|---|
-| **Home** | Total balance, per-account boxes, this month's income and expense plus last month's figure (hidden when there is none), and the add-transaction form |
-| **Records** | Every transaction in the selected month — filter by account or category, search anything (account names included), one-tap clear — editable |
-| **Budget** | Monthly spending limits per category, with an optional income offset, plus what is left after the budgets. Over-budget? Fix counts part of it under another budget with room — same dialog, no typing, transactions, limits and reports never change. Or repeat last month in one tap |
-| **Udhaar** | Money lent and borrowed with an optional account and category. Picking an account moves money immediately; leaving it empty only records the debt, and settling moves the money then |
-| **Reports** | Donut and bar charts over any date range |
-| **List** | A standing shopping list — entered once, unticked automatically every new month; tick what you bought, then save it as one expense |
-| **Notes** | Personal sticky-note cards (color, icon, pin, search, edit, updated stamp) plus a separate Timers section — each timer counts up live from a moment you choose |
-| **Categories** | Add, remove, and reorder spending categories — the order here is the order in every dropdown. Every row shows this month's spend against its budget |
-| **Pending** | Bank-email transactions waiting for approval. Plain Approve files them; More options files as transfer, links an udhaar repayment, or ticks the bought list items. Repeat mail remembers its category |
-| **Accounts** | Cash, NayaPay, Easypaisa and anything you add, with this month's in/out per account. Opening balances, rename, archive |
-| **Settings** | Appearance (warm sepia by default, or night dark — this device only), cloud sync, JSON export/import (import merges — nothing already here is ever deleted), and a password-protected danger zone |
+**Home** — Total balance, per-account boxes, this month's income and expense plus
+last month's figure (hidden when there is none), and the add-transaction form.
+An expense can be split between several people in one go: a person row is added
+for each share, "Split equally" divides the amount between them, and each row's
+figure can be changed afterwards. The total is validated before it is saved.
+
+**Records** — Every transaction in the selected month: filter by account or
+category, search anything (account names included), one-tap clear. Entries stay
+editable.
+
+**Budget** — Monthly spending limits per category, with an optional income
+offset, plus what is left after the budgets. Over-budget? "Move" fixes it by
+shifting part of the limit to another category with room — same dialog, no
+typing, and transactions, limits and reports never change. Last month can be
+repeated in one tap.
+
+**Udhaar** — Money lent and borrowed, one entry per person. A checkbox turns the
+one form into several person rows at once, so the same udhaar given to several
+people in one go becomes one entry per person — each can be paid down
+separately, including part returns ("Return some" records a slice coming back,
+and the entry keeps the remainder). Every entry can carry an account and a
+category, both optional: picking an account moves the money immediately (lending
+pays out, borrowing lands in), leaving it empty only records the debt and the
+movement happens on settle. Settling asks which account the money moves through —
+or records it without touching any balance. The edit modal can add or change the
+account later; the old balance-side movement is then corrected at the same time.
+
+**Qaza** — A namaz tracker. The five daily farz prayers plus Witr each have a
+checkbox card called "Today's Prayers"; a prayer left unticked by day's end is
+rolled up into recent qaza automatically at night. Recent (new) and backlog
+(old) qaza are counted separately, and paying back eats recent first, the newest
+miss first. A card under the daily tracker — "Which Day Was Missed" — remembers
+the date and the day of the week every recent miss belongs to, so a missed
+prayer can be pinned to the right day; paying back removes the day marks in step
+with the count. The breakdown lists every prayer with its own counters and
+buttons (Prayed 1, Prayed N, Miss, Set backlog), and the grand total includes
+Witr. Witr started being counted from the day it arrived in the app — the days
+stored before the Witr checkbox existed are never charged for it, so no
+backdated qaza is invented.
+
+**List** — A standing shopping list: entered once, unticked automatically every
+new month. Tick what you bought, then save it as one expense.
+
+**Notes** — Personal sticky-note cards (color, icon, pin, search, edit, updated
+stamp) plus a separate Timers section — each timer counts up live from a moment
+you choose.
+
+**Reports** — Donut and bar charts over any date range.
+
+**Categories** — Add, remove and reorder spending categories; the order here is
+the order in every dropdown. Every row shows this month's spend against its
+budget.
+
+**Pending** — Bank-email transactions waiting for approval. Plain Approve files
+the row as it stands. "More options" opens the full form: any kind of email can
+be filed as a transfer instead, an incoming one can be linked to an udhaar
+repayment, or the bought shopping-list items can be ticked in the same step.
+The screen changes with what is chosen — the from/to account fields and labels
+follow the kind of the file. Repeat mail remembers its category.
+
+**Accounts** — Cash, NayaPay, Easypaisa and anything you add, with this month's
+in/out per account. Opening balances, rename, archive.
+
+**Settings** — Appearance (warm sepia by default, or night dark — this device
+only), cloud sync, JSON export/import (import merges — nothing already here is
+ever deleted), and a password-protected danger zone.
 
 ---
 
@@ -29,52 +83,48 @@ Track where your money is, what came in, what went out, and who owes whom.
 
 ### Money never sits in only one place
 
-Your balance is **always the sum of the account boxes** shown on the Home screen.
+Your balance is always the sum of the account boxes shown on the Home screen.
 The headline figure is computed from those boxes rather than separately, so the
 two can never drift apart.
 
 Moving money between your own accounts — Cash to NayaPay, say — is recorded as a
-**transfer**, which is deliberately excluded from income, from expenses, and from
+transfer, which is deliberately excluded from income, from expenses and from
 category budgets. Treating a transfer as income would inflate your income figure
 and burn your Food budget for no reason. This is the single easiest mistake in
 this kind of app, so it is excluded in the calculation and covered by tests.
 
 ### Udhaar takes part returns
 
-Settling is all-or-nothing, but real life is not: "Return some" records a
-slice coming back (or paid back). The entry keeps the remainder, only the
-slice is written to the ledger when the entry is balance-tracked, and
-returning the rest settles through the normal flow. Over-returning is
-refused.
+Settling is all-or-nothing, but real life is not: "Return some" records a slice
+coming back (or paid back). The entry keeps the remainder, only the slice is
+written to the ledger when the entry is balance-tracked, and returning the rest
+settles through the normal flow. Over-returning is refused.
 
 Every udhaar entry can carry an account and a category, both optional. Picking
-an account moves the money immediately (lending pays out, borrowing lands
-in) — leaving it empty only records the debt, for old entries or money
-handled outside any account, and the movement happens on settle instead.
-Settling moves it back into the same account. The entry's category (Udhaar
-unless picked otherwise) is what every generated row files under — including
-a bank-email repayment approved with an udhaar link, which files under that
-mail's picked category instead. Old entries from before the pickers keep
-working exactly as they did.
+an account moves the money immediately — leaving it empty only records the debt,
+for old entries or money handled outside any account, and the movement happens
+on settle. Settling asks which account it moves through (record-only is offered
+too). The entry's category is what every generated row files under, including a
+bank-email repayment approved with an udhaar link, which files under that mail's
+picked category instead.
 
-(Amanat was removed from the app. Its old rows stay valid in storage,
-backups and sync, so nothing was destroyed — they are simply no longer
-shown.)
+(Amanat was removed from the app. Its old rows stay valid in storage, backups
+and sync, so nothing was destroyed — they are simply no longer shown.)
 
 ### Budgets belong to a month, not to the app
 
-Each month keeps its own limits. Looking back at last month shows *last* month's
+Each month keeps its own limits. Looking back at last month shows last month's
 limit, not whatever it happens to be today. Closing a month is non-destructive —
 its budgets and reports stay readable and new entries flow to the new month.
 
-Once budgets exist, the tab also shows what is left: total balance minus what
-is still reserved. What you already spent comes out of its budget first — a
-10,000 budget with 3,000 spent reserves only 7,000 — because the spent money
-already left the balance and must not be subtracted twice. Overspending
-reserves nothing further; it is shown as information, not subtracted again.
+Once budgets exist, the tab also shows what is left: total balance minus what is
+still reserved. What you already spent comes out of its budget first — a 10,000
+budget with 3,000 spent reserves only 7,000 — because the spent money already
+left the balance and must not be subtracted twice. Overspending reserves nothing
+further; it is shown as information, not subtracted again.
 
-An over-budget category is fixed by moving limit, not money: each budget row
-has **Move**, which shifts an amount into another category's limit in the same
+An over-budget category is fixed by moving limit, not money: each budget row has
+**Move**, which shifts an amount into another category's limit in the same
 month. Transactions, reports and history never change — only the plan is
 rebalanced, and the month's total across limits stays identical.
 
@@ -82,18 +132,18 @@ rebalanced, and the month's total across limits stays identical.
 
 Home shows this month's income and expense under the lifetime total, plus last
 month's figure — hidden when last month holds nothing, so it never shows a
-meaningless zero. Records, Accounts and Transfers each have a month picker
-that defaults to this month, so a new month reads fresh without deleting
-history. Pickers are per-tab and never persisted — looking back somewhere
-never moves anything else. Approving a bank email jumps Records to the
-email's month, so the entry can never look "vanished".
+meaningless zero. Records, Accounts and Transfers each have a month picker that
+defaults to this month, so a new month reads fresh without deleting history.
+Pickers are per-tab and never persisted — looking back somewhere never moves
+anything else. Approving a bank email jumps Records to the email's month, so
+the entry can never look "vanished".
 
 ### Import adds, never replaces
 
-A backup file is merged in by id: rows already here win every conflict, and
-only genuinely new rows arrive. Categories keep their order with new ones
-appended, budgets fill what is missing, and your settings stay yours. The
-confirm dialog says exactly what is new before anything happens.
+A backup file is merged in by id: rows already here win every conflict, and only
+genuinely new rows arrive. Categories keep their order with new ones appended,
+budgets fill what is missing, and your settings stay yours. The confirm dialog
+says exactly what is new before anything happens.
 
 ### The shopping list renews itself
 
@@ -103,14 +153,28 @@ entries stay exactly where they were.
 
 ### Notes count the time
 
-Timers live in their own section of the Notes tab: a big live figure per
-timer, a short note under it saying what it is for, and the local start
-moment. No pause button by design — a timer that stops is a note, not a
-timer. Reset restarts, delete removes.
+Timers live in their own section of the Notes tab: a big live figure per timer,
+a short note under it saying what it is for, and the local start moment. No
+pause button by design — a timer that stops is a note, not a timer. Reset
+restarts, delete removes.
 
-Notes themselves are sticky-note cards with a color, an icon, pin-to-top,
-search, edit and an "Updated" stamp. Both ride the synced settings, so both
-devices see the same timers and notes with no extra setup.
+Notes themselves are sticky-note cards with a color, an icon, pin-to-top, search,
+edit and an "Updated" stamp. Both ride the synced settings, so both devices see
+the same timers and notes with no extra setup.
+
+### Qaza remembers the day, not just the count
+
+Recent qaza is more than a number: every miss carries the calendar day it
+belongs to (a rolled-up miss carries the day it was skipped, a manual tap
+carries today). The day list is kept newest-first per prayer, which matches how
+payback works — the newest miss is repaid first — so the list always stays level
+with the count, and Undo walks the day memory back along with the count.
+
+Witr joined this tracker later than the five farz prayers, so it remembers the
+day it started being counted. Daily entries written before the Witr checkbox
+existed never had that checkbox, and charging them would invent up to two months
+of phantom qaza out of nothing — starting from today avoids that entirely, and a
+manual Witr miss still counts whenever it is entered.
 
 ### Local first, cloud second
 
@@ -118,28 +182,27 @@ Every edit is written to `localStorage` immediately. The app never waits on the
 network, so it behaves identically with the aeroplane mode on. The cloud copy is
 a background nicety, and signing in is entirely optional.
 
-"Delete all local data" clears this browser only: signing out happens first,
-so the sync engine can never read the vanished rows as deletions and wipe the
-cloud behind you. Deleting cloud data is a separate, password-protected button
-in the danger zone — ledger tables only, never the email setup.
+"Delete all local data" clears this browser only: signing out happens first, so
+the sync engine can never read the vanished rows as deletions and wipe the cloud
+behind you. Deleting cloud data is a separate, password-protected button in the
+danger zone — ledger tables only, never the email setup.
 
 ### Appearance is per-device
 
-Warm sepia is the look, with a night dark beside it, under **Settings →
-Appearance**. Every text/background pair in both is measured at 4.5:1 or
-better, so nothing fades into its background. The choice is kept in its own
-browser key, not in app state: it never syncs, so the phone and the laptop
-can differ. Charts and pastel note cards keep their own colours in every
-theme.
+Warm sepia is the look, with a night dark beside it, under Settings →
+Appearance. Every text/background pair in both is measured at 4.5:1 or better,
+so nothing fades into its background. The choice is kept in its own browser key,
+not in app state: it never syncs, so the phone and the laptop can differ. Charts
+and pastel note cards keep their own colours in every theme.
 
-(Month closing was removed: it labelled months without moving anything, and
-the label is what hid entries from view. Old closed months stay readable in
-every month picker; they just cannot be closed or reopened any more.)
+(Month closing was removed: it labelled months without moving anything, and the
+label is what hid entries from view. Old closed months stay readable in every
+month picker; they just cannot be closed or reopened any more.)
 
 ### Storage key, not display name
 
-The app was renamed from *Salary Manager* to *CashFlow OS*. The `localStorage` key
-is **deliberately still** `salaryManager:state` — renaming it would orphan every
+The app was renamed from *Salary Manager* to *CashFlow OS*. The `localStorage`
+key is deliberately still `salaryManager:state` — renaming it would orphan every
 existing user's records. Nothing user-facing depends on the key, and there is a
 test asserting it stays put. Backups written under either name are accepted on
 import.
@@ -150,60 +213,61 @@ import.
 
 Deliberately minimal. There is no framework, no bundler, and no `node_modules`.
 
-| Layer | What it is | Why |
-|---|---|---|
-| Markup | Plain HTML5 | No build step; the page is the artifact |
-| Logic | Vanilla ES2020, ~4,400 lines in `script.js` | Readable end to end, no toolchain to learn |
-| Styling | Plain CSS with custom properties | Same reason |
-| Charts | Hand-rolled SVG in `script.js` | No 200 KB chart library, stays offline-capable |
-| Database | Supabase (Postgres) over plain REST via `fetch` | No 120 KB SDK, so the service worker precache stays small |
-| Auth | Supabase Auth, email + PIN | Recovery by email, quick entry by PIN |
-| Offline | Service worker + web app manifest | Installs as an app, opens with no network |
-| PWA | `manifest.json`, maskable icons | Add to home screen |
+- Markup: plain HTML5. No build step; the page is the artifact.
+- Logic: vanilla ES2020, roughly 8,000 lines in `script.js`. Readable end to
+  end, no toolchain to learn.
+- Styling: plain CSS with custom properties, about 1,800 lines. Same reason.
+- Charts: hand-rolled SVG in `script.js`. No 200 KB chart library, stays
+  offline-capable.
+- Database: Supabase (Postgres) over plain REST via `fetch`. No 120 KB SDK, so
+  the service worker precache stays small.
+- Auth: Supabase Auth, email + password (and PIN for quick entry).
+- Offline: service worker + web app manifest. Installs as an app, opens with no
+  network.
 
-**No `supabase-js`.** Supabase is reached with `fetch` against its REST and GoTrue
-endpoints. That was a real decision: the SDK would have been roughly 120 KB that
-the service worker then had to cache, in an app whose entire character is being
-small and dependency-free. 
+**No `supabase-js`.** Supabase is reached with `fetch` against its REST and
+GoTrue endpoints. That was a real decision: the SDK would have been roughly
+120 KB that the service worker then had to cache, in an app whose entire
+character is being small and dependency-free.
 
 ### A stale cache must never half-update the page
 
 This one cost a real bug report, so it is worth writing down.
 
-The service worker originally served app files **cache-first**
+The service worker originally served app files cache-first
 (stale-while-revalidate), which is the right default for assets. It is the wrong
-default for `index.html`, `script.js` and `style.css` when they are *not*
+default for `index.html`, `script.js` and `style.css` when they are not
 content-hashed, and a deploy produced this: a fresh `index.html` next to an old
 `script.js`. Both files were individually valid. Together they produced a page
-with **no Amanat tab** and an **account dropdown that stayed empty** — because
-the new markup expects a script that fills it, and the old script did not know
-the field existed. Nothing in the app was wrong; the page was simply half
-updated, with no clue why.
+with no Amanat tab and an account dropdown that stayed empty — because the new
+markup expects a script that fills it, and the old script did not know the field
+existed. Nothing in the app was wrong; the page was simply half updated, with no
+clue why.
 
 Two changes prevent it:
 
-1. **The app's own files are network-first.** Fresh when online, cached copy
-   only when offline. Other assets keep stale-while-revalidate, which really is
+1. The app's own files are network-first. Fresh when online, cached copy only
+   when offline. Other assets keep stale-while-revalidate, which really is
    instant for things like icons.
-2. **A self-healing guard on every boot.** The HTML declares its build number
-   and its tab list; the script declares the same. If they disagree, or if a tab
-   has no panel, the app knows it is running against mismatched files. It then
-   clears the caches, unregisters the service worker, shows *"Updating the app…
-   this will reload once"*, and reloads. If the files still disagree after that
-   — meaning the service worker was never the cause — it stops trying and runs
+2. A self-healing guard on every boot. The HTML declares its build number and
+   its tab list; the script declares the same. If they disagree, or if a tab has
+   no panel, the app knows it is running against mismatched files. It then
+   clears the caches, unregisters the service worker, shows "Updating the app…
+   this will reload once", and reloads. If the files still disagree after that —
+   meaning the service worker was never the cause — it stops trying and runs
    anyway, rather than looping on a blank page.
 
-**When you deploy, bump all three:** `appBuild` in `config.js`, the
-`app-build` meta tag in `index.html`, and `CACHE_VERSION` in
-`service-worker.js`. A test asserts the first two match, so they cannot drift.
+**When you deploy, bump all three:** `appBuild` in `config.js`, the `app-build`
+meta tag in `index.html`, and `CACHE_VERSION` in `service-worker.js`. A test
+asserts the first two match, so they cannot drift.
 
 ### No innerHTML, anywhere
 
-All DOM is built with `h()` and `hs()` (the SVG variant), which set `textContent`
-and attributes — never markup. A category named `<img src=x onerror=...>` is
-rendered as literal text. There is a test that injects hostile strings into a
-category, a comment, a person name and a list item, then asserts zero elements
-were created.
+All DOM is built with `h()` and `hs()` (the SVG variant), which set
+`textContent` and attributes — never markup. A category named
+`<img src=x onerror=...>` is rendered as literal text. There is a test that
+injects hostile strings into a category, a comment, a person name and a list
+item, then asserts zero elements were created.
 
 ### Prototype-pollution guards
 
@@ -221,28 +285,44 @@ atomically. A single key means a write can never be observed half-finished.
 
 ```
 version          4
-transactions[]   id, type, amount, category, comment, date, accountId, toAccountId, source, updatedAt
-debts[]          id, type, person, amount, note, date, settled, settledAt, ledger
-custody[]        id, person, direction, amount, returned, note, date, returnedDate
+transactions[]   id, type, amount, category, comment, date, accountId,
+                 toAccountId, source, updatedAt
+debts[]          id, type, person, amount, note, date, settled, settledAt,
+                 ledger, accountId, category
+custody[]        id, person, direction, amount, returned, note, date,
+                 returnedDate
 accounts[]       id, name, kind, openingBalance, archived
-shopping[]       id, name, qty, note, checked, createdAt, checkedAt, boughtTxId, cost
+shopping[]       id, name, qty, note, checked, createdAt, checkedAt,
+                 boughtTxId, cost
 budgets          { "2026-09": { Food: 10000 } }      per month
 categories[]     user-editable strings
-settings         { budgetOffset: { Food: true }, lastAccountId }
+settings         { budgetOffset: { Food: true }, lastAccountId,
+                   qaza: { backlog, recent, recentDays, daily, log, witrFrom } }
 closedPeriods[]  archived "YYYY-MM" months
 ```
 
+The qaza block inside settings is where the tracker lives: two counters per
+prayer (backlog and recent), the day memory of recent misses, the daily tick
+map, the capped action log behind Undo, and the day Witr started counting from.
+
+A corrupted or repaired file produces a plain toast naming what was changed, and
+the clean version is written straight back.
+
 ### Schema history
 
-| Version | Change | Migration |
-|---|---|---|
-| 1 | Four separate `localStorage` keys | Migrated into the single key |
-| 2 | Added shopping list, per-category budget offset, month close | Read as flat `budgets`, re-filed into the current month |
-| 3 | Dates changed from UTC ISO to local wall-clock stamps; budgets keyed by month | Rewritten as `YYYY-MM-DDTHH:mm`, preserving the exact instant |
-| 4 | Accounts, transfers, Amanat | Old transactions had no `accountId`; they are filed under **Cash** and you are told |
+- Version 1 — four separate `localStorage` keys; migrated into the single key.
+- Version 2 — added the shopping list, per-category budget offset and month
+  close; flat `budgets` were read and re-filed into the current month.
+- Version 3 — dates changed from UTC ISO to local wall-clock stamps and budgets
+  keyed by month; dates were rewritten as `YYYY-MM-DDTHH:mm` preserving the
+  exact instant.
+- Version 4 — accounts, transfers; old transactions had no `accountId`, so they
+  were filed under Cash and the user was told.
 
-`did you know the user is told` — a corrupted or repaired file produces a plain
-toast naming what was changed, and the clean version is written straight back.
+Later additions — udhaar accounts and categories on old entries, the qaza
+tracker inside settings — ride under version 4 behind sanitising migrations: an
+old file loads cleanly, missing fields come out blank rather than crashing, and
+nothing already stored is ever destroyed.
 
 ### Why dates are stored as text
 
@@ -258,37 +338,33 @@ guarantees an exact round-trip. All date maths is done client-side.
 Optional. Sign in under **Backup → Sync Across Devices** and your data starts
 reaching the cloud. Sign out and everything keeps working locally.
 
-### How it works
-
-```
-edit  →  localStorage  →  [background]  →  Supabase
-         (instant)        (debounced)
-```
+How it works, briefly: an edit is written to `localStorage` instantly, then a
+background push sends it up, debounced.
 
 - **Offline-first.** Nothing waits on the network.
-- **Outbox.** A record is dirty when its `updatedAt` is newer than the last thing
-  successfully pushed. After a successful push the cursor advances to the newest
-  stamp actually sent — not to "now" — so an edit made *during* the request still
-  looks dirty and goes out next round instead of being silently dropped.
+- **Outbox.** A record is dirty when its `updatedAt` is newer than the last
+  thing successfully pushed. After a successful push the cursor advances to the
+  newest stamp actually sent — not to "now" — so an edit made during the request
+  still looks dirty and goes out next round instead of being silently dropped.
 - **Pull before push.** A local edit made against a stale view is never
   overwritten by a version it never saw.
 - **Last-write-wins per record.** Each record carries a client-assigned
   `updatedAt`; the newer one wins. For one person across two or three devices
-  this is the right trade. CRDTs would be a lot of machinery for a problem this
-  app does not have.
+  this is the right trade.
 - **Tombstones.** Deleting a record pushes `deleted = true` rather than removing
   the row, so a delete on one device cannot come back on another.
 - **Monotonic clock.** If the device clock jumps backwards, an edit could land
   before the sync cursor and never be sent. Every stamp is therefore forced
   strictly greater than the previous one, so that cannot happen.
-- **Change detection in one place.** `reconcile()` diffs the live state against a
-  shadow of the last seen state. It is called from `save()`, the single point
-  every mutation already passes through — so a new feature cannot forget to sync.
+- **Change detection in one place.** `reconcile()` diffs the live state against
+  a shadow of the last seen state. It is called from `save()`, the single point
+  every mutation already passes through — so a new feature cannot forget to
+  sync.
 - **Pull first on a new device** fetches the full history, then merges.
 
 ### Honest limitation
 
-If a device is offline, an edit **cannot** reach the server yet. It is queued and
+If a device is offline, an edit cannot reach the server yet. It is queued and
 retried, and the status line says so. No design makes an offline write arrive
 immediately; anything that claims otherwise is not telling you the truth.
 
@@ -298,8 +374,8 @@ The push cursor — "everything up to T is already uploaded" — lives in each
 browser's `localStorage`, not on the server. That makes it a claim about the
 server that nothing on the server can correct. Drop the tables, restore a
 backup, or rebuild the database, and the app carries on believing it: every
-record on the device is older than T, so it uploads nothing, and the status
-line says **synced** throughout.
+record on the device is older than T, so it uploads nothing, and the status line
+says synced throughout.
 
 This is not detectable from inside the app, so it is a button rather than a
 guess: **Backup → Cloud copy looks wrong? → Check and re-upload** asks the server
@@ -334,169 +410,156 @@ Several people can use one Supabase project; each sees only their own rows.
 `Backup → Forgot your password?` asks only for the email, then offers two ways
 in, both ending in the same place.
 
-- **Click the link in the email.** This is the main route and it needs nothing
-  beyond the redirect URL. Supabase puts the token in the URL fragment and the
-  app reads it on the next load, opening straight on the new-password fields.
-- **Type the code.** A fallback, in a collapsed box. It needs the *Magic Link*
-  email template edited once to include `{{ .Token }}`, and **Supabase will not
-  let the template be edited until custom SMTP is configured** — the template
-  fields are visibly disabled with a "Set up custom SMTP to edit templates"
-  banner. So on a project still using the default SMTP there is no code in the
-  email, and the link is the only way in.
+Click the link in the email — the main route, needing nothing beyond the
+redirect URL. Supabase puts the token in the URL fragment and the app reads it
+on the next load, opening straight on the new-password fields. Or type the code
+— a fallback in a collapsed box. It needs the Magic Link email template edited
+once to include `{{ .Token }}`, and Supabase will not let the template be edited
+until custom SMTP is configured, so on a project still using the default SMTP
+there is no code in the email and the link is the only way in.
 
-Either way the user ends up holding a short-lived *recovery token*, and only that
-token can set a new password. It is kept deliberately separate from the session: a
-recovery token can change the password and nothing else, so a leaked reset link
-cannot read or write your ledger.
+Either way the user ends up holding a short-lived recovery token, and only that
+token can set a new password. It is kept deliberately separate from the session:
+a recovery token can change the password and nothing else, so a leaked reset
+link cannot read or write your ledger.
 
-**The link does not carry the email address.** Supabase's fragment is
-`#access_token=…&expires_in=…&refresh_token=…&token_type=bearer&type=recovery` —
-there is no `email` in it. The address is recovered from the token's own claims,
-and failing that from the response to the password change. Without that, setting
-the new password succeeded and the automatic sign-in that followed failed with
-"Enter a valid email address", which is both wrong and alarming: the user had
-just chosen a working password. The claim is read without verifying the
-signature, which is deliberate and safe — it only prefills a field, every
-request is still made with the token, and the server verifies that token on each
-one. A forged claim changes nothing except which address appears in a box the
-user can edit.
+**The link does not carry the email address.** Supabase's fragment has
+`access_token`, `expires_in`, `refresh_token` and `type=recovery` — no email in
+it. The address is recovered from the token's own claims, and failing that from
+the response to the password change. Without that, setting the new password
+succeeded and the automatic sign-in that followed failed with "Enter a valid
+email address", which is both wrong and alarming: the user had just chosen a
+working password. The claim is read without verifying the signature, which is
+deliberate and safe — it only prefills a field, every request is still made with
+the token, and the server verifies that token on each one.
 
 **The request answers the same way whether or not the address has an account.**
 Echoing "no such user" would turn the form into a way to discover who is
-registered. Only failures of the *project* are reported — rate limiting, and
-"no email provider configured".
+registered. Only failures of the project itself are reported — rate limiting,
+and "no email provider configured".
 
-Two things to set up on the Supabase side, or the email never arrives:
+Three things to set up on the Supabase side, or the email never arrives:
 
 1. **A forwarding page at the account root.** Supabase builds the reset link
    itself and decides where it points. With the project's Site URL, the redirect
    allow-list and the app all correct, it still sent links to
    `https://<user>.github.io/` — the account root — while the app is served from
    `https://<user>.github.io/CashFlow-OS/`. That is a step in Supabase's own
-   service, and it is not something this app can correct from its own side.
+   service, and it is not something this app can correct from its side.
 
    The fix is to stop relying on it: GitHub serves a repository named
    `<user>.github.io` at exactly that root, so a one-file page there forwards
-   the visitor to the app, **carrying the URL fragment across**. `#
-   access_token=…` is never sent to a server, which is precisely why this cannot
-   be done with a server redirect — and why a valid token arriving at a dead
-   address is so confusing: the page 404s, the one-time token dies with the
-   click, and the next attempt reports it expired.
+   the visitor to the app, carrying the URL fragment across. A fragment is never
+   sent to a server, which is precisely why this cannot be done with a server
+   redirect — and why a valid token arriving at a dead address is so confusing:
+   the page 404s, the one-time token dies with the click, and the next attempt
+   reports it expired.
 
-   The file is [`site-root-redirect.html`](site-root-redirect.html) in this
-   repository. Publish it as `index.html` in a repository named
-   `Ahmad-10-2001.github.io`. Once that exists the link works whatever Supabase
-   puts in it, and the app stops depending on the Site URL staying correct.
+   The file is `site-root-redirect.html` in this repository. Publish it as
+   `index.html` in a repository named `Ahmad-10-2001.github.io`. Once that
+   exists the link works whatever Supabase puts in it.
 
-   **The name has to be exactly `index.html`.** Getting this wrong is quiet: the
+   The name has to be exactly `index.html`. Getting this wrong is quiet: the
    repository looks correct, Pages reports the site as live, and the root still
-   404s, because there is no `index.html` for it to serve. A misspelling such as
-   `index.httml` is enough.
+   404s. It forwards on load rather than on parse, so a link-preview scanner
+   that fetches the page without running its script cannot spend the token
+   before its owner opens it.
 
-   It forwards on `load` rather than on parse, so a link-preview scanner that
-   fetches the page without running its script cannot spend the token before its
-   owner opens it.
-
-2. **The project's Site URL** and **Redirect URLs**, both the app's full address
-   including its path:
-
-   ```
-   https://ahmad-10-2001.github.io/CashFlow-OS/
-   ```
-
-   Worth having right, but no longer the thing everything depends on.
-
-   The request also states `type: 'recovery'`. Without it GoTrue defaults to
-   `magiclink`, which is a sign-in link from the Magic Link template carrying a
-   token scoped to opening a session rather than changing a password. It
-   happened to work, which is the worst kind of fault: the right answer for the
-   wrong reason, so nothing looked broken until something else was also wrong.
+2. **The project's Site URL** and **Redirect URLs**, both the app's full
+   address including its path:
+   `https://ahmad-10-2001.github.io/CashFlow-OS/`.
+   Worth having right, but no longer the thing everything depends on. The
+   request also states `type: 'recovery'` — without it GoTrue defaults to a
+   magic-link token scoped to opening a session rather than changing a password.
 
    **A link can only be used once.** Asking for a reset again deliberately
    invalidates the link already sitting in the inbox, and a mail scanner that
-   opens links to check them can do the same. So a link reporting
-   `otp_expired` is usually an older email, not a fault, and the app says so
-   rather than "invalid or expired" — which sends people looking for a security
-   problem that is not there, towards the one action that cannot work.
+   opens links to check them can do the same. So a link reporting `otp_expired`
+   is usually an older email, not a fault, and the app says so rather than
+   "invalid or expired".
+
 3. **An email provider**, for the email to be delivered at all. Supabase's
    built-in SMTP is rate-limited to a couple of messages per hour and only goes
    to team members — fine for one person's own address, not for more. A real one
-   (Resend, SendGrid, Mailjet all have free tiers) goes under
-   **Authentication → Emails**, and is also what unlocks editing the template so
-   the code path works.
+   (Resend, SendGrid, Mailjet all have free tiers) goes under Authentication →
+   Emails, and is also what unlocks editing the template so the code path works.
 
 ### Knowing which version you are looking at
 
-A badge at the bottom of every tab reads `CashFlow OS` plus the running build number.
-
-A service worker can serve a previous build after a deploy, so "I
+A badge at the bottom of every tab reads `CashFlow OS` plus the running build
+number. A service worker can serve a previous build after a deploy, so "I
 deployed the fix and nothing happened" has an explanation that is invisible from
-inside the page — the app looks identical either way. During development that was
-the answer to more than one report, and the badge turns it into a glance.
+inside the page — the badge turns it into a glance.
 
-Pressing it checks for a newer deploy: a `no-store` fetch of `index.html`, read
+Pressing it checks for a newer deploy: a no-store fetch of `index.html`, read
 for the version marker and nothing else. It never touches your data, so it is
 safe to run on every load, which it does — quietly, a second after start-up. A
-newer build turns the badge amber and says which one. Each browser is told about
-a new build once, not on every load.
+newer build turns the badge amber and says which one.
 
 ### What an approved bank email becomes
 
 Three things about it were wrong in ways that only showed up once a real payment
 went through, and all three were claims about the money rather than the money:
 
-- It said **"linked to an udhaar entry"**. There are three kinds of source and
-  only one is an udhaar entry, so a two-way test labelled everything that was not
-  a shopping list as one. A wrong claim about provenance sends someone looking
-  for a record that does not exist, and hides the one thing that is true — this
-  was read out of an email.
-- Money arriving was filed under **"Salary"**. That is a claim that the money was
-  earned, not a place to put it: someone being repaid Rs 50 was recorded as
-  having earned a salary, and every budget grouped by category inherited the
-  claim. Both directions now file under "Other", which is a bucket rather than
-  an assertion, and the user can move it in one tap.
-- The **time of day** was invented. A bank alert carries a calendar day and
-  nothing else, so the 05:00 shown was midnight UTC rendered in Pakistan — and
-  in New York the same value is 19:00 the *previous* day, which would file the
-  payment on the wrong day. The function now anchors the parsed date at midday,
-  which survives every timezone, and the app takes the time from the moment of
-  approval rather than from the artefact. The pending list shows a day, not a
-  clock reading, because the clock was never information that existed.
-
-### Security
-
-- The **publishable** key (`sb_publishable_…`) is in `config.js` and is *designed*
-  to be public. What protects the data is Row Level Security, not the key's
-  secrecy.
-- The **service_role / secret** key is never in the repository and must never be.
-  It would grant full read/write on every row.
-- Every table has RLS on, with policies of the form
-  `using (auth.uid() = user_id) with check (auth.uid() = user_id)`. A test and a
-  SQL verification query both confirm this.
-- `anon` is granted no privileges at all, so an unauthenticated request cannot
-  reach the tables.
+- It said "linked to an udhaar entry" for everything that was not a shopping
+  list, but only one of the three kinds of source is an udhaar entry. A wrong
+  claim about provenance sends someone looking for a record that does not exist.
+  The wording now says what is actually true — this was read out of an email.
+- Money arriving was filed under "Salary". That is a claim that the money was
+  earned, not a place to put it. Both directions now file under "Other", which
+  is a bucket rather than an assertion, and the user can move it in one tap.
+- The time of day was invented. A bank alert carries a calendar day and nothing
+  else, so the 05:00 shown was midnight UTC rendered in Pakistan — and in New
+  York the same value is 19:00 the previous day, which would file the payment on
+  the wrong day. The parser now anchors the parsed date at midday, which
+  survives every timezone, and the pending list shows a day, not a clock
+  reading, because the clock was never information that existed.
 
 ---
 
 ## Security posture
 
-| Concern | How it is handled |
-|---|---|
-| XSS | No `innerHTML`; DOM built with `textContent`; hostile input tested |
-| CSRF | Not applicable — no cookies, token held in `localStorage` |
-| Injection | No SQL is built by hand; all queries go through PostgREST parameters |
-| Another user reading your data | RLS on every table, `auth.uid()` scoped |
-| Secret key leaking | Never written to any file; a test asserts `config.js` has none |
-| Storage quota | `QuotaExceededError` is reported, not swallowed; the write is declared failed |
-| Corrupt data | Every load goes through `sanitizeState()`, which never throws |
-| Prototype pollution | Null-prototype objects and `Map`s for user-controlled keys |
-| Your email password | Never asked for, never stored, never transmitted. Transactions arrive by forwarding, which needs no secret from your mail account |
-| The email webhook being called by a stranger | Shared secret in a header, compared in constant time, checked before any work; the request is rejected outright if no secret is configured |
-| A forwarded email being filed twice | Each row carries the provider's message id behind a `unique (user_id, source_key)` constraint, so a re-delivery is a no-op |
-| Bank email leaking into the database | The message body is not stored — it routinely contains the account number and balance. It is logged to the function's own logs instead, for debugging the parser |
-| Learning who has an account | The password-reset form answers identically for a known and an unknown address |
-| A reset link being used to read your data | The recovery token is stored apart from the session and can only change a password; it is discarded the moment the password is set, and scrubbed out of the URL |
-| A reset link being replayed | The token is removed from the address bar on arrival, so a reload cannot re-present it |
+The things that could go wrong, and how each is handled:
+
+- **XSS** — no `innerHTML` anywhere; the DOM is built with `textContent`; hostile
+  input is tested.
+- **CSRF** — not applicable: no cookies, the token is held in `localStorage`.
+- **Injection** — no SQL is built by hand; all queries go through PostgREST
+  parameters.
+- **Another user reading your data** — Row Level Security on every table, scoped
+  by `auth.uid()`.
+- **Secret key leaking** — never written to any file; a test asserts `config.js`
+  has none.
+- **Storage quota** — `QuotaExceededError` is reported, not swallowed; the write
+  is declared failed.
+- **Corrupt data** — every load goes through `sanitizeState()`, which never
+  throws.
+- **Prototype pollution** — null-prototype objects and `Map`s for
+  user-controlled keys.
+- **Your email password** — never asked for, never stored, never transmitted.
+  Transactions arrive by forwarding, which needs no secret from your mail
+  account.
+- **The email webhook being called by a stranger** — a shared secret in a
+  header, compared in constant time, checked before any work; the request is
+  rejected outright if no secret is configured.
+- **A forwarded email being filed twice** — each row carries the provider's
+  message id under a unique constraint, so a re-delivery is a no-op.
+- **Bank email leaking into the database** — the message body is not stored; it
+  routinely contains the account number and balance. It is logged to the
+  function's own logs instead, for debugging the parser.
+- **Learning who has an account** — the password-reset form answers identically
+  for a known and an unknown address.
+- **A reset link being used to read your data** — the recovery token is stored
+  apart from the session and can only change a password; it is discarded the
+  moment the password is set, and scrubbed out of the URL.
+- **A reset link being replayed** — the token is removed from the address bar on
+  arrival, so a reload cannot re-present it.
+
+The **publishable** key (`sb_publishable_…`) is in `config.js` and is designed
+to be public. What protects the data is Row Level Security, not the key's
+secrecy. The **service_role / secret** key is never in the repository and must
+never be — it would grant full read/write on every row. `anon` is granted no
+privileges at all, so an unauthenticated request cannot reach the tables.
 
 ---
 
@@ -523,10 +586,8 @@ README.md             this file
 ```
 
 `config.js` and `db/schema.sql` are the two files worth reading first if you are
-picking this up.
-
-The last two are optional. Without them the app works exactly as before; nothing
-else depends on them.
+picking this up. The email ones are optional: without them the app works exactly
+as before, and nothing else depends on them.
 
 ---
 
@@ -543,246 +604,185 @@ The app runs by opening `index.html`. For cloud sync:
 
 ### Optional: automatic transactions from bank email
 
-This is **off by default** and not needed for anything else in the app.
+This is off by default and not needed for anything else in the app.
 
 The app never asks for your email password. That is not a policy decision — an
-earlier version collected one, base64-encoded it into a column, and the signed-in
-user could read their own password back out. Forwarding needs no secret from
-your mail account at all, so the credential path was removed rather than
-hardened.
+earlier version collected one, base64-encoded it into a column, and the
+signed-in user could read their own password back out. Forwarding needs no
+secret from your mail account at all, so the credential path was removed rather
+than hardened.
 
 How it works: your bank's emails are forwarded to an address you control; a mail
-provider POSTs each message to a Supabase Edge Function with a shared secret; the
-function parses the amount, the direction and **the date from the message** and
+provider POSTs each message to a Supabase Edge Function with a shared secret;
+the function parses the amount, the direction and the date from the message, and
 writes one row to `pending_transactions`; the app lists it under **Pending** and
 you approve it. Nothing reaches your balance without your approval.
 
-#### Which provider, and why it is the only one
+**Why AgentMail, and why it is the only provider.** AgentMail (`agentmail.to`)
+has a free tier — 3 inboxes, 100 messages a day, webhook endpoints — that hands
+out `@agentmail.to` addresses with no domain to buy. Every other provider that
+accepts mail and posts it over HTTP (Mailgun, SendGrid Inbound Parse, Postmark)
+verifies a domain before it will accept mail for it, and inbound routing runs on
+MX records, which only exist for a domain you control. There is no free
+workaround. The alternative, Google OAuth against the Gmail API, needs no domain
+but requires authorising a Google app, and `gmail.readonly` is a restricted
+scope: an unverified app in testing mode gets refresh tokens that expire after
+seven days, and getting a verified one is a process measured in weeks.
 
-**AgentMail** (`agentmail.to`). Its free tier — 3 inboxes, 100 messages a day,
-webhook endpoints — hands out `@agentmail.to` addresses with no domain to buy.
-
-That matters more than the price. Every other provider that accepts mail and
-posts it over HTTP — Mailgun, SendGrid Inbound Parse, Postmark — verifies a
-domain before it will accept mail for it, and inbound routing runs on MX records,
-which only exist for a domain you control. There is no free workaround. The
-alternative, Google OAuth against the Gmail API, needs no domain but requires
-authorising a Google app, and `gmail.readonly` is a restricted scope: an
-unverified app in testing mode gets refresh tokens that expire after seven days,
-and getting a verified one is a process measured in weeks. So AgentMail is not
-simply the cheapest option here, it is the one that works at all.
-
-#### Setting it up
+**Setting it up:**
 
 1. Run `db/email-schema.sql` once. It creates `email_routes` and
    `pending_transactions`, both with the same ownership policy as the rest.
-2. Set the function's shared secret, under **Edge Functions → Secrets**:
-   ```
-   WEBHOOK_SECRET = <a long random string>
-   ```
-   Without it the function refuses every request — that is deliberate, and the
-   test in step 3 reports a missing secret instead of silence.
+2. Set the function's shared secret under **Edge Functions → Secrets**:
+   `WEBHOOK_SECRET = <a long random string>`. Without it the function refuses
+   every request — that is deliberate, and the test in step 3 reports a missing
+   secret instead of silence.
 
-   Optional but recommended, as a second secret on the same screen:
-   ```
-   GEMINI_API_KEY = <a key from Google AI Studio, free tier is plenty>
-   ```
-   This enables the AI fallback described below. Without it the function uses
-   the hand-written rules only, exactly as before — nothing else changes.
-3. Open **Pending** (the email setup lives at the bottom of that tab), sign in, and press **Send a test transaction**. It
-   posts a sample alert through the whole chain. When a row appears under
-   **Pending**, everything is wired up.
-4. Create an inbox at [agentmail.to](https://console.agentmail.to/sign-up?plan=free)
-   and save its address in the app. The address is registered from the UI —
-   previously this meant pasting SQL by hand, which is a step that looks optional
-   and is not.
+   Optional but recommended, as a second secret on the same screen: a Gemini API
+   key (`GEMINI_API_KEY`, free tier is plenty). This enables the AI fallback
+   described below; without it the function uses the hand-written rules only,
+   exactly as before.
+3. Open **Pending** (the email setup lives at the bottom of that tab), sign in,
+   and press **Send a test transaction**. It posts a sample alert through the
+   whole chain; when a row appears under Pending, everything is wired up.
+4. Create an inbox at agentmail.to and save its address in the app. The address
+   is registered from the UI.
 5. In the app, press **Copy webhook URL** and paste it into AgentMail under
-   **Settings → Webhooks**, for the event `message.received`.
+   Settings → Webhooks, for the event `message.received`.
 6. **Turn off "Verify JWT"** for the function: **Edge Functions → poll-emails →
-   Settings**, and set *Verify JWT* to off.
-
-   This is not optional and it is easy to miss. Supabase's gateway refuses a call
-   to a function that carries no valid `Authorization` header *before the function's
-   own code runs*, answering **401 "JWT expired"**, so with the setting left on,
-   nothing from a mail provider can ever reach it — a third party has no Supabase
-   login token to send. The symptom is silent: no row appears under Pending and
-   the app's own test is the only thing that names the cause.
-
-   `supabase/config.toml` in this repository pins the same setting
-   (`[functions.poll-emails] verify_jwt = false`), so a deploy from the CLI
-   cannot turn it back on — the CLI defaults to *on* whenever it is not stated.
-   If the dashboard and the file ever disagree, the dashboard wins for the live
-   deployment: set it there, or redeploy with
-   `supabase functions deploy poll-emails --no-verify-jwt`.
-
+   Settings**. This is not optional and it is easy to miss: Supabase's gateway
+   refuses a call that carries no valid Authorization header before the
+   function's own code runs, so with the setting left on, nothing from a mail
+   provider can ever reach it — a third party has no Supabase login token to
+   send. The symptom is silent: no row appears under Pending. The repository's
+   `supabase/config.toml` pins the same setting, so a CLI deploy cannot turn it
+   back on.
 7. In Gmail, **Settings → Forwarding and POP/IMAP → Add a forwarding address**,
-   and tick *Keep a copy* so nothing leaves your inbox.
+   and tick "Keep a copy" so nothing leaves your inbox.
 
-The two credentials are separate and both are needed, which is easy to conflate:
-the **apikey** gets past the gateway, and the **shared secret** proves the caller
-is the mail provider. Neither replaces the other.
+The two credentials are separate and both are needed — the **apikey** gets past
+the gateway, and the **shared secret** proves the caller is the mail provider.
+Neither replaces the other. The webhook URL contains the shared secret, so it is
+kept in that browser only and never written to the repository.
 
-The webhook URL contains the shared secret, so it is kept in that browser only.
-It is never written to the repository — the publishable key is already there for
-everyone to read, and a secret beside it would be published with it.
+**Checking the deployment:** `GET https://<project>.supabase.co/functions/v1/poll-emails`
+answers `{"service":"poll-emails","ok":true,"secret_configured":true}`. It
+reveals nothing else, and separates the two states that otherwise look
+identical: not deployed, and deployed with no secret set.
 
-#### Checking the deployment
+**How the routing decides whose ledger a message belongs to.** The recipient is
+matched against `email_routes`, tolerating the forms a provider sends it in. With
+exactly one active route it is used regardless; with two or more, an
+unrecognised recipient is refused rather than guessed — an earlier version fell
+back to a single configured user, which meant a message forwarded from any
+address at all would land in that one account's ledger. Someone else's bank
+email must never reach someone's money records. Register **both** addresses on
+an account: the AgentMail inbox and the Gmail account. Gmail forwarding
+preserves the original To header, so with only the inbox registered, nothing
+matches the moment a second route exists anywhere.
 
-`GET https://<project>.supabase.co/functions/v1/poll-emails` answers
-`{"service":"poll-emails","ok":true,"secret_configured":true}`. It reveals
-nothing else, and separates the two states that otherwise look identical from the
-app: not deployed, and deployed with no secret set.
+**The parser.** Bank alerts are written by marketers and do not agree on a word
+order, so the parser works on the parts: a word saying which way the money
+moved, the amount beside it, the date, and an optional counterparty. A bank
+email states the same payment in the subject and again in the body — one
+transaction said twice — and the comparison counts distinct readings, not
+repetitions, so the repeat collapses to one while a message that really
+describes two movements is refused.
 
-#### How the routing decides whose ledger a message belongs to
+It has now seen real alerts, and they broke it in two ways no guessing would
+have found. A NayaPay message carries the bank's name only in the sender, so the
+"is this a bank email" check now reads the sender too — before that, every
+message was dropped silently and the feature looked broken rather than
+misconfigured. And because the recipient has accounts at two wallets, the
+subject names the other one, which once filed a message under the wrong bank;
+the bank is now taken from the sender first, the only place it is reliable. The
+date is taken from the body, not the moment the message arrived.
 
-The recipient is matched against `email_routes`, tolerating the forms a provider
-sends it in (`bank@x.com`, `<bank@x.com>`, `Bank <bank@x.com>`, or an array of
-address objects). With **exactly one** active route it is used regardless — one
-person, one address, and providers rewrite the recipient differently often
-enough that a strict comparison would silently file nothing. With **two or
-more**, an unrecognised recipient is refused rather than guessed: an earlier
-version fell back to a single configured user, which meant a message forwarded
-from any address at all would land in that one account's ledger. Someone else's
-bank email must never reach someone's money records.
+When a pattern does not match, nothing is written and nothing is lost — the raw
+message is logged to the function's own logs so the pattern can be corrected
+against a real sample. "No pending transactions" is ambiguous until you have
+seen one arrive, which is what the self-test is for: it puts a sample message
+through the same path and names the step that failed.
 
-Register **both** addresses on an account: the AgentMail inbox *and* the Gmail
-account. Gmail forwarding preserves the original To header, so the server sees
-`you@gmail.com`, not the inbox — with only the inbox registered, nothing
-matches and every message fails with a 422 the moment a second route exists
-anywhere (with a single route the bypass hides this completely, which is why it
-broke the day the second account was added, not the day forwarding was set up).
+**When the rules fail: one AI reading.** Every new bank's layout used to mean a
+new pattern plus a real sample to write it against — a loop that never ends, so
+it is no longer the only path. When the rules cannot parse a message, the
+function asks Gemini Flash (or whatever the model list names — tried in order)
+exactly one question per model, bounded: is this one completed transaction, and
+if so, how much, which way, who, when? Marketing, OTP, bill reminders and
+summaries are answered "not confident" and filed nowhere. A 404 for a retired
+model name falls through to the next name on the list instead of failing the
+mail.
 
-#### The parser, and the bug that would have made it silently useless
+Three things keep this honest: the answer is re-validated like any untrusted
+input (amount by the same parser as the rules, direction by exact match, date by
+shape); it costs nothing by default because the rules run first and the AI is
+only asked about mail the rules failed on; and the ledger is still
+human-approved — an AI filing lands under Pending like any other, and approving
+re-checks the row first, so a transaction handled on your other device is never
+filed twice.
 
-Bank alerts are written by marketers, and they do not agree on a word order. The
-first version matched whole fixed sentences and dropped most real messages:
-"payment of Rs. 900", "Rs. 250 received", "you received Rs. 5,000" with no
-counterparty. It now works on the parts: a word saying which way the money moved,
-the amount on either side of it, the date, and the counterparty as optional.
+The tradeoff, stated plainly: the message text is sent to Google for the
+duration of one API call. Leave the key unset and the function is rules-only,
+with no third party involved at all.
 
-The subtler failure was in what the first version of that *refused*. It treated
-more than one movement word as a summary and declined the message. But a bank
-email states the same payment in the subject and again in the body —
-
-```
-NayaPay: You have sent Rs. 1,500 to Ali Khan on 27/09/2026
-Dear customer, you have sent Rs. 1,500 to Ali Khan. Your balance is Rs. 8,500.
-```
-
-— which is one transaction said twice. So it rejected very nearly every real
-alert, and the symptom was indistinguishable from a parser that does not
-understand the bank at all. What is compared now is not how many times a word
-appears but how many *distinct readings* the message gives: a repeat collapses to
-one, while a message that really does describe two movements — an amount sent and
-an amount received — is still refused.
-
-**It has now seen real alerts**, which is worth recording because they broke it
-in two ways that no amount of guessing would have found. A NayaPay message
-arrives as
-
-```
-from:    NayaPay <no-reply@nayapay.com>
-subject: You got Rs. 100 from Muhammad Ahmed 🎉 - Cha-Ching! Muhammad Ahmed easypaisa B...
-```
-
-and the bank's name is **only in the sender**. The "is this a bank email" check
-read the subject and the body, found no bank in either, and dropped every
-message — silently, and identically every time, so the feature looked broken
-rather than misconfigured. The sender is now part of the text examined.
-
-Second, and quieter: because the recipient has accounts at two wallets, the
-subject names the *other* one. That one got past the check and was filed under
-the wrong bank — a wrong balance rather than a missing one. The bank is now taken
-from the sender first, which is the only place it is reliable.
-
-The words themselves are as expected: `You sent Rs. X to <name>` and
-`You got Rs. X from <name>`, both of which the verb-based parser reads. The date
-is taken from the body, not the moment the message arrived.
-
-When a pattern does not match, nothing is written and nothing is lost — the failure is a
-silent no-op and the raw message is logged to the function's own logs so the
-pattern can be corrected against a real sample. That is the safe direction to fail
-in, but it does mean "no pending transactions" is ambiguous until you have seen
-one arrive, which is what the self-test is for: it puts a sample message through
-the same path and names the step that failed.
-
-#### When the rules fail: one AI reading
-
-Hand-written patterns end where a new bank's layout begins — every bank formats
-its statements differently, and each new one used to mean a new pattern plus a
-real sample to write it against. That loop never ends, so it is no longer the
-only path.
-
-When the rules cannot parse a message, the function asks Gemini Flash (or
-whatever `GEMINI_MODEL` names — a comma-separated list, tried in order) exactly
-one question per model, bounded to 200 output tokens and 20 seconds: *is this
-one completed transaction, and if so, how much, which way, who, when?* Anything
-else — marketing, OTP, bill reminder, a summary of many transactions — is
-answered `{"confident": false}` and filed nowhere.
-
-Google retires model names regularly — `gemini-2.0-flash` died June 2026 and
-took the whole AI path down with a bare HTTP 404 — so a 404 falls through to
-the next name on the list instead of failing the mail. The default list tracks
-the cheapest stable Flash models; overriding it needs only the secret edited,
-no redeploy of the logic.
-
-Three things keep this honest:
-
-- **The answer is re-validated like any untrusted input.** Amount by the same
-  `parseAmount` as the rules, direction by exact match, date by shape. Anything
-  off is a null, which files nothing.
-- **It costs nothing by default.** Rules run first and handle everything they
-  understand; the AI is only asked about mail the rules failed on. Personal
-  volume fits the free tier many times over.
-- **The ledger is still human-approved.** An AI filing lands under **Pending**
-  like any other, and the response says which engine filed it. The function can
-  only write the Pending queue — never the ledger — and approving re-checks the
-  row first, so a transaction handled on your other device is never filed twice.
-
-The tradeoff, stated plainly: the message text is sent to Google. The body is
-never written to a table either way — but with the key set, it does leave the
-project for the duration of one API call. Leave `GEMINI_API_KEY` unset and the
-function is rules-only, with no third party involved at all.
-
-#### Why the app sends no custom header
-
-The app's two calls to the function put the apikey in the query string and send
-the body as `text/plain`, which makes both "simple" by the browser's definition —
-no custom header, no non-safelisted content type, therefore **no preflight at
-all**.
-
-That is not a substitute for declaring CORS headers, and the function does
-declare a full set. It is so that a stale allowed-headers list, a cached
-preflight, or a proxy in between cannot stop the one request a user relies on to
-find out whether the feature works. Adding the apikey as a header had already
-caused exactly that: a 401 became `Failed to fetch`, with no status code and
-nothing in the function's logs, because the browser blocked the call without
-sending it. The function reads its body with `json()` either way, so the content
-type is only ever a label.
+**Why the app sends no custom header.** The app's two calls to the function put
+the apikey in the query string and send the body as `text/plain`, which makes
+both "simple" by the browser's definition — no preflight at all. That is not a
+substitute for declaring CORS headers, and the function does declare a full set.
+It is so that a stale allowed-headers list, a cached preflight, or a proxy in
+between cannot stop the one request a user relies on to find out whether the
+feature works. Adding the apikey as a header had already caused exactly that: a
+401 became "Failed to fetch", with no status code and nothing in the logs,
+because the browser blocked the call without sending it.
 
 ---
 
 ## Testing
 
-1385 assertions across ten suites, all of which run without a browser or a
-network. They are not in this repository; they live beside it, and are run with
-`node <suite>` from that directory (the `.mjs` suites need `npm i jsdom`).
+The suites run without a browser or a network (the `.mjs` ones need `npm i
+jsdom`). They are not in this repository; they live beside it, and are run with
+`node <suite>` from that directory.
 
-| Suite | Covers |
-|---|---|
-| `test.js` | Schema migration, balance arithmetic, transfer invariants, custody rules, chart maths, prototype-pollution guards |
-| `markup-test.js` | Every referenced id exists, every `data-act` has a handler, accessibility attributes, the rename did not touch the storage key |
-| `integration-test.mjs` | The real page in a real DOM: clicks, typing, form submits, and assertions on what a user would actually see — including corruption recovery and XSS |
-| `sync-test.mjs` | Auth, password reset at the API level, token refresh, outbox, tombstones, last-write-wins merge, offline retry, backwards clock |
-| `app-sync-test.mjs` | The seam between app and sync: two windows against a fake Supabase, checking that a sign-in uploads history, a second device receives it, an edit travels back, a delete propagates, and a cloud database wiped from under the app is detected and repaired |
-| `stale-test.mjs` | The mismatched-file guard, replaying the reported bug in both directions and asserting no reload loop. Every line-ending assumption in it is written `\r?\n` rather than `\n`, because Git rewrites the working tree to CRLF on Windows and a test that assumes LF silently stops doctoring anything — the "old" file then equals the current one and the suite fails with no connection to the code it claims to test |
-| `guards-test.mjs` | Structural rules that are cheap to break and expensive to find: no duplicate function declarations, no `innerHTML`, no email-password handling, every state collection initialised, sync stamps preserved, the three build markers agreeing, a bad row not wedging sync, the schema and webhook refusing what they should, the reset flow not revealing who has an account, and the email intake not losing its secret or being checked without one — both of which shipped and both of which were reported from a live setup as a configuration mistake |
-| `reset-flow-test.mjs` | Forgot password driven through the UI step by step, including "Send it again" on a screen with no email field — which shipped broken — going Back without retyping, the whole emailed-link path including recovering the address from the token, and the root forwarding page run against a stub window |
-| `parser-test.mjs` | The email parser against realistic phrasings, including the ones the first version silently dropped and the subject-repeats-the-body shape that would have made it reject nearly every real alert. Also the provider payload shapes. Runs the shipped TypeScript, with the type annotations stripped, so it tests the real code |
-| `e2e.mjs` | One pass through the whole app: every tab opened, sign in and out, a forgotten password recovered end to end, an email transaction approved, and the per-account boxes asserted to sum to the headline balance |
+- `test.js` — schema migration, balance arithmetic, transfer invariants, custody
+  rules, chart maths, prototype-pollution guards.
+- `markup-test.js` — every referenced id exists, every `data-act` has a handler,
+  accessibility attributes, the rename did not touch the storage key.
+- `integration-test.mjs` — the real page in a real DOM: clicks, typing, form
+  submits, and assertions on what a user would actually see, including
+  corruption recovery and XSS.
+- `sync-test.mjs` — auth, password reset at the API level, token refresh,
+  outbox, tombstones, last-write-wins merge, offline retry, backwards clock.
+- `app-sync-test.mjs` — the seam between app and sync: two windows against a
+  fake Supabase; sign-in uploads history, a second device receives it, an edit
+  travels back, a delete propagates, and a cloud database wiped from under the
+  app is detected and repaired.
+- `stale-test.mjs` — the mismatched-file guard, replaying the reported bug in
+  both directions and asserting no reload loop. Every line-ending assumption in
+  it is written `\r?\n` rather than `\n`, because Git rewrites the working tree
+  to CRLF on Windows and a test that assumes LF silently stops doctoring
+  anything.
+- `guards-test.mjs` — structural rules that are cheap to break and expensive to
+  find: no duplicate function declarations, no `innerHTML`, no email-password
+  handling, every state collection initialised, sync stamps preserved, the three
+  build markers agreeing, the schema and webhook refusing what they should, the
+  reset flow not revealing who has an account, and the email intake not losing
+  its secret.
+- `reset-flow-test.mjs` — forgot password driven through the UI step by step,
+  including the whole emailed-link path and the root forwarding page.
+- `parser-test.mjs` — the email parser against realistic phrasings, including
+  the ones the first version silently dropped. Runs the shipped TypeScript with
+  the type annotations stripped, so it tests the real code.
+- `e2e.mjs` — one pass through the whole app: every tab opened, sign in and out,
+  a forgotten password recovered end to end, an email transaction approved, and
+  the per-account boxes asserted to sum to the headline balance.
 
-The last two exist because of specific defects that shipped. Each of their
-assertions names the failure it prevents.
+Beside these, focused smoke suites cover the newer work end to end with the real
+files: the udhaar forms (multi-person entries, per-person splits, account pick
+on settle and edit), the pending approval flow (More options, transfer filing,
+in-flight double-click guards), the sync repair rescue, and the qaza tracker
+(Witr in every counter, the day memory written on miss, walked back on payback,
+restored by Undo, and never charged for days before Witr started).
 
 These tests are not decoration. They caught real bugs during development, among
 them: a month picker that never fired, a settled udhaar leaving a phantom
@@ -798,11 +798,9 @@ a test so it cannot come back.
 
 Stated plainly so nothing here is mistaken for finished:
 
-- **The email parser is verified against real NayaPay alerts** (`You sent Rs. X
-  to <name>`, `You got Rs. X from <name>`), but other banks' wording is still
-  inferred, not confirmed against live samples. Treat automatic import from any
-  other bank as untested. New banks are added by name to the function — the
-  amount/date parser itself is bank-agnostic.
+- **The email parser is verified against real NayaPay alerts**, but other banks'
+  wording is still inferred, not confirmed against live samples. Treat automatic
+  import from any other bank as untested.
 - **Real-time push.** Sync is on a one-minute timer plus on-focus. Live updates
   would need Supabase Realtime, which is more machinery than this needs yet.
 - **Cloud backup history.** The database is the live copy; a corrupt row is not

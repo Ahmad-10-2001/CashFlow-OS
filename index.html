@@ -9,7 +9,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="CashFlow OS">
   <meta name="theme-color" content="#111111">
-  <meta name="app-build" content="v51">
+  <meta name="app-build" content="v52">
   <!-- The tab list this markup provides. script.js compares it against the TABS
        it knows about; a mismatch means the page is running an older script and
        would otherwise show a missing tab and an unfilled dropdown. -->
@@ -72,32 +72,35 @@
       <h2 class="card-title" id="quickHeading">Quick add</h2>
       <p class="card-subtitle">One tap files the whole entry. Save the expenses you make again and again.</p>
       <div class="chip-row" id="chipRow"></div>
-      <form class="inline-add-form" id="templateForm" novalidate>
-        <div class="form-group">
-          <label class="sr-only" for="tplLabel">Template name</label>
-          <input id="tplLabel" type="text" placeholder="Name (e.g. Tea)" maxlength="80" autocomplete="off">
-        </div>
-        <div class="form-group">
-          <label class="sr-only" for="tplAmount">Template amount</label>
-          <input id="tplAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
-        </div>
-        <div class="form-group">
-          <label class="sr-only" for="tplType">Template type</label>
-          <select id="tplType">
-            <option value="expense" selected>Expense</option>
-            <option value="income">Income</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="sr-only" for="tplCategory">Template category</label>
-          <select id="tplCategory"></select>
-        </div>
-        <div class="form-group">
-          <label class="sr-only" for="tplAccount">Template account</label>
-          <select id="tplAccount"></select>
-        </div>
-        <button class="btn btn-dark" type="submit">Save template</button>
-      </form>
+      <details class="form-collapse">
+        <summary>Save a new template</summary>
+        <form class="inline-add-form" id="templateForm" novalidate>
+          <div class="form-group">
+            <label class="sr-only" for="tplLabel">Template name</label>
+            <input id="tplLabel" type="text" placeholder="Name (e.g. Tea)" maxlength="80" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="sr-only" for="tplAmount">Template amount</label>
+            <input id="tplAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="sr-only" for="tplType">Template type</label>
+            <select id="tplType">
+              <option value="expense" selected>Expense</option>
+              <option value="income">Income</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="sr-only" for="tplCategory">Template category</label>
+            <select id="tplCategory"></select>
+          </div>
+          <div class="form-group">
+            <label class="sr-only" for="tplAccount">Template account</label>
+            <select id="tplAccount"></select>
+          </div>
+          <button class="btn btn-dark" type="submit">Save template</button>
+        </form>
+      </details>
     </section>
 
     <form class="card" id="txForm" novalidate>
@@ -115,10 +118,7 @@
           <label class="sr-only" for="txAmount">Amount</label>
           <input id="txAmount" name="amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount (e.g. 5000)" autocomplete="off">
           <button class="voice-btn" type="button" id="txVoice" aria-label="Voice entry (needs an internet connection)" title="Voice entry — needs an internet connection">&#127897;</button>
-        </div>
-        <p class="field-hint">Type a sum like 120+80 and it is worked out when you save.</p>
-      </div>
-      <div class="form-group" id="txAccountGroup">
+        </div>      </div>      <div class="form-group" id="txAccountGroup">
         <label class="field-label" id="txAccountLabel" for="txAccount">Account</label>
         <select id="txAccount" name="account"></select>
       </div>
@@ -220,36 +220,39 @@
       <h2 class="card-title" id="recHeading">Recurring entries</h2>
       <p class="card-subtitle">Salary, rent, subscriptions — filed on their own every month on the day you pick. A missed month is filed once, in the current month.</p>
       <div id="recList"></div>
-      <form class="inline-add-form" id="recForm" novalidate>
-        <div class="form-group">
-          <label class="sr-only" for="recType">Recurring type</label>
-          <select id="recType">
-            <option value="expense" selected>Expense</option>
-            <option value="income">Income</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label class="sr-only" for="recLabel">Recurring label</label>
-          <input id="recLabel" type="text" placeholder="Label (e.g. Rent)" maxlength="80" autocomplete="off">
-        </div>
-        <div class="form-group">
-          <label class="sr-only" for="recAmount">Recurring amount</label>
-          <input id="recAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
-        </div>
-        <div class="form-group">
-          <label class="field-label" for="recDay">Day of month</label>
-          <select id="recDay"></select>
-        </div>
-        <div class="form-group">
-          <label class="sr-only" for="recCategory">Recurring category</label>
-          <select id="recCategory"></select>
-        </div>
-        <div class="form-group">
-          <label class="field-label" for="recAccount">Account</label>
-          <select id="recAccount"></select>
-        </div>
-        <button class="btn btn-dark" type="submit">Add plan</button>
-      </form>
+      <details class="form-collapse">
+        <summary>Add a plan</summary>
+        <form class="inline-add-form" id="recForm" novalidate>
+          <div class="form-group">
+            <label class="sr-only" for="recType">Recurring type</label>
+            <select id="recType">
+              <option value="expense" selected>Expense</option>
+              <option value="income">Income</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="sr-only" for="recLabel">Recurring label</label>
+            <input id="recLabel" type="text" placeholder="Label (e.g. Rent)" maxlength="80" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="sr-only" for="recAmount">Recurring amount</label>
+            <input id="recAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="field-label" for="recDay">Day of month</label>
+            <select id="recDay"></select>
+          </div>
+          <div class="form-group">
+            <label class="sr-only" for="recCategory">Recurring category</label>
+            <select id="recCategory"></select>
+          </div>
+          <div class="form-group">
+            <label class="field-label" for="recAccount">Account</label>
+            <select id="recAccount"></select>
+          </div>
+          <button class="btn btn-dark" type="submit">Add plan</button>
+        </form>
+      </details>
     </section>
     <section class="card" aria-labelledby="txListHeading">
       <h2 class="card-title" id="txListHeading">Transactions</h2>
@@ -446,15 +449,18 @@
     <form class="card" id="timersForm" novalidate>
       <h2 class="card-title">⏱ Timers</h2>
       <p class="card-subtitle">How long since something happened — each timer counts up live. Add a short note so you remember what it is for.</p>
-      <div class="form-group">
-        <label class="sr-only" for="timerLabel">What is this timer for?</label>
-        <input id="timerLabel" type="text" placeholder="Short note (e.g. Returned from home)" maxlength="60" autocomplete="off">
-      </div>
-      <div class="form-group">
-        <label class="field-label" for="timerStart">Counts from (leave empty for now)</label>
-        <input id="timerStart" type="datetime-local">
-      </div>
-      <button class="btn btn-dark" type="submit">Start Timer</button>
+      <details class="form-collapse">
+        <summary>Start a new timer</summary>
+        <div class="form-group">
+          <label class="sr-only" for="timerLabel">What is this timer for?</label>
+          <input id="timerLabel" type="text" placeholder="Short note (e.g. Returned from home)" maxlength="60" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label class="field-label" for="timerStart">Counts from (leave empty for now)</label>
+          <input id="timerStart" type="datetime-local">
+        </div>
+        <button class="btn btn-dark" type="submit">Start Timer</button>
+      </details>
     </form>
     <section class="card" aria-label="Timers list">
       <div id="timersList"></div>

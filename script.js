@@ -2665,9 +2665,7 @@
    function readAmountField(input, label) {
      const raw = String(input.value == null ? '' : input.value).trim().replace(/,/g, '');
      if (raw === '') return { error: label + ' is required' };
-     const n = evalAmountExpr(raw);
-     if (!Number.isFinite(n)) return { error: label + ' must be a number or a sum like 120+80' };
-     if (n <= 0) return { error: label + ' must be more than zero' };
+     const n = evalAmountExpr(raw);     if (!Number.isFinite(n)) return { error: label + ' must be a number' };     if (n <= 0) return { error: label + ' must be more than zero' };
      if (n > MAX_AMOUNT) return { error: label + ' is too large' };
      return { value: round2(n) };
    }
@@ -3718,8 +3716,7 @@
 
    /** Toggle today's checkbox for a prayer. The daily entry is created lazily
     *  on the first interaction, so a day the user never touches stays absent
-    *  (and will not be assumed-as-missed by the rollup). */
-   function toggleDailyPrayer(prayer) {
+    *  (and will not be assumed-as-missed by the rollup). */   function toggleDailyPrayer(prayer) {
      if (QAZA_PRAYERS.indexOf(prayer) === -1) return;
      const q = qazaData();
      const today = localDateStamp();
@@ -3730,8 +3727,12 @@
      // Preserve prayer order for cleaner diffs.
      q.daily[today] = QAZA_PRAYERS.filter((p) => arr.indexOf(p) !== -1);
      save();
+     // save() re-renders the grid, which replaces the tile the keyboard was
+     // holding — focus would fall to the page body and Space would stop
+     // toggling. Hand focus back to this prayer's tile after the paint.
+     const tile = document.querySelector('.qaza-tile[data-arg="' + prayer + '"]');
+     if (tile) tile.focus();
    }
-
    /** End-of-day rollup. Any daily entry strictly older than today has its
     *  UNticked prayers added to recent qaza, then the entry is removed. Also
     *  prunes entries older than the keep-window. Idempotent — safe to call on
@@ -4010,14 +4011,12 @@
          angle += sweep;
        });
      }
-   
-     kids.push(hs('text', {
+        kids.push(hs('text', {
        x: cx, y: cy - 1, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 700,
-       fill: '#1c1c1e', 'font-family': 'inherit', text: o.centerValue || formatMoney(total)
-     }));
-     kids.push(hs('text', {
+       class: 'chart-ink', 'font-family': 'inherit', text: o.centerValue || formatMoney(total)
+     }));     kids.push(hs('text', {
        x: cx, y: cy + 15, 'text-anchor': 'middle', 'font-size': 10.5,
-       fill: '#666670', 'font-family': 'inherit', text: o.centerLabel || 'total'
+       class: 'chart-muted', 'font-family': 'inherit', text: o.centerLabel || 'total'
      }));
    
      return hs('svg', {
@@ -4049,15 +4048,11 @@
        const he = Math.round((b.expense / max) * plot);
        if (hi > 0) {
          kids.push(hs('rect', {
-           x: x0.toFixed(1), y: (padT + plot - hi).toFixed(1), width: barW.toFixed(1), height: hi,
-           rx: 1.5, fill: '#127531'
-         }, hs('title', { text: b.label + ' — in ' + formatMoney(b.income) })));
+           x: x0.toFixed(1), y: (padT + plot - hi).toFixed(1), width: barW.toFixed(1), height: hi,           rx: 1.5, class: 'bar-pos'         }, hs('title', { text: b.label + ' — in ' + formatMoney(b.income) })));
        }
        if (he > 0) {
          kids.push(hs('rect', {
-           x: (x0 + barW + gap).toFixed(1), y: (padT + plot - he).toFixed(1), width: barW.toFixed(1), height: he,
-           rx: 1.5, fill: '#c0271d'
-         }, hs('title', { text: b.label + ' — out ' + formatMoney(b.expense) })));
+           x: (x0 + barW + gap).toFixed(1), y: (padT + plot - he).toFixed(1), width: barW.toFixed(1), height: he,           rx: 1.5, class: 'bar-neg'         }, hs('title', { text: b.label + ' — out ' + formatMoney(b.expense) })));
        }
        // Thin the labels out so they never overlap, and always keep the first and
        // last so the span of the chart stays readable.
@@ -4066,9 +4061,7 @@
          // A 3-letter month label needs more room than a day number.
          const size = b.label.length > 2 ? 8.5 : 9;
          kids.push(hs('text', {
-           x: (i * slot + slot / 2).toFixed(1), y: h - 12, 'text-anchor': 'middle',
-           'font-size': size, fill: '#666670', 'font-family': 'inherit', text: b.label
-         }));
+           x: (i * slot + slot / 2).toFixed(1), y: h - 12, 'text-anchor': 'middle',           'font-size': size, class: 'chart-muted', 'font-family': 'inherit', text: b.label         }));
        }
      });
    
@@ -4160,10 +4153,11 @@
        } else {
          idx = Math.max(0, d.getFullYear() - anchor.getFullYear());
        }
-       if (idx < 0 || idx >= buckets.length) continue;
+       if (idx < 0 || idx >= buckets.length) continue;       // Transfers are money moving between my own accounts — Home and the
+       // account views treat them on their own line; the trend bar must not
+       // quietly eat them as spending.
        if (t.type === 'income') buckets[idx].income += t.amount;
-       else buckets[idx].expense += t.amount;
-     }
+       else if (t.type === 'expense') buckets[idx].expense += t.amount;     }
      return buckets;
    }
    
@@ -5473,32 +5467,32 @@
     *  number — and dividing that over the days left makes "safe to spend"
     *  look like a huge negative daily figure, which is nonsense. Clamping to
     *  zero gives the honest answer ("Rs 0 safe today") and the shortfall is
-    *  surfaced separately as `shortfall` so the UI can warn about it. */
-   function budgetSummary(period) {
-     // Counted, not just spent: moved spending applies here exactly as on the
-     // rows, so the summary and the list can never disagree.
-     const limits = budgetsFor(period);
-     let used = 0;
-     let reserved = 0;
-     let overExtra = 0;
-     for (const cat of Object.keys(limits)) {
-       const limit = limits[cat];
-       const catUsed = budgetCounted(cat, period);
-       used = round2(used + catUsed);
-       reserved = round2(reserved + Math.max(0, round2(limit - catUsed)));
-       overExtra = round2(overExtra + Math.max(0, round2(catUsed - limit)));
-     }
-     const available = allAccountBalances().total;
-     const raw = round2(available - reserved);
-     // Shortfall is "how much more cash would be needed to fully fund the
-     // remaining budgets" — strictly positive when budgets outrun the balance,
-     // zero otherwise. Separate from remaining so the UI can show it as a
-     // warning without the main number lying.
-     const shortfall = raw < 0 ? round2(-raw) : 0;
-     const remaining = raw < 0 ? 0 : raw;
-     return { available, used, reserved, overExtra, remaining, shortfall };
-   }
-   
+    *  surfaced separately as `shortfall` so the UI can warn about it. */    function budgetSummary(period) {
+      // Counted, not just spent: moved spending applies here exactly as on the
+      // rows, so the summary and the list can never disagree.
+      const limits = budgetsFor(period);
+      let total = 0;
+      let used = 0;
+      let reserved = 0;
+      let overExtra = 0;
+      for (const cat of Object.keys(limits)) {
+        const limit = limits[cat];
+        const catUsed = budgetCounted(cat, period);
+        total = round2(total + limit);
+        used = round2(used + catUsed);
+        reserved = round2(reserved + Math.max(0, round2(limit - catUsed)));
+        overExtra = round2(overExtra + Math.max(0, round2(catUsed - limit)));
+      }
+      const available = allAccountBalances().total;
+      const raw = round2(available - reserved);
+      // Shortfall is "how much more cash would be needed to fully fund the
+      // remaining budgets" — strictly positive when budgets outrun the balance,
+      // zero otherwise. Separate from remaining so the UI can show it as a
+      // warning without the main number lying.
+      const shortfall = raw < 0 ? round2(-raw) : 0;
+      const remaining = raw < 0 ? 0 : raw;
+      return { available, total, used, reserved, overExtra, remaining, shortfall };
+    }   
    function renderBudgets() {
      const period = activeBudgetPeriod();
      const periodPicker = $('budgetPeriod');
@@ -5587,14 +5581,17 @@
      if (sumBox) {
        if (!cats.length) {
          mount(sumBox);
-       } else {
-         const sum = budgetSummary(period);
+       } else {         const sum = budgetSummary(period);
          mount(sumBox,
            h('div', { class: 'budget-summary' },
+             // The plan comes first: every limit on this month added up —
+             // the number the rows below spend against.
+             h('div', { class: 'budget-sum-row' },
+               h('span', {}, 'Total budget set'),
+               h('span', {}, formatMoney(sum.total))),
              h('div', { class: 'budget-sum-row' },
                h('span', {}, 'Available total'),
-               h('span', {}, formatMoney(sum.available))),
-             // Informational only: this money already left the balance above, so
+               h('span', {}, formatMoney(sum.available))),             // Informational only: this money already left the balance above, so
              // it carries no minus sign — subtracting it again is exactly the
              // double-count this box used to do.
              h('div', { class: 'budget-sum-row' },
@@ -6468,15 +6465,21 @@
        if (e.target.id === 'txCatFilter') { changeTxCategory(e.target.value); return; }
        if (e.target.id === 'acctPeriod') { changeAcctPeriod(e.target.value); return; }
        if (e.target.id === 'txType') { setTxTypeFields(); return; }
-       if (e.target.id === 'editType') { setEditTypeFields(); return; }
-       if (e.target.id === 'txSplitOn') {
+       if (e.target.id === 'editType') { setEditTypeFields(); return; }       if (e.target.id === 'txSplitOn') {
          setHiddenSplit(!e.target.checked);
          // Open the split with one row already waiting, so the first tap on
-         // the checkbox never lands on an empty panel.
-         if (e.target.checked && !document.querySelector('#txSplitRows .people-row')) addPeopleRow('txSplitRows');
+         // the checkbox never lands on an empty panel — and with an equal
+         // share already filled in when the amount is known. Equal is the
+         // default, not a second tap: the rows stay editable for shares
+         // bigger or smaller than equal, and the Split-equally button (with
+         // more rows added) redoes the maths on demand.
+         if (e.target.checked) {
+           if (!document.querySelector('#txSplitRows .people-row')) addPeopleRow('txSplitRows');
+           const amt = readAmountField($('txAmount'), 'Amount');
+           if (!amt.error && amt.value > 0) fillPeopleRowsEvenly('txSplitRows', $('txAmount'), true);
+         }
          return;
-       }
-       if (e.target.id === 'debtMultiOn') {
+       }       if (e.target.id === 'debtMultiOn') {
          setHiddenDebtMulti(!e.target.checked);
          if (e.target.checked && !document.querySelector('#debtMultiRows .people-row')) addPeopleRow('debtMultiRows');
          return;
