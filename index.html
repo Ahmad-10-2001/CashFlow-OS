@@ -215,46 +215,7 @@
   </div>
 
   <!-- ══════════════ TRANSACTIONS ══════════════ -->
-  <div id="panel-transactions" data-panel="transactions" role="tabpanel" aria-labelledby="tab-transactions" hidden>
-    <section class="card" aria-labelledby="recHeading">
-      <h2 class="card-title" id="recHeading">Recurring entries</h2>
-      <p class="card-subtitle">Salary, rent, subscriptions — filed on their own every month on the day you pick. A missed month is filed once, in the current month.</p>
-      <div id="recList"></div>
-      <details class="form-collapse">
-        <summary>Add a plan</summary>
-        <form class="inline-add-form" id="recForm" novalidate>
-          <div class="form-group">
-            <label class="sr-only" for="recType">Recurring type</label>
-            <select id="recType">
-              <option value="expense" selected>Expense</option>
-              <option value="income">Income</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label class="sr-only" for="recLabel">Recurring label</label>
-            <input id="recLabel" type="text" placeholder="Label (e.g. Rent)" maxlength="80" autocomplete="off">
-          </div>
-          <div class="form-group">
-            <label class="sr-only" for="recAmount">Recurring amount</label>
-            <input id="recAmount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="Amount" autocomplete="off">
-          </div>
-          <div class="form-group">
-            <label class="field-label" for="recDay">Day of month</label>
-            <select id="recDay"></select>
-          </div>
-          <div class="form-group">
-            <label class="sr-only" for="recCategory">Recurring category</label>
-            <select id="recCategory"></select>
-          </div>
-          <div class="form-group">
-            <label class="field-label" for="recAccount">Account</label>
-            <select id="recAccount"></select>
-          </div>
-          <button class="btn btn-dark" type="submit">Add plan</button>
-        </form>
-      </details>
-    </section>
-    <section class="card" aria-labelledby="txListHeading">
+  <div id="panel-transactions" data-panel="transactions" role="tabpanel" aria-labelledby="tab-transactions" hidden>    <section class="card" aria-labelledby="txListHeading">
       <h2 class="card-title" id="txListHeading">Transactions</h2>
       <div class="tx-top-row">
         <div class="form-group">

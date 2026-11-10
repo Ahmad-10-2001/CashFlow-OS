@@ -186,9 +186,7 @@
      diffRows(prev.transactions, cur.transactions, 'transaction', 'transactions');
      diffRows(prev.debts, cur.debts, 'udhaar entry', 'udhaar entries');
      diffRows((prev.settings || {}).notes, (cur.settings || {}).notes, 'note', 'notes');
-     diffRows((prev.settings || {}).timers, (cur.settings || {}).timers, 'timer', 'timers');
-     diffRows((prev.settings || {}).recurring, (cur.settings || {}).recurring, 'recurring plan', 'recurring plans');
-     diffRows((prev.settings || {}).goals, (cur.settings || {}).goals, 'goal', 'goals');
+     diffRows((prev.settings || {}).timers, (cur.settings || {}).timers, 'timer', 'timers');     diffRows((prev.settings || {}).goals, (cur.settings || {}).goals, 'goal', 'goals');
      diffRows((prev.settings || {}).templates, (cur.settings || {}).templates, 'template', 'templates');
      diffRows((prev.settings || {}).challenges, (cur.settings || {}).challenges, 'challenge', 'challenges');
      diffRows(prev.shopping, cur.shopping, 'shopping item', 'shopping items');
@@ -615,13 +613,11 @@
        // already-synced prefs document to the other device with no new server
        // table, no migration and no RLS to configure. Whole-document
        // last-write-wins applies, same as budgets: fine at family scale.
-       // shoppingPeriod remembers which month the list was last prepared for.
-       // The feature lists below (recurring plans, goals, quick-add templates,
+       // shoppingPeriod remembers which month the list was last prepared for.       // The feature lists below (savings goals, quick-add templates and
        // challenges) ride the same synced prefs document the notes and timers
        // already use — no new server table, no migration. budgetRollover +
        // budgetRolloverPeriod make the rollover fire once per new month.
-       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], recurring: [], goals: [], templates: [], challenges: [], qaza: blankQaza() },
-       closedPeriods: []
+       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], goals: [], templates: [], challenges: [], qaza: blankQaza() },       closedPeriods: []
      };
    }
    
@@ -833,12 +829,10 @@
          amount
        });
      }
-   
-     // ── feature settings ────────────────────────────────────
-     // Recurring plans, savings goals, quick-add templates and monthly
-     // challenges. Validated field by field, capped in size, and deduped by
-     // id — the same rules every other list in state follows.
-
+        // ── feature settings ────────────────────────────────────
+     // Savings goals, quick-add templates and monthly challenges. Validated
+     // field by field, capped in size, and deduped by id — the same rules
+     // every other list in state follows.
      const withId = (pool, candidate) => {
        let id = typeof candidate.id === 'string' && candidate.id.trim() ? candidate.id.trim() : newId();
        if (pool.has(id)) id = newId();
@@ -849,30 +843,6 @@
        const match = typeof name === 'string' && categories.find((c) => c.toLowerCase() === name.toLowerCase());
        return match || fallbackCategory;
      };
-
-     // A standing instruction that files itself each month (salary, rent,
-     // subscriptions). Never files twice in one month — that is lastFiled's job.
-     const recurring = [];
-     const recSeen = new Set();
-     const rawRecurring = Array.isArray(rawSettings.recurring) ? rawSettings.recurring : [];
-     for (const r of rawRecurring) {
-       if (!isObject(r)) { note('skipped a malformed recurring plan'); continue; }
-       if (recurring.length >= 24) { note('kept the first 24 recurring plans'); break; }
-       const amount = toPositiveNumber(r.amount);
-       if (amount === null) { note('skipped a recurring plan with an unusable amount'); continue; }
-       const label = cleanText(r.label, ITEM_LIMIT);
-       recurring.push({
-         id: withId(recSeen, r),
-         type: r.type === 'income' ? 'income' : 'expense',
-         amount,
-         category: catOr(r.category),
-         accountId: accountIdSet.has(r.accountId) ? r.accountId : null,
-         label,
-         dayOfMonth: clampNumber(r.dayOfMonth, 1, 28),
-         active: r.active !== false,
-         lastFiled: typeof r.lastFiled === 'string' && PERIOD_RE.test(r.lastFiled) ? r.lastFiled : null
-       });
-     }
 
      // Savings goals: a target plus what is already set aside. Set-aside is a
      // progress note, not money — it never touches accounts or budgets.
@@ -1302,9 +1272,7 @@
        state: {
          version: SCHEMA_VERSION,
          transactions, debts, budgets, categories, shopping, custody,
-         accounts,
-         settings: { budgetOffset, lastAccountId, shoppingPeriod, budgetRollover, budgetRolloverPeriod, notes, timers, catMemory, budgetMoves, recurring, goals, templates, challenges, qaza },
-         closedPeriods
+         accounts,         settings: { budgetOffset, lastAccountId, shoppingPeriod, budgetRollover, budgetRolloverPeriod, notes, timers, catMemory, budgetMoves, goals, templates, challenges, qaza },         closedPeriods
        },
        problems
      };
@@ -4261,7 +4229,7 @@
    }
    
    /* ============================================================
-       Home extras, quick add, goals, recurring, challenges
+       Home extras, quick add, goals, challenges
        ------------------------------------------------------------
        Plans and goals live in the synced prefs settings (see
        sanitizeState): no new tables, no migration. Safe-to-spend
@@ -4319,12 +4287,6 @@
        count++;
      }
      return count;
-   }
-
-   function ordinal(n) {
-     const s = ['th', 'st', 'nd', 'rd'];
-     const v = n % 100;
-     return n + (s[(v - 20) % 10] || s[v] || s[0]);
    }
 
    /** Names line of the split control → clean name list, in the order typed.
@@ -4578,117 +4540,6 @@
      state.settings.templates = list.filter((x) => x.id !== id);
      if (save()) toast('Template removed', { label: 'Undo', fn: undoLast });
    }
-
-
-   /* ---------- records: recurring plans ---------- */
-
-   function renderRecurring() {
-     const box = $('recList');
-     fillRecDays();
-     fillCategorySelect($('recCategory'));
-     fillAccountSelect($('recAccount'));
-     if (!box) return;
-     const list = (state.settings.recurring || []).slice()
-       .sort((a, b) => (a.active === b.active ? a.dayOfMonth - b.dayOfMonth : (a.active ? -1 : 1)));
-     if (!list.length) {
-       mount(box, h('div', { class: 'empty-state' }, 'No plans yet. Rent, salary, subscriptions — say how much and which day.'));
-       return;
-     }
-     mount(box, list.map((r) =>
-       h('div', { class: 'mini-item' },
-         h('div', { class: 'mini-head' },
-           h('span', { class: 'label' }, r.label || r.category),
-           h('span', { class: 'value ' + (r.type === 'income' ? 'pos' : 'neg') },
-             formatMoney(r.amount, { signed: r.type === 'income' }))),
-         h('div', { class: 'mini-meta' },
-           (r.type === 'income' ? 'Income' : 'Expense') + ' · ' + r.category + ' · ' +
-           (findAccount(r.accountId) ? accountName(r.accountId) : 'last-used account') + ' · the ' + ordinal(r.dayOfMonth) +
-           ' of every month' + (r.active ? '' : ' · paused')),
-         h('div', { class: 'mini-actions' },
-           button(r.active ? 'Pause' : 'Resume', 'rec-toggle', { id: r.id }),
-           button('Delete', 'rec-delete', { id: r.id, class: 'btn-mini danger' }))
-       )
-     ));
-   }
-
-   function fillRecDays() {
-     const sel = $('recDay');
-     if (!sel) return;
-     const held = sel.value;
-     mount(sel, Array.from({ length: 28 }, (_, i) => h('option', { value: String(i + 1) }, 'Day ' + (i + 1) + ' of the month')));
-     if (held) sel.value = held;
-     if (!sel.value) sel.value = '1';
-   }
-
-   function addRecurring() {
-     if ((state.settings.recurring || []).length >= 24) { toast('24 plans is the limit'); return; }
-     const label = cleanText($('recLabel').value, ITEM_LIMIT);
-     const amount = readAmountField($('recAmount'), 'Amount');
-     if (amount.error) { toast(amount.error); return; }
-     pushUndo('Recurring plan added');
-     const recAcc = $('recAccount');
-     const recPlanAccount = recAcc && findAccount(recAcc.value) ? recAcc.value : null;
-     state.settings.recurring.push({
-       id: newId(),
-       type: $('recType').value === 'income' ? 'income' : 'expense',
-       amount: amount.value,
-       category: $('recCategory').value,
-       accountId: recPlanAccount,
-       label,
-       dayOfMonth: clampNumber($('recDay').value, 1, 28),
-       active: true,
-       lastFiled: null
-     });
-     $('recLabel').value = '';
-     $('recAmount').value = '';
-     if (save()) {
-       toast('Plan added — it files itself on the ' + ordinal(clampNumber($('recDay').value, 1, 28)), { label: 'Undo', fn: undoLast });
-     }
-   }
-
-   function toggleRecurring(id) {
-     const r = (state.settings.recurring || []).find((x) => x.id === id);
-     if (!r) return;
-     pushUndo('Recurring plan ' + (r.active ? 'paused' : 'resumed'));
-     r.active = !r.active;
-     if (save()) toast(r.active ? 'Plan resumed' : 'Plan paused — nothing files until it is resumed');
-   }
-
-   function deleteRecurring(id) {
-     const r = (state.settings.recurring || []).find((x) => x.id === id);
-     if (!r) return;
-     if (!confirm('Delete this plan? Entries it already filed stay in your records.')) return;
-     pushUndo('Recurring plan deleted');
-     state.settings.recurring = (state.settings.recurring || []).filter((x) => x.id !== id);
-     if (save()) toast('Plan deleted', { label: 'Undo', fn: undoLast });
-   }
-
-   /** Files every active plan whose day has come in a month it has not yet
-      filed for. One entry per plan per run in the current month, whatever
-      earlier months were missed; filed entries carry the plan's day, at 09:00,
-      into the account last used on this device. Returns how many were filed —
-      the caller persists and announces. */
-   function maybeFileRecurring() {
-     const cur = currentPeriod();
-     const today = new Date();
-     let filed = 0;
-     for (const r of state.settings.recurring || []) {
-       if (!r.active) continue;
-       if (r.lastFiled === cur) continue;
-       if (r.dayOfMonth > today.getDate()) continue;
-       const accId = findAccount(r.accountId) ? r.accountId
-         : findAccount(state.settings.lastAccountId) ? state.settings.lastAccountId : cashAccountId();
-       const built = buildTransaction(r.type, r.amount, r.category, r.label || r.category, cur + '-' + pad2(r.dayOfMonth) + 'T09:00', accId, null);
-       if (built.error) continue;
-       pushUndo('Recurring entry filed');
-       built.value.source = 'plan:' + r.id;
-       state.transactions.unshift(built.value);
-       r.lastFiled = cur;
-       filed++;
-     }
-     return filed;
-   }
-
 
    /* ---------- budget: rollover + challenges ---------- */
 
@@ -5140,9 +4991,7 @@
      const notes = unionById(curS.notes, incS.notes);
      const timers = unionById(curS.timers, incS.timers);
      // Feature lists merge like every other by-id collection: current rows win
-     // each id, the rest is appended. Both sides are already validated shapes.
-     const rec = unionById(curS.recurring, incS.recurring);
-     const goalRows = unionById(curS.goals, incS.goals);
+     // each id, the rest is appended. Both sides are already validated shapes.     const goalRows = unionById(curS.goals, incS.goals);
      const tpl = unionById(curS.templates, incS.templates);
      const chal = unionById(curS.challenges, incS.challenges);
      const rolloverOn = curS.budgetRollover === true || incS.budgetRollover === true;
@@ -5182,9 +5031,7 @@
            notes: notes.rows,
            timers: timers.rows,
            catMemory: mem,
-           budgetMoves: moves.rows,
-           recurring: rec.rows,
-           goals: goalRows.rows,
+           budgetMoves: moves.rows,           goals: goalRows.rows,
            templates: tpl.rows,
            challenges: chal.rows
          },
@@ -6330,11 +6177,8 @@
      renderHomeExtras();
      renderAccounts();
      renderBudgets();
-     renderChallenges();
-     renderTransactions();
-     renderRecurring();
-     renderDebts();
-     renderTimers();
+     renderChallenges();     renderTransactions();
+     renderDebts();     renderTimers();
      renderNotes();
      renderQaza();
      renderCategories();
@@ -6372,10 +6216,15 @@
      'item-clear': clearCheckedItems,
      'note-pin': (el) => toggleNotePin(el.dataset.id),
      'note-edit': (el) => openNoteEdit(el.dataset.id),
-     'note-delete': (el) => deleteNote(el.dataset.id),
-     'tx-split-add': () => addPeopleRow('txSplitRows'),
+     'note-delete': (el) => deleteNote(el.dataset.id),     'tx-split-add': () => addPeopleRow('txSplitRows'),
      'tx-split-even': () => fillPeopleRowsEvenly('txSplitRows', $('txAmount'), true),
-     'debt-multi-add': () => addPeopleRow('debtMultiRows'),
+     // Pending rows reuse the same widget under per-row container ids.
+     'psplit-add': (el) => addPeopleRow(el.dataset.arg),
+     'psplit-even': (el) => {
+       const scope = el.closest('.pending-section');
+       const totalEl = scope && scope.querySelector('.psplit-total');
+       if (el.dataset.arg && totalEl) fillPeopleRowsEvenly(el.dataset.arg, totalEl, true);
+     },     'debt-multi-add': () => addPeopleRow('debtMultiRows'),
      'debt-multi-even': () => fillPeopleRowsEvenly('debtMultiRows', $('debtAmount'), false),
      'people-row-drop': (el) => { const row = el.closest('.people-row'); if (row) row.remove(); },
      'qaza-daily-toggle': (el) => toggleDailyPrayer(el.dataset.arg),
@@ -6408,10 +6257,7 @@
      'tpl-use': (el) => useTemplate(el.dataset.id),
      'tpl-remove': (el) => removeTemplate(el.dataset.id),
      'goal-add': (el) => openGoalModal(el.dataset.id),
-     'goal-remove': (el) => removeGoal(el.dataset.id),
-     'rec-toggle': (el) => toggleRecurring(el.dataset.id),
-     'rec-delete': (el) => deleteRecurring(el.dataset.id),
-     'challenge-remove': (el) => removeChallenge(el.dataset.id),
+     'goal-remove': (el) => removeGoal(el.dataset.id),     'challenge-remove': (el) => removeChallenge(el.dataset.id),
      'export': () => exportBackup(),
      'import': importBackup,
      'reset': resetAll,
@@ -6478,14 +6324,27 @@
            const amt = readAmountField($('txAmount'), 'Amount');
            if (!amt.error && amt.value > 0) fillPeopleRowsEvenly('txSplitRows', $('txAmount'), true);
          }
-         return;
-       }       if (e.target.id === 'debtMultiOn') {
+         return;       }       if (e.target.id === 'debtMultiOn') {
          setHiddenDebtMulti(!e.target.checked);
          if (e.target.checked && !document.querySelector('#debtMultiRows .people-row')) addPeopleRow('debtMultiRows');
          return;
        }
-       if (e.target.id === 'rolloverToggle') {
-         state.settings.budgetRollover = e.target.checked;
+       if (e.target.dataset && e.target.dataset.pendingSplit) {
+         // A pending row's split box behaves like Home's: first tap opens
+         // with one row, equally filled from the row's amount when known.
+         const splitId = e.target.dataset.pendingSplit;
+         const rowsId = 'psplit-rows-' + splitId;
+         const wrap = document.getElementById('psplit-wrap-' + splitId);
+         if (wrap) wrap.hidden = !e.target.checked;
+         if (e.target.checked) {
+           if (!document.querySelector('#' + rowsId + ' .people-row')) addPeopleRow(rowsId);
+           const totalEl = document.querySelector('#psplit-wrap-' + splitId + ' .psplit-total');
+           const amt = totalEl ? readAmountField(totalEl, 'Amount') : { error: 'gone' };
+           if (!amt.error && amt.value > 0) fillPeopleRowsEvenly(rowsId, totalEl, true);
+         }
+         return;
+       }
+       if (e.target.id === 'rolloverToggle') {         state.settings.budgetRollover = e.target.checked;
          toast(e.target.checked
            ? 'On — the next new month keeps whatever is unused now'
            : 'Off — each month starts from the limits you set');
@@ -6537,9 +6396,7 @@
        ['noteEditForm', saveNoteEdit],
        ['budgetFixForm', saveBudgetFix],
        ['templateForm', addTemplate],
-       ['goalForm', addGoal],
-       ['recForm', addRecurring],
-       ['challengeForm', addChallenge],
+       ['goalForm', addGoal],       ['challengeForm', addChallenge],
        ['goalModalForm', saveGoalPayment]
      ];
      forms.forEach(([id, handler]) => {
@@ -6758,23 +6615,14 @@
          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* ignore */ }
        }
      } catch (err) { /* never block boot */ }
-
-     // Month rollovers: budgets carry first (if the toggle is on), then any
-     // recurring plans whose day has come file themselves. Also calendar work
-     // — persisted here, announced with undo, never blocking the boot.
+     // Month rollovers: budgets carry over first (if the toggle is on) —
+     // persisted here, never blocking the boot.
      try {
        const rolled = maybeRolloverBudgets();
-       const filedCount = maybeFileRecurring();
-       if (rolled || filedCount) {
+       if (rolled) {
          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (err) { /* ignore */ }
        }
-       if (filedCount) {
-         toast(filedCount === 1
-           ? '1 recurring entry filed'
-           : filedCount + ' recurring entries filed', { label: 'Undo', fn: undoLast });
-       }
      } catch (err) { /* never block boot */ }
-
      // Daily qaza rollup: unticked prayers from yesterday (and earlier) become
      // recent qaza. Silent and idempotent — the user already saw the day fall
      // off their checklist screen, we don't yank them with a toast.
@@ -7761,20 +7609,38 @@
         live in long option text, and the two-column grid on wider screens keeps
         the row from growing tall enough to push Approve below the fold. The
         details/summary still collapses it all, so a plain Approve stays one tap
-        away. */
-     const section = (title, hint, ...kids) => h('div', { class: 'pending-section' },
+        away. */     const section = (title, hint, ...kids) => h('div', { class: 'pending-section' },
        h('div', { class: 'pending-section-head' },
          h('span', { class: 'pending-section-title' }, title),
          hint ? h('span', { class: 'pending-section-hint' }, hint) : null),
        h('div', { class: 'pending-section-body' }, ...kids));
-   
+
+     /* The Home-style udhaar split, straight on the auto entry. Same
+        people-rows widget as the Home form and the multi-person udhaar,
+        same checkbox gate: nothing shows until the box is ticked. The row
+        amount is not an editable field here, so it rides on a hidden input
+        the Split-equally button can read. */
+     const splitRowsId = 'psplit-rows-' + tx.id;
+     const splitAmount = toPositiveNumber(tx.amount) || 0;
+     const splitWrap = h('div', { class: 'psplit-wrap', id: 'psplit-wrap-' + tx.id, hidden: true },
+       h('input', { type: 'hidden', class: 'psplit-total', value: String(splitAmount) }),
+       h('div', { id: splitRowsId }),
+       h('div', { class: 'btn-row' },
+         h('button', { class: 'btn-mini', type: 'button', dataset: { act: 'psplit-add', arg: splitRowsId } }, 'Add person'),
+         h('button', { class: 'btn-mini', type: 'button', dataset: { act: 'psplit-even', arg: splitRowsId } }, 'Split equally')),
+       h('p', { class: 'field-hint' }, 'Every person gets their own entry on the Udhaar tab. Split equally divides the amount between everyone including you; change any figure.'));
+     const splitGate = h('label', { class: 'check' },
+       h('input', { type: 'checkbox', dataset: { pendingSplit: tx.id } }),
+       h('span', {}, 'Split with others (they owe their share back)'));   
      return h('details', { class: 'pending-more' },
        h('summary', { class: 'pending-more-title' }, 'More options'),
        section('How to file', 'Expense, income, or a transfer between your own accounts',
          h('div', { class: 'form-group' },
-           h('label', { class: 'field-label' }, 'Type'),
-           kindSel)),       accountSection,       openDebts.length
-         ? section('Udhaar link', 'Settles part of an open debt instead of filing a new record',
+           h('label', { class: 'field-label' }, 'Type'),           kindSel)),
+       accountSection,
+       section('Split as udhaar', 'The Home-form split, straight from this auto entry',
+         splitGate, splitWrap),
+       openDebts.length         ? section('Udhaar link', 'Settles part of an open debt instead of filing a new record',
            h('div', { class: 'form-group' },
              h('label', { class: 'field-label' }, 'Link to entry'),
              debtSel))
@@ -7993,7 +7859,29 @@
          toast('Moved ' + formatMoney(amount) + ' from ' + accountName(accId) + ' to ' + accountName(toId));
          return;
        }
-   
+          const chosenCat = pendingChosenCategory(txId, tx.type);
+       const splitPeople = readPeopleRows('psplit-rows-' + txId);
+       const udhaarFiling = tx.type !== 'income' && chosenCat === 'Udhaar';
+       const splitUsed = tx.type !== 'income'
+         && (udhaarFiling || (splitPeople.length && splitPeople.some((p) => p.name)));
+       if (splitUsed) {
+         // Ask-1: an entry filed under Udhaar must land in the Udhaar tab the
+         // way the Home form leads there — which needs at least one person.
+         if (udhaarFiling && !splitPeople.some((p) => p.name)) {
+           toast('Udhaar needs at least one person — add names under Split as udhaar first');
+           return;
+         }
+         if (splitPeople.length > 15) { toast('Splitting is limited to 15 people'); return; }
+         for (const p of splitPeople) {
+           if (!p.name) { toast('One of the people is missing a name'); return; }
+           if (p.amount.error) { toast(p.name + ', share: ' + p.amount.error); return; }
+         }
+         const shareSum = round2(splitPeople.reduce((s, p) => s + p.amount.value, 0));
+         if (shareSum > amount + 0.001) {
+           toast('The shares add to ' + formatMoney(shareSum) + ' — more than the expense itself');
+           return;
+         }
+       }
        // Built through the same helper the manual form uses, so the record has the
        // app's field names (date / accountId) rather than the database's column
        // names. Getting this wrong means accountBalance() never matches the row,
@@ -8001,14 +7889,13 @@
        const built = buildTransaction(
          tx.type === 'income' ? 'income' : 'expense',
          amount,
-         pendingChosenCategory(txId, tx.type),
+         chosenCat,
          comment,
          stamp,
          accId,
          null
        );
-       if (built.error) { toast(built.error); return; }
-       // Teach the memory: next time this bank + wording arrives, the picker
+       if (built.error) { toast(built.error); return; }       // Teach the memory: next time this bank + wording arrives, the picker
        // starts on this category. Only the normal path learns — transfers and
        // udhaar links have no category to teach.
        learnCategory(tx, built.value.category);
@@ -8035,14 +7922,43 @@
            s.cost = share;
          }
        }
-   
+          if (splitUsed) {
+         // Ask-2: every named person gets their own udhaar record ('they owe
+         // me their share'), exactly like the Home split does. The payment
+         // itself files once, under this row's chosen category.
+         const udhaarCat = ensureUdhaarCategory();
+         const shareSum = round2(splitPeople.reduce((s, p) => s + p.amount.value, 0));
+         for (const p of splitPeople) {
+           state.debts.push({
+             id: newId(),
+             type: 'receive',
+             person: p.name,
+             amount: p.amount.value,
+             note: cleanText('Split share' + (comment ? ' of ' + comment : ''), COMMENT_LIMIT),
+             date: stamp,
+             settled: false,
+             settledAt: null,
+             ledger: false,
+             accountId: null,
+             category: udhaarCat
+           });
+         }
+         const myShare = round2(amount - shareSum);
+         jumpToStamp(stamp);
+         save();
+         await finishApproval();
+         toast('Filed ' + formatMoney(amount) + (chosenCat === 'Udhaar' ? ' under Udhaar' : '') +
+           ' — split with ' + splitPeople.length + ', your share ' + formatMoney(myShare) +
+           ' (their entries on the Udhaar tab)');
+         return;
+       }
+
        jumpToStamp(stamp);
        save();
        await finishApproval();
-   
+
        toast('Added ' + formatMoney(amount) + ' to ' + accountName(accId) + ' — dated ' + formatDate(stamp) +
-         (items.length ? ' — ' + items.length + ' list item(s) ticked' : ''));
-     } catch (err) {
+         (items.length ? ' — ' + items.length + ' list item(s) ticked' : ''));     } catch (err) {
        console.error('Approve transaction error:', err);
        toast('Failed to approve: ' + err.message);
      }
