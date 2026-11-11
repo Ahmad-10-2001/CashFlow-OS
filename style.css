@@ -1925,3 +1925,28 @@ select {
 .psplit-wrap { margin-top: 8px; }
 .psplit-wrap .btn-row { margin-top: 8px; }
 .psplit-wrap[hidden] { display: none; }
+
+/* Records behind a merged udhaar entry (same person, several entries): the
+   main row shows the total, the dropdown lists each record with its own
+   amount, date and buttons. */
+.debt-parts { margin-top: 8px; border: 1px dashed var(--line); border-radius: 10px; padding: 4px 10px; }
+.debt-parts-title { font-size: 12.5px; font-weight: 600; color: var(--accent); cursor: pointer; padding: 6px 0; }
+.debt-part { padding: 8px 0; border-bottom: 1px solid var(--line-soft); }
+.debt-part:last-child { border-bottom: none; }
+.debt-part-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.debt-part-date { color: var(--muted); font-weight: 400; font-size: 12.5px; }
+
+/* The udhaar person field on a pending row: only visible while the category
+   picker sits on Udhaar, right beside it. */
+.pending-udhaar-person { margin-top: 6px; width: 100%; }
+
+/* Mobile pending rows: the info and More options take the full width, and
+   Approve sits above Reject — both full width, with a real gap between them
+   so a hurried thumb can never hit the wrong one. Desktop keeps the old
+   side-by-side row. */
+@media (max-width: 559px) {
+  .pending-item { flex-wrap: wrap; }
+  .pending-info { flex: 1 1 100%; }
+  .pending-actions { flex: 1 1 100%; flex-direction: column; gap: 14px; margin-top: 12px; }
+  .pending-actions .btn { width: 100%; }
+}

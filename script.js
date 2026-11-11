@@ -3117,6 +3117,48 @@
        syncLedgerForDebt(d);
      }
      if (save()) toast('Marked as settled');   }
+
+   /** Settle every open record of one person+direction group in one go. The
+    *  account is asked once; each record then settles exactly the way the
+    *  single settle does (ledger rows included), so nothing about the old
+    *  per-record behaviour changes. */
+   async function settleDebtGroup(key) {
+     const g = debtGroups().find((x) => x.key === key);
+     if (!g) return;
+     const defAcc = debtAccountId(g.list[0]);
+     const otherAccs = pickableAccounts().filter((a) => a.id !== defAcc);
+     const options = [
+       { value: 'ledger:' + defAcc, kind: 'primary',
+         label: 'Record ' + formatMoney(g.total) + ' in ' + accountName(defAcc) }
+     ].concat(otherAccs.map((a) => ({
+       value: 'ledger:' + a.id,
+       label: 'Record in ' + accountName(a.id) + ' instead'
+     })));
+     options.push({ value: 'record', label: 'Only close the records (no money moves)' });
+     const choice = await askChoice(
+       'Settle udhaar',
+       'Settle ' + g.person + '’s ' + formatMoney(g.total) + ' across ' + g.list.length +
+         ' entries as ' + (g.type === 'receive' ? 'income' : 'an expense') +
+         '. Which account does the money move through?',
+       options
+     );
+     if (choice === null) return;
+
+     pushUndo('Udhaar entries settled');
+     for (const d of g.list) {
+       d.settled = true;
+       d.settledAt = nowStamp();
+       if (choice !== 'record') {
+         const accId = String(choice).split(':')[1];
+         if (accId && findAccount(accId)) {
+           d.accountId = accId;
+           d.ledger = true;
+           syncLedgerForDebt(d);
+         }
+       }
+     }
+     if (save()) toast(g.list.length === 1 ? 'Marked as settled' : g.list.length + ' entries settled for ' + g.person);
+   }
    
    /**
     * Keep the ledger in step with a debt. Idempotent: any previously linked
@@ -5613,30 +5655,63 @@
      ];
    
      if (!open.length) children.push(h('div', { class: 'empty-state' }, 'Nothing outstanding'));
-   
-     open.forEach((d) => children.push(
-       h('div', { class: 'debt-item' },
-         h('div', { class: 'debt-header' },
-           h('span', { class: 'debt-person' }, d.person),
-           h('span', { class: 'debt-amount ' + d.type }, (d.type === 'receive' ? '+' : '−') + ' ' + formatMoney(d.amount))
-         ),
-         h('div', { class: 'debt-detail' },
-           d.type === 'receive' ? 'owes me' : 'I owe',
-           d.note ? ' · ' + d.note : '',
-           d.ledger ? '' : ' · not tracked in balance'
-         ),
-         h('div', { class: 'debt-detail' },
-           debtCategory(d) + ' · ' + (d.accountId && findAccount(d.accountId) ? accountName(d.accountId) : 'no account movement')),
-         h('div', { class: 'debt-detail' }, 'Added ' + formatDate(d.date)),
-         h('div', { class: 'debt-actions' },
-           button('Settle', 'debt-settle', { id: d.id, class: 'btn-mini settle' }),
-           button('Return some', 'debt-return', { id: d.id }),
-           button('Edit', 'debt-edit', { id: d.id }),
-           button('Delete', 'debt-delete', { id: d.id, class: 'btn-mini danger' })
+        debtGroups().forEach((g) => {
+       const head = h('div', { class: 'debt-header' },
+         h('span', { class: 'debt-person' }, g.person),
+         h('span', { class: 'debt-amount ' + g.type }, (g.type === 'receive' ? '+' : '−') + ' ' + formatMoney(g.total)));
+       if (g.list.length === 1) {
+         // One record for this person: the entry renders exactly as before.
+         const d = g.list[0];
+         children.push(
+           h('div', { class: 'debt-item' },
+             head,
+             h('div', { class: 'debt-detail' },
+               d.type === 'receive' ? 'owes me' : 'I owe',
+               d.note ? ' · ' + d.note : '',
+               d.ledger ? '' : ' · not tracked in balance'
+             ),
+             h('div', { class: 'debt-detail' },
+               debtCategory(d) + ' · ' + (d.accountId && findAccount(d.accountId) ? accountName(d.accountId) : 'no account movement')),
+             h('div', { class: 'debt-detail' }, 'Added ' + formatDate(d.date)),
+             h('div', { class: 'debt-actions' },
+               button('Settle', 'debt-settle', { id: d.id, class: 'btn-mini settle' }),
+               button('Return some', 'debt-return', { id: d.id }),
+               button('Edit', 'debt-edit', { id: d.id }),
+               button('Delete', 'debt-delete', { id: d.id, class: 'btn-mini danger' })
+             )
+           )
+         );
+         return;
+       }
+       // Several records, one person: one merged entry carrying the total,
+       // with each record (amount + date + its own buttons) one tap away in
+       // the dropdown. Nothing merges in the data — undo, edit and history
+       // all keep working.
+       children.push(
+         h('div', { class: 'debt-item' },
+           head,
+           h('div', { class: 'debt-detail' },
+             (g.type === 'receive' ? 'owes me' : 'I owe') + ' · ' + g.list.length + ' entries — total above'),
+           h('details', { class: 'debt-parts' },
+             h('summary', { class: 'debt-parts-title' }, 'Details — ' + g.list.length + ' entries'),
+             g.list.map((r) => h('div', { class: 'debt-part' },
+               h('div', { class: 'debt-part-head' },
+                 h('span', {}, formatMoney(r.amount)),
+                 h('span', { class: 'debt-part-date' }, formatDate(r.date))),
+               r.note ? h('div', { class: 'debt-detail' }, r.note) : null,
+               h('div', { class: 'debt-actions' },
+                 button('Return some', 'debt-return', { id: r.id }),
+                 button('Edit', 'debt-edit', { id: r.id }),
+                 button('Delete', 'debt-delete', { id: r.id, class: 'btn-mini danger' })
+               )
+             ))
+           ),
+           h('div', { class: 'debt-actions' },
+             button('Settle all', 'debt-settle-grp', { id: g.key, class: 'btn-mini settle' })
+           )
          )
-       )
-     ));
-   
+       );
+     });   
      if (done.length) {
        children.push(h('div', { class: 'debt-settled-head' }, 'Settled (' + done.length + ')'));
        done.forEach((d) => children.push(
@@ -6197,9 +6272,9 @@
    const ACTIONS = {
      'tab': (el) => showTab(el.dataset.tab),
      'tx-edit': (el) => openEditModal(el.dataset.id),
-     'tx-delete': (el) => deleteTransaction(el.dataset.id),
-     'debt-settle': (el) => settleDebt(el.dataset.id),
-     'debt-return': (el) => returnDebtSome(el.dataset.id),
+     'tx-delete': (el) => deleteTransaction(el.dataset.id),     'debt-settle': (el) => settleDebt(el.dataset.id),
+     'debt-settle-grp': (el) => settleDebtGroup(el.dataset.id),
+       'debt-return': (el) => returnDebtSome(el.dataset.id),
      'debt-edit': (el) => openDebtEditModal(el.dataset.id),
      'debt-delete': (el) => deleteDebt(el.dataset.id),
      'category-delete': (el) => removeCategory(el.dataset.arg),
@@ -6327,6 +6402,12 @@
          return;       }       if (e.target.id === 'debtMultiOn') {
          setHiddenDebtMulti(!e.target.checked);
          if (e.target.checked && !document.querySelector('#debtMultiRows .people-row')) addPeopleRow('debtMultiRows');
+         return;
+       }       if (e.target.dataset && e.target.dataset.pendingCat) {
+         // Filing a row as Udhaar needs its person, so the name field shows
+         // beside the picker exactly when that category is picked.
+         const pf = document.querySelector('[data-pending-person="' + e.target.dataset.pendingCat + '"]');
+         if (pf) pf.hidden = String(e.target.value).toLowerCase() !== 'udhaar';
          return;
        }
        if (e.target.dataset && e.target.dataset.pendingSplit) {
@@ -7464,13 +7545,23 @@
        class: 'pending-category',
        'aria-label': 'Category for this transaction',
        dataset: { pendingCat: tx.id }
+     });     fillCategorySelect(sel, { selected: pendingRememberedCategory(tx) || 'Other' });
+     // Filing a row as Udhaar needs its person, so the name field lives right
+     // here and only shows while the picker sits on Udhaar.
+     const person = h('input', {
+       type: 'text',
+       class: 'pending-udhaar-person',
+       placeholder: 'Who is this udhaar with?',
+       maxlength: String(NAME_LIMIT),
+       autocomplete: 'off',
+       dataset: { pendingPerson: tx.id },
+       hidden: String(sel.value).toLowerCase() !== 'udhaar'
      });
-     fillCategorySelect(sel, { selected: pendingRememberedCategory(tx) || 'Other' });
      return h('div', { class: 'form-group pending-cat-row' },
        h('label', { class: 'field-label' }, 'Category'),
-       sel);
-   }
-   
+       sel,
+       person);
+   }   
    /** Which category an approval files under: the picker's choice, else what was
     *  remembered for this bank + wording, else "Other" when the picker is gone
     *  or names something deleted since. Never Salary by default — that claim
@@ -7591,17 +7682,16 @@
      }
      kindSel.addEventListener('change', syncKindUI);
      syncKindUI();
-
-     const openDebts = (state.debts || []).filter((d) => !d.settled);
+     const openDebts = debtGroups();
      const debtSel = h('select', {       class: 'pending-debt',
        'aria-label': 'Link to an udhaar entry',
        dataset: { pendingDebt: tx.id }
      });
      mount(debtSel,
        h('option', { value: '' }, 'No udhaar link'),
-       openDebts.map((d) => h('option', { value: d.id },
-         d.person + ' — ' + formatMoney(d.amount) + (d.type === 'receive' ? ' owes me' : ' I owe'))));
-   
+       openDebts.map((g) => h('option', { value: 'grp:' + g.key },
+         g.person + ' — ' + formatMoney(g.total) + (g.type === 'receive' ? ' owes me' : ' I owe') +
+         (g.list.length > 1 ? ' (' + g.list.length + ' entries)' : ''))));   
      const openItems = (state.shopping || []).filter((s) => !s.checked);
    
      /* One labelled group per concern, instead of a single flat pile of
@@ -7653,16 +7743,41 @@
          : null
      );
    }
-   
-   /** Which open udhaar entry an approval is linked to, if any. */
+      /** Open udhaar entries grouped per person + direction, oldest record first.
+    *  Several entries for one person read as a single total everywhere — the
+    *  Udhaar tab and the pending picker — while the records themselves stay
+    *  separate, so undo, editing and the per-record history keep working. */
+   function debtGroups() {
+     const groups = [];
+     const seen = new Map();
+     for (const d of (state.debts || []).filter((x) => !x.settled)) {
+       const key = (d.type === 'give' ? 'g|' : 'r|') + String(d.person || '').trim().toLowerCase();
+       const g = seen.get(key);
+       if (g) {
+         g.list.push(d);
+         g.total = round2(g.total + (toPositiveNumber(d.amount) || 0));
+       } else {
+         const fresh = { key, person: d.person, type: d.type === 'give' ? 'give' : 'receive', total: toPositiveNumber(d.amount) || 0, list: [d] };
+         seen.set(key, fresh);
+         groups.push(fresh);
+       }
+     }
+     for (const g of groups) {
+       g.list.sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+       g.newest = String(g.list[g.list.length - 1].date || '');
+     }
+     groups.sort((a, b) => String(b.newest || '').localeCompare(String(a.newest || '')));
+     return groups;
+   }
+    
+   /** Which open udhaar group an approval is linked to, if any. */
    function pendingLinkedDebt(txId) {
      const el = pendingControl(txId, 'pending-debt');
-     const id = el && typeof el.value === 'string' ? el.value : '';
-     if (!id) return null;
-     const d = (state.debts || []).find((x) => x.id === id && !x.settled);
-     return d || null;
-   }
-   
+     const v = el && typeof el.value === 'string' ? el.value : '';
+     if (v.indexOf('grp:') !== 0) return null;
+     const g = debtGroups().find((x) => x.key === v.slice(4));
+     return g || null;
+   }   
    /** Which account an approval files into: what its picker says, falling back
     *  to the automatic match when the picker is gone. */
    function pendingPickedAccount(txId, tx) {
@@ -7780,34 +7895,31 @@
        // may still actually be a pocket-to-pocket move, and saying no to that
        // is what forced a fake expense plus a manual top-up entry before.
        const kind = (kindEl && kindEl.value === 'transfer') ? 'transfer' : 'normal';       const debt = pendingLinkedDebt(txId);
-   
-       if (debt) {
-         const debtAmount = debt.amount;
+          if (debt) {
+         const debtAmount = debt.total;
          const chosenCat = pendingChosenCategory(txId, tx.type);
-   
-         // Amount fits the outstanding debt: one meaning, one entry.
-         if (amount <= debtAmount) {
-           const res = applyDebtPayment(debt, amount, accId, chosenCat);
-           if (!res) { toast('That udhaar entry is already settled'); return; }
-           state.settings.lastAccountId = accId;
-           viewTxPeriod = null;
-           save();
-           await finishApproval();
-           toast(res === 'settled'
-             ? 'Settled with ' + debt.person + ' — ' + formatMoney(amount) + ' into ' + accountName(accId)
-             : 'Recorded ' + formatMoney(amount) + ' from ' + debt.person + '. ' + formatMoney(debt.amount) + ' still outstanding.');
-           return;
+    
+         // The bank moved the FULL amount, so the full amount files into the
+         // account — settling an udhaar is a marker on the record, never a
+         // second money row. The old path filed only the remainder, so the
+         // settled part never reached the account balance.
+         const payAmount = Math.min(amount, debtAmount);
+         let left = payAmount;
+         for (const d of debt.list) {
+           if (left <= 0) break;
+           const pay = Math.min(left, d.amount);
+           if (pay >= d.amount) {
+             d.settled = true;
+             d.settledAt = nowStamp();
+           } else {
+             d.amount = round2(d.amount - pay);
+           }
+           if (accId && findAccount(accId)) d.accountId = accId;
+           left = round2(left - pay);
          }
-   
-         // Amount is larger than the outstanding debt: settle the udhaar in full,
-         // then file the remainder as an ordinary income/expense, so no money is
-         // silently dropped and the two meanings stay separate.
-         const res = applyDebtPayment(debt, debtAmount, accId, chosenCat);
-         if (!res) { toast('That udhaar entry is already settled'); return; }
-         const remainder = round2(amount - debtAmount);
          const built = buildTransaction(
            tx.type === 'income' ? 'income' : 'expense',
-           remainder,
+           amount,
            chosenCat,
            comment,
            stamp,
@@ -7820,10 +7932,10 @@
          touch(built.value);
          state.transactions.unshift(built.value);
          state.settings.lastAccountId = accId;
-   
+    
          const items = pendingPickedItems(txId);
          if (items.length) {
-           const share = round2(remainder / items.length);
+           const share = round2(amount / items.length);
            const now = nowStamp();
            for (const s of items) {
              s.checked = true;
@@ -7832,15 +7944,15 @@
              s.cost = share;
            }
          }
-   
+    
          jumpToStamp(stamp);
          save();
          await finishApproval();
-         toast('Settled ' + formatMoney(debtAmount) + ' with ' + debt.person +
-           ' and filed ' + formatMoney(remainder) + ' as ' + (tx.type === 'income' ? 'income' : 'expense'));
+         toast(payAmount >= debtAmount
+           ? 'Settled ' + formatMoney(debtAmount) + ' with ' + debt.person + ' — the full ' + formatMoney(amount) + ' into ' + accountName(accId)
+           : 'Recorded ' + formatMoney(amount) + ' from ' + debt.person + '. ' + formatMoney(round2(debtAmount - payAmount)) + ' still outstanding.');
          return;
-       }
-   
+       }   
        if (kind === 'transfer') {
          // An ATM withdrawal and its friends: the money never left your hands,
          // it only changed pockets — so it must never count as spending.
@@ -7858,19 +7970,23 @@
          await finishApproval();
          toast('Moved ' + formatMoney(amount) + ' from ' + accountName(accId) + ' to ' + accountName(toId));
          return;
-       }
-          const chosenCat = pendingChosenCategory(txId, tx.type);
+       }          const chosenCat = pendingChosenCategory(txId, tx.type);
        const splitPeople = readPeopleRows('psplit-rows-' + txId);
-       const udhaarFiling = tx.type !== 'income' && chosenCat === 'Udhaar';
-       const splitUsed = tx.type !== 'income'
-         && (udhaarFiling || (splitPeople.length && splitPeople.some((p) => p.name)));
+       const namedPeople = splitPeople.filter((p) => p.name);
+       const splitUsed = tx.type !== 'income' && namedPeople.length > 0;
+       // Every option on the row is optional: a plain row files exactly as it
+       // always did, and only filled split rows or an explicit Udhaar pick
+       // change the meaning. A plain Udhaar pick becomes one 'they owe me'
+       // record for the whole amount — the person named beside the category.
+       const udhaarDirect = tx.type !== 'income' && chosenCat === 'Udhaar' && !splitUsed;
+       const udhaarPerson = udhaarDirect
+         ? cleanText((pendingControl(txId, 'pending-person') || {}).value, NAME_LIMIT)
+         : '';
+       if (udhaarDirect && !udhaarPerson) {
+         toast('Type who this udhaar is with — the name field beside the category');
+         return;
+       }
        if (splitUsed) {
-         // Ask-1: an entry filed under Udhaar must land in the Udhaar tab the
-         // way the Home form leads there — which needs at least one person.
-         if (udhaarFiling && !splitPeople.some((p) => p.name)) {
-           toast('Udhaar needs at least one person — add names under Split as udhaar first');
-           return;
-         }
          if (splitPeople.length > 15) { toast('Splitting is limited to 15 people'); return; }
          for (const p of splitPeople) {
            if (!p.name) { toast('One of the people is missing a name'); return; }
@@ -7882,7 +7998,7 @@
            return;
          }
        }
-       // Built through the same helper the manual form uses, so the record has the
+        // Built through the same helper the manual form uses, so the record has the
        // app's field names (date / accountId) rather than the database's column
        // names. Getting this wrong means accountBalance() never matches the row,
        // the balance stays wrong, and the push fails on a NOT NULL column.
@@ -7942,8 +8058,7 @@
              accountId: null,
              category: udhaarCat
            });
-         }
-         const myShare = round2(amount - shareSum);
+         }         const myShare = round2(amount - shareSum);
          jumpToStamp(stamp);
          save();
          await finishApproval();
@@ -7952,11 +8067,33 @@
            ' (their entries on the Udhaar tab)');
          return;
        }
-
+ 
+       if (udhaarDirect) {
+         // One payment, one udhaar record: the whole amount becomes what this
+         // person owes, listed on the Udhaar tab like every other entry.
+         state.debts.push({
+           id: newId(),
+           type: 'receive',
+           person: udhaarPerson,
+           amount,
+           note: cleanText(comment, COMMENT_LIMIT) || 'Udhaar',
+           date: stamp,
+           settled: false,
+           settledAt: null,
+           ledger: false,
+           accountId: null,
+           category: ensureUdhaarCategory()
+         });
+         jumpToStamp(stamp);
+         save();
+         await finishApproval();
+         toast('Filed ' + formatMoney(amount) + ' — udhaar entry for ' + udhaarPerson + ' is on the Udhaar tab');
+         return;
+       }
+ 
        jumpToStamp(stamp);
        save();
        await finishApproval();
-
        toast('Added ' + formatMoney(amount) + ' to ' + accountName(accId) + ' — dated ' + formatDate(stamp) +
          (items.length ? ' — ' + items.length + ' list item(s) ticked' : ''));     } catch (err) {
        console.error('Approve transaction error:', err);
