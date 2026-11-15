@@ -21,8 +21,7 @@ window.CASHFLOW_CONFIG = {
   // itself (a missing tab, an empty dropdown). Instead of leaving a
   // half-working app on screen, the caches are cleared and the page reloads
   // once. Bump this on every deploy, along with the service worker's
-  // CACHE_VERSION.
-  appBuild: 'v52',
+  // CACHE_VERSION.  appBuild: 'v53',
 
   // The Edge Function that receives forwarded bank emails. Public: it is just an
   // address, and the shared secret that goes with it is typed in by the user at

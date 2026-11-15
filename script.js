@@ -2273,8 +2273,16 @@
        syncLedgerForDebt(d, { category: cat });
        return 'settled';
      }
-     d.amount = round2(d.amount - amount);
-     if (d.ledger) {
+      d.amount = round2(d.amount - amount);
+      // A part-return moves real money: when it names an account (or the
+      // entry already writes rows), the slice files there — shrinking the
+      // record alone would make the payment vanish from the balance, the
+      // same way a linked settle once did.
+      if (accId && findAccount(accId)) {
+        d.ledger = true;
+        d.accountId = accId;
+      }
+      if (d.ledger) {
        state.transactions.unshift({
          id: newId(),
          type: d.type === 'receive' ? 'income' : 'expense',
@@ -3628,9 +3636,18 @@
      if (!q.daily) q.daily = Object.create(null);
      if (!q.recentDays) q.recentDays = Object.create(null);
      if (typeof q.witrFrom !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(q.witrFrom)) q.witrFrom = localDateStamp();
-     if (!Array.isArray(q.log)) q.log = [];     for (const p of QAZA_PRAYERS) {
-       if (typeof q.backlog[p] !== 'number') q.backlog[p] = 0;
+     if (!Array.isArray(q.log)) q.log = [];     for (const p of QAZA_PRAYERS) {       if (typeof q.backlog[p] !== 'number') q.backlog[p] = 0;
        if (typeof q.recent[p] !== 'number') q.recent[p] = 0;
+       // Day memory stays level with the count: one remembered day per
+       // recent miss, newest first. A longer list means days left behind
+       // by a payback that predates the day-forgetting — they would render
+       // as phantom days in the "which day was missed" card. The days that
+       // survive are the tail (the oldest misses), because payback takes
+       // the newest miss first.
+       const days = Array.isArray(q.recentDays[p]) ? q.recentDays[p] : [];
+       if (days.length > q.recent[p]) {
+         q.recentDays[p] = q.recent[p] > 0 ? days.slice(-q.recent[p]) : [];
+       }
      }
      return q;
    }
@@ -3661,11 +3678,14 @@
      if (want <= 0) return 0;
      let fromRecent = Math.min(want, q.recent[prayer] || 0);
      let fromBacklog = Math.min(want - fromRecent, q.backlog[prayer] || 0);
-     const paid = fromRecent + fromBacklog;
-     if (paid <= 0) return 0;     q.recent[prayer] -= fromRecent;
+     const paid = fromRecent + fromBacklog;     if (paid <= 0) return 0;     q.recent[prayer] -= fromRecent;
      // Repaid recent misses stop showing on the day list, newest first —
-     // exactly the order they were paid in.
-     for (let i = 0; i < fromRecent; i++) qazaForgetLatestDay(prayer);
+     // exactly the order they were paid in. The drop happens here in one
+     // splice, without re-entering qazaData: the level-trim inside it must
+     // never run between the count decrement and the day drop, or a day
+     // would disappear twice.
+     const dayList = q.recentDays[prayer];
+     if (Array.isArray(dayList) && dayList.length) dayList.splice(0, fromRecent);
      q.backlog[prayer] -= fromBacklog;     // Two separate log entries so Undo can walk back one bucket at a time
      // and the UI can show accurately where each payment came from.
      if (fromRecent > 0) logQaza({ prayer, kind: 'paid', bucket: 'recent', amount: fromRecent });
@@ -3852,9 +3872,13 @@
      // single row the way it was lived.
      if (daysBox) {
        const byDate = Object.create(null);
-       let datedCount = 0;
-       for (const p of QAZA_PRAYERS) {
-         const arr = Array.isArray(q.recentDays[p]) ? q.recentDays[p] : [];
+       let datedCount = 0;       for (const p of QAZA_PRAYERS) {
+         // Only the days a live count still stands for: the list is
+         // newest-first, one day per recent miss, so anything past the
+         // count is a stale leftover — never painted. The tail (oldest)
+         // is the part that belongs to what is still outstanding.
+         const list = Array.isArray(q.recentDays[p]) ? q.recentDays[p] : [];
+         const arr = q.recent[p] > 0 ? list.slice(-q.recent[p]) : [];
          datedCount += arr.length;
          for (const d of arr) (byDate[d] || (byDate[d] = [])).push(p);
        }

@@ -1,0 +1,24 @@
+{
+  "name": "salary_manager",
+  "version": "1.0.0",
+  "description": "A personal money manager that works with no account, no network and no build step. Open the page and it runs.",
+  "main": "config.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ahmad-10-2001/CashFlow-OS.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Ahmad-10-2001/CashFlow-OS/issues"
+  },
+  "homepage": "https://github.com/Ahmad-10-2001/CashFlow-OS#readme",
+  "dependencies": {
+    "jsdom": "^31.0.1"
+  }
+}

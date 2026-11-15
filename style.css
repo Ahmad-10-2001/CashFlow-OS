@@ -1390,8 +1390,14 @@ select {
 .stat-card.is-warn {
   background: var(--neg-tint);
   border-color: var(--neg);
-}
-.stat-card.is-warn .stat-sub { color: var(--neg-tint-ink); }
+}.stat-card.is-warn .stat-sub { color: var(--neg-tint-ink); }
+/* The big number and the label inherit the theme ink — near-white in dark
+   mode — which melts into the light pink warn surface: the amount was
+   invisible exactly when the warning mattered most. Inside the warn card
+   every layer of text switches to the tint's own dark ink, the way the
+   udhaar and qaza tint chips already do. */
+.stat-card.is-warn .stat-value { color: var(--neg-tint-ink); }
+.stat-card.is-warn .stat-label { color: var(--neg-tint-ink); opacity: .8; }
 .stat-label {
   display: block;
   font-size: 12px;

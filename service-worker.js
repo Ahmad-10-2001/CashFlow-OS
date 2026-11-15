@@ -14,8 +14,7 @@
    When you change the app, bump CACHE_VERSION so the precache and the
    delete-old-caches step pick up the new build in one go.
    ============================================================ */
-
-const CACHE_VERSION = 'v52';
+const CACHE_VERSION = 'v53';
 const CACHE_PREFIX = 'cashflow-os-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
 const SHELL_URL = './index.html';
