@@ -910,6 +910,18 @@ select {
   cursor: pointer;
 }
 .budget-adjust:hover { background: var(--field-bg); }
+/* The income-offset toggle and its Fix action share one row: the toggle
+   takes what it needs, the Fix link sits at the far right — even on a
+   narrow phone, where the button used to fall onto its own line. */
+.budget-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+}
+.budget-toggle-row .budget-toggle { margin: 0; min-width: 0; }
+.budget-toggle-row .budget-adjust { margin: 0; flex: none; }
 .budget-repeat-row { margin-top: 10px; }
 
 /* Undo for a counted-spending move: small and inline, next to the line that
@@ -941,8 +953,13 @@ select {
   font-size: 15px;
 }
 .report-row:last-child { border-bottom: none; }
-.report-row .label { font-weight: 500; overflow-wrap: anywhere; }
-.report-row .value { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Both sides wrap at WORD boundaries. The old pair — anywhere on the label,
+   nowrap on the value — let the flex row squeeze the label to its
+   min-content, which anywhere shrinks to a single character: on a phone the
+   'Biggest category' label collapsed into one letter per line while the
+   long value refused to wrap at all. */
+.report-row .label { font-weight: 500; }
+.report-row .value { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; min-width: 0; overflow-wrap: break-word; }
 .report-period { font-size: 13px; color: var(--muted); margin-bottom: 10px; }
 .report-total {
   display: flex;

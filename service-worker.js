@@ -14,7 +14,7 @@
    When you change the app, bump CACHE_VERSION so the precache and the
    delete-old-caches step pick up the new build in one go.
    ============================================================ */
-const CACHE_VERSION = 'v53';
+const CACHE_VERSION = 'v54';
 const CACHE_PREFIX = 'cashflow-os-';
 const CACHE_NAME = CACHE_PREFIX + CACHE_VERSION;
 const SHELL_URL = './index.html';
@@ -89,7 +89,12 @@ self.addEventListener('fetch', (event) => {
       try {
         const preloaded = await event.preloadResponse;
         if (preloaded) return preloaded;
-        return await fetch(request);
+        // cache: 'reload' skips the browser's HTTP cache. GitHub Pages serves
+        // assets with a 10-minute TTL, so a plain fetch could keep handing
+        // back the OLD shell inside that window while the no-store version
+        // check already saw the new one. With the reload flag, a reload
+        // really means reload; offline still falls through to the shell.
+        return await fetch(request, { cache: 'reload' });
       } catch (err) {
         const cache = await caches.open(CACHE_NAME);
         const shell = await cache.match(SHELL_URL);
@@ -117,7 +122,10 @@ self.addEventListener('fetch', (event) => {
     event.respondWith((async () => {
       const cache = await caches.open(CACHE_NAME);
       try {
-        const response = await fetch(request);
+        // cache: 'reload' bypasses the browser HTTP cache (GitHub Pages
+        // marks assets fresh for 10 minutes), so a reload can never keep
+        // running the old script while the version check sees the new one.
+        const response = await fetch(request, { cache: 'reload' });
         if (response && response.ok && response.type === 'basic') {
           cache.put(request, response.clone());
         }

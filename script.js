@@ -5473,13 +5473,18 @@
                ? h('div', { class: 'budget-breakdown' },
                    'Spent ' + formatMoney(gross) + ' − income ' + formatMoney(inc) + ' = ' + formatMoney(used) + ' counted')
                : null,
-             h('label', { class: 'check budget-toggle' },
-               h('input', { type: 'checkbox', checked: offset, dataset: { act: 'budget-offset', arg: cat } }),
-               h('span', {}, 'Income in this category reduces the budget')
+             // One row: the toggle on the left, the Fix action at the far
+             // right — on a phone the button used to drop onto its own
+             // line with a whole empty line of space beside it.
+             h('div', { class: 'budget-toggle-row' },
+               h('label', { class: 'check budget-toggle' },
+                 h('input', { type: 'checkbox', checked: offset, dataset: { act: 'budget-offset', arg: cat } }),
+                 h('span', {}, 'Income in this category reduces the budget')
+               ),
+               over
+                 ? h('button', { type: 'button', class: 'budget-adjust', dataset: { act: 'budget-fix', arg: cat }, 'aria-label': 'Fix over-budget ' + cat + ' from another budget' }, 'Fix…')
+                 : null
              ),
-             over
-               ? h('button', { type: 'button', class: 'budget-adjust', dataset: { act: 'budget-fix', arg: cat }, 'aria-label': 'Fix over-budget ' + cat + ' from another budget' }, 'Fix…')
-               : null,
              h('button', { type: 'button', class: 'budget-remove', dataset: { act: 'budget-delete', arg: cat }, 'aria-label': 'Remove budget for ' + cat }, 'Remove budget')
            );
          }));
