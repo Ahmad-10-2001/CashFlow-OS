@@ -172,6 +172,22 @@ window.CashFlowSync = (function () {
     }
   }
 
+  /* The account this browser last switched AWAY from, when known. Rows
+     whose registry entry is missing (pushed before the registry was kept)
+     are presumed to live in that account's cloud. Persisted, because the
+     first push after an app update often happens after a reload. */
+  const PREV_KEY = 'cashflow:prevOwner';
+  let prevOwnerHint = null;
+  try { prevOwnerHint = localStorage.getItem(PREV_KEY) || null; } catch (err) { prevOwnerHint = null; }
+  function savePrevOwner() {
+    try { localStorage.setItem(PREV_KEY, prevOwnerHint || ''); } catch (err) { /* plumbing */ }
+  }
+  /* The exact refusal the RLS "own rows" policy produces when an upsert
+     turns into an UPDATE of another account's row. */
+  function isRlsUsingError(err) {
+    return !!err && err.status === 403 && /row-level security/.test(err.message || '');
+  }
+
   /* ---------- monotonic clock ----------
      A record is "dirty" when updatedAt is newer than the last thing
      we managed to push. If the device clock jumped backwards, an edit
@@ -477,6 +493,10 @@ window.CashFlowSync = (function () {
         }
       }
       savePendingTombs();
+      // Rows pushed under the old account before the owner registry
+      // existed are still assumed to live in its cloud.
+      prevOwnerHint = prevUserId;
+      savePrevOwner();
       book = emptyBook();
       saveBook();
     }
@@ -1180,17 +1200,60 @@ window.CashFlowSync = (function () {
     // and the filter above dropped it forever, silently un-deleting on
     // every other device.
     let newest = book.lastPushed[table];
-
     // First: push regular dirty rows (deduplicated)
     if (dirty.length) {
-      const rows = dedupeById(dirty.map((r) => Object.assign({ user_id: userId, updated_at: r.updatedAt }, MAP[table].toRow(r))));
+      let rows = dedupeById(dirty.map((r) => Object.assign({ user_id: userId, updated_at: r.updatedAt }, MAP[table].toRow(r))));
 
       await ensureFreshToken();
-      await http(restPath(table), {
-        method: 'POST',
-        headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
-        body: JSON.stringify(rows)
-      });
+      try {
+        await http(restPath(table), {
+          method: 'POST',
+          headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+          body: JSON.stringify(rows)
+        });
+      } catch (err) {
+        // The RLS refusal means the batch contains ids that exist in the
+        // cloud under ANOTHER account — usually rows uploaded before the
+        // owner registry was kept. Ask the cloud which of the batch ids it
+        // holds under THIS account (RLS makes that read self-filtering),
+        // re-identify the rest, and send the batch once more.
+        if (!isRlsUsingError(err)) throw err;
+        let mine = new Set();
+        try {
+          const ids = rows.map((r) => r.id);
+          for (let i = 0; i < ids.length; i += 100) {
+            const chunk = ids.slice(i, i + 100);
+            const mineRows = await http(restPath(table) + '?select=id&id=in.('
+              + chunk.map((x) => encodeURIComponent(x)).join(',') + ')', { headers: headers() });
+            if (Array.isArray(mineRows)) for (const x of mineRows) if (x && x.id) mine.add(x.id);
+          }
+        } catch (err2) { /* unreadable — re-identify the whole batch */ }
+        for (const r of dirty) {
+          if (mine.has(r.id)) continue;
+          const e = (owned[table] || {})[r.id];
+          if (e && e.u === userId) continue;
+          if (e && e.origOwner === userId && e.origId) {
+            (owned[table] = owned[table] || {})[e.origId] = { u: userId };
+            delete owned[table][r.id];
+            r.id = e.origId;
+          } else {
+            const freshId = newId();
+            remapRowRefs(state, table, r.id, freshId);
+            (owned[table] = owned[table] || {})[freshId] = { u: userId, origId: r.id, origOwner: (e && e.u) || prevOwnerHint };
+            delete owned[table][r.id];
+            r.id = freshId;
+          }
+          ownedTouched = true;
+        }
+        if (ownedTouched) saveOwned();
+        rows = dedupeById(dirty.map((r) => Object.assign({ user_id: userId, updated_at: r.updatedAt }, MAP[table].toRow(r))));
+        await ensureFreshToken();
+        await http(restPath(table), {
+          method: 'POST',
+          headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+          body: JSON.stringify(rows)
+        });
+      }
       for (const r of rows) {
         if (!newest || Date.parse(r.updated_at) > Date.parse(newest)) newest = r.updated_at;
       }
@@ -1256,13 +1319,33 @@ window.CashFlowSync = (function () {
         
         return baseRow;
       }));
-
       await ensureFreshToken();
-      await http(restPath(table), {
-        method: 'POST',
-        headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
-        body: JSON.stringify(tombRows)
-      });
+      try {
+        await http(restPath(table), {
+          method: 'POST',
+          headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
+          body: JSON.stringify(tombRows)
+        });
+      } catch (err) {
+        // These deletions belong to rows owned by another account; a
+        // tombstone can only be uploaded by the row's owner, so park them
+        // for that account and stop retrying them under this one.
+        if (!isRlsUsingError(err)) throw err;
+        for (const t of tombs) {
+          const e = (owned[table] || {})[t.id];
+          const owner = (e && e.u) || prevOwnerHint;
+          if (!owner) continue;
+          pendingTombs[owner] = pendingTombs[owner] || {};
+          pendingTombs[owner][table] = pendingTombs[owner][table] || [];
+          if (!pendingTombs[owner][table].some((x) => x.id === t.id)) pendingTombs[owner][table].push(t);
+        }
+        savePendingTombs();
+        const parkedIds = new Set(tombs.map((t) => t.id));
+        if (book !== myBook) return;
+        book.tombstones[table] = (book.tombstones[table] || []).filter((t) => !parkedIds.has(t.id));
+        saveBook();
+        return;
+      }
       for (const t of tombs) {
         if (!newest || Date.parse(t.updatedAt) > Date.parse(newest)) newest = t.updatedAt;
       }
