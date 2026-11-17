@@ -110,9 +110,66 @@ window.CashFlowSync = (function () {
     const raw = localStorage.getItem(SYNC_KEY);
     if (raw) book = Object.assign(emptyBook(), JSON.parse(raw));
   } catch (err) { book = emptyBook(); }
-
   function saveBook() {
     try { localStorage.setItem(SYNC_KEY, JSON.stringify(book)); } catch (err) { /* quota: plumbing only */ }
+  }
+
+  /* ---------- which account's cloud holds each row id ----------
+     One set of tables serves every account — RLS partitions the rows by
+     user_id — so a given row id can exist in the cloud under exactly one
+     owner. After switching accounts, a row whose id is already in the
+     cloud under the PREVIOUS account cannot be re-uploaded under the new
+     one: with merge-duplicates the POST turns into an UPDATE of that
+     other account's row, and RLS rightly refuses it ("new row violates
+     row-level security policy (USING expression)"). Such rows get a
+     fresh identity instead: the new account receives its own copy and
+     the old account's rows are never touched. When the browser later
+     signs back into the account that owned the original id, that
+     original id is restored, so the upload updates the row in place
+     rather than piling up duplicate copies.
+     Kept beside it: deletions still owed to a departed account's cloud
+     (a tombstone that never reached the cloud before the account was
+     signed out), parked here until that account signs in again. */
+  const OWNED_KEY = 'cashflow:cloudOwner';
+  const TOMBS_KEY = 'cashflow:pendingTombs';
+  let owned = {};
+  let pendingTombs = {};
+  try {
+    const raw = localStorage.getItem(OWNED_KEY);
+    if (raw) owned = JSON.parse(raw) || {};
+  } catch (err) { owned = {}; }
+  try {
+    const raw = localStorage.getItem(TOMBS_KEY);
+    if (raw) pendingTombs = JSON.parse(raw) || {};
+  } catch (err) { pendingTombs = {}; }
+  function saveOwned() {
+    try { localStorage.setItem(OWNED_KEY, JSON.stringify(owned)); } catch (err) { /* plumbing */ }
+  }
+  function savePendingTombs() {
+    try { localStorage.setItem(TOMBS_KEY, JSON.stringify(pendingTombs)); } catch (err) { /* plumbing */ }
+  }
+  /* A fresh identity for a row that must not collide with another
+     account's cloud row. Same fallback shape as the app's own newId(). */
+  function newId() {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+  }
+  /* Point the records that reference a re-identified row at its new id,
+     and stamp them so their corrected copy is pushed on the next cycle. */
+  function remapRowRefs(state, table, oldId, freshId) {
+    if (table === 'accounts') {
+      for (const r of state.transactions || []) {
+        if (r.accountId === oldId) { r.accountId = freshId; r.updatedAt = touch(); }
+        if (r.toAccountId === oldId) { r.toAccountId = freshId; r.updatedAt = touch(); }
+      }
+      for (const r of state.debts || []) {
+        if (r.accountId === oldId) { r.accountId = freshId; r.updatedAt = touch(); }
+      }
+    } else if (table === 'transactions') {
+      for (const r of state.shopping || []) {
+        if (r.boughtTxId === oldId) { r.boughtTxId = freshId; r.updatedAt = touch(); }
+      }
+    }
   }
 
   /* ---------- monotonic clock ----------
@@ -406,11 +463,38 @@ window.CashFlowSync = (function () {
     const prevUserId = book.userId || (session ? session.userId : null);
     const nextUserId = out.user && out.user.id;
     if (nextUserId && prevUserId && prevUserId !== nextUserId) {
+      // Tombstones still in the book were never confirmed delivered. A
+      // deletion can only be uploaded by the account that owns the row,
+      // so they are parked for the account they belong to and handed
+      // back when it signs in here again.
+      for (const t of ALL_TABLES) {
+        for (const tb of (book.tombstones[t] || [])) {
+          const e = (owned[t] || {})[tb.id];
+          const owner = (e && e.u) || prevUserId;
+          pendingTombs[owner] = pendingTombs[owner] || {};
+          pendingTombs[owner][t] = pendingTombs[owner][t] || [];
+          if (!pendingTombs[owner][t].some((x) => x.id === tb.id)) pendingTombs[owner][t].push(tb);
+        }
+      }
+      savePendingTombs();
       book = emptyBook();
       saveBook();
     }
     if (nextUserId) {
       book.userId = nextUserId;
+      // Hand back any deletions this account's cloud is still owed from
+      // an earlier visit on this browser.
+      if (pendingTombs[nextUserId]) {
+        for (const t of ALL_TABLES) {
+          const queue = pendingTombs[nextUserId][t] || [];
+          if (queue.length) {
+            book.tombstones[t] = (book.tombstones[t] || []).concat(queue);
+            delete pendingTombs[nextUserId][t];
+          }
+        }
+        if (!Object.keys(pendingTombs[nextUserId]).length) delete pendingTombs[nextUserId];
+        savePendingTombs();
+      }
       saveBook();
     }
     session = {
@@ -1025,7 +1109,7 @@ window.CashFlowSync = (function () {
   async function pushOneTable(state, table) {
     const myBook = book;
     const dirty = dirtyRecords(state, table);
-    const tombs = (book.tombstones[table] || []).filter((t) => {
+    let tombs = (book.tombstones[table] || []).filter((t) => {
       if (!book.lastPushed[table]) return true;
       return Date.parse(t.updatedAt) > Date.parse(book.lastPushed[table]);
     });
@@ -1039,6 +1123,50 @@ window.CashFlowSync = (function () {
     if (!session || book !== myBook) return;
     const userId = session.userId;
     if (!userId) throw new Error('Session has no user id — sign in again');
+
+    // A row whose id is already in the cloud under ANOTHER account cannot
+    // be re-uploaded under this one: with merge-duplicates the POST turns
+    // into an UPDATE of that account's row, and RLS refuses it ("new row
+    // violates row-level security policy (USING expression)"). Give such
+    // rows a fresh identity — or, when this account owned the original id
+    // (the browser signed into it before), restore that id so the upload
+    // updates the row in place instead of leaving a duplicate behind.
+    let ownedTouched = false;
+    for (const r of dirty) {
+      const e = (owned[table] || {})[r.id];
+      if (!e || e.u === userId) continue;
+      if (e.origOwner === userId && e.origId) {
+        (owned[table] = owned[table] || {})[e.origId] = { u: userId };
+        delete owned[table][r.id];
+        r.id = e.origId;
+      } else {
+        const freshId = newId();
+        remapRowRefs(state, table, r.id, freshId);
+        owned[table][freshId] = { u: userId, origId: r.id, origOwner: e.u };
+        delete owned[table][r.id];
+        r.id = freshId;
+      }
+      ownedTouched = true;
+    }
+
+    // A deletion can only ever be uploaded by the account that owns the
+    // row. A tombstone owned by a departed account is parked for that
+    // account — its cloud still holds the live row, and the deletion is
+    // delivered if the account signs back in here. One whose row has come
+    // back locally (edited after the delete, or merged back) is simply
+    // outdated: the live row outranks it.
+    tombs = tombs.filter((t) => {
+      const live = (state[table] || []).find((r) => r && r.id === t.id);
+      if (live && live.updatedAt && Date.parse(live.updatedAt) >= Date.parse(t.updatedAt)) return false;
+      const e = (owned[table] || {})[t.id];
+      if (!e || e.u === userId) return true;
+      pendingTombs[e.u] = pendingTombs[e.u] || {};
+      pendingTombs[e.u][table] = pendingTombs[e.u][table] || [];
+      if (!pendingTombs[e.u][table].some((x) => x.id === t.id)) pendingTombs[e.u][table].push(t);
+      savePendingTombs();
+      return false;
+    });
+    if (ownedTouched) saveOwned();
 
     // Send regular rows and tombstones SEPARATELY — Supabase REST API
     // rejects mixed-shape rows with "All object keys must match".
@@ -1063,9 +1191,11 @@ window.CashFlowSync = (function () {
         headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
         body: JSON.stringify(rows)
       });
-
       for (const r of rows) {
         if (!newest || Date.parse(r.updated_at) > Date.parse(newest)) newest = r.updated_at;
+      }
+      for (const r of rows) {
+        if (!(owned[table] || {})[r.id]) { (owned[table] = owned[table] || {})[r.id] = { u: userId }; saveOwned(); }
       }
     }
 
@@ -1133,9 +1263,11 @@ window.CashFlowSync = (function () {
         headers: headers({ Prefer: 'resolution=merge-duplicates,return=minimal' }),
         body: JSON.stringify(tombRows)
       });
-
       for (const t of tombs) {
         if (!newest || Date.parse(t.updatedAt) > Date.parse(newest)) newest = t.updatedAt;
+      }
+      for (const t of tombs) {
+        if (!(owned[table] || {})[t.id]) { (owned[table] = owned[table] || {})[t.id] = { u: userId }; saveOwned(); }
       }
       // Both requests landed — but only touch the book this call started with.
       // A sign-out swaps in a fresh one, and trimming/poking that would mix the
@@ -1286,6 +1418,7 @@ window.CashFlowSync = (function () {
     const list = state[table] || (state[table] = []);
     const myBook = book;
     let applied = 0;
+    let ownedTouched = false;
     let rawCursor = book.lastPulled[table];
     let cursorTs = null;
     let cursorId = null;
@@ -1343,6 +1476,14 @@ window.CashFlowSync = (function () {
         if (idx === -1) list.push(rec);
         else list[idx] = Object.assign({}, list[idx], rec);
         applied++;
+        // The row now lives in this account's cloud; remember the id's
+        // owner so a later account switch re-identifies it instead of
+        // colliding with it. An entry from a previous visit keeps its
+        // original-id memory, only the owner is corrected.
+        const pullUid = session && session.userId;
+        const oe = (owned[table] || {})[row.id];
+        if (!oe) { (owned[table] = owned[table] || {})[row.id] = { u: pullUid }; ownedTouched = true; }
+        else if (oe.u !== pullUid) { oe.u = pullUid; ownedTouched = true; }
       }
 
       if (!consumed) break;
@@ -1355,6 +1496,7 @@ window.CashFlowSync = (function () {
       book.lastPulled[table] = (cursorTs || '') + '|' + (cursorId || '');
       absorbShadow(table, list);
       saveBook();
+      if (ownedTouched) { saveOwned(); ownedTouched = false; }
 
       // A short page means we have caught up.
       if (rows.length < PAGE) break;
