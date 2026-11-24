@@ -3796,8 +3796,8 @@
           h('span', { class: 'bm-tally', title: 'Paid / tracked weeks' }, badmintonTally(bm, p.id)),
           iconButton('↑', 'badminton-up', { id: p.id, title: 'Move ' + p.name + ' up', class: 'btn-icon bm-move' }),
           iconButton('↓', 'badminton-down', { id: p.id, title: 'Move ' + p.name + ' down', class: 'btn-icon bm-move' }),
-          h('label', { class: 'bm-check', title: 'Paid this week' },
-            h('input', { type: 'checkbox', checked: paid, dataset: { act: 'badminton-toggle', arg: p.id }, 'aria-label': 'Paid: ' + p.name })),
+          h('button', { type: 'button', class: 'bm-toggle' + (paid ? ' is-paid' : ''), dataset: { act: 'badminton-toggle', id: p.id }, title: 'Paid this week', 'aria-pressed': paid ? 'true' : 'false', 'aria-label': 'Paid: ' + p.name }, paid ? '\u2713' : '\u25CB'),
+
           iconButton('×', 'badminton-remove', { id: p.id, title: 'Remove ' + p.name, class: 'btn-icon bm-drop' })
         );
       });
@@ -6563,6 +6563,13 @@
      'badminton-week-prev': () => shiftBadmintonWeek(-1),
      'badminton-week-next': () => shiftBadmintonWeek(1),
      'badminton-week-today': () => { badmintonWeek = null; renderBadminton(); },
+     'badminton-toggle': (el) => {
+       const bm = badmintonData();
+       const wk = badmintonWeekKey();
+       const week = bm.weeks[wk];
+       const paid = !!(week && week.paid && week.paid[el.dataset.id]);
+       toggleBadmintonPaid(el.dataset.id, !paid);
+     },
      'qaza-daily-toggle': (el) => toggleDailyPrayer(el.dataset.arg),
      'qaza-pay-one': (el) => payQazaOne(el.dataset.arg),
      'qaza-pay-many': (el) => payQazaManyAsk(el.dataset.arg),
@@ -6699,9 +6706,6 @@
        if (el.dataset.act === 'budget-offset') {
          setOffset(el.dataset.arg, el.checked);
          save();
-       }
-       if (el.dataset.act === 'badminton-toggle') {
-         toggleBadmintonPaid(el.dataset.arg, el.checked);
        }
      });
    
