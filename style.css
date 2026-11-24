@@ -831,6 +831,69 @@ select {
 }
 .note-elapsed.is-running { color: var(--pos); }
 
+/* ===== BADMINTON PAYMENTS (inside the Notes tab) ===== */
+.bm-head { display: flex; align-items: center; gap: 8px; margin: 6px 0 4px; }
+.bm-week-nav {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--card-bg);
+  color: inherit;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+.bm-week-label { flex: 1; text-align: center; font-weight: 700; font-size: 14.5px; }
+.bm-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  font-size: 13px;
+  color: var(--muted);
+  margin: 2px 0 8px;
+}
+.bm-count { font-weight: 800; color: var(--ink); }
+.bm-due-note.is-clear { color: var(--pos); }
+.bm-rows { display: flex; flex-direction: column; gap: 6px; }
+.bm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  padding: 7px 9px;
+  font-size: 14.5px;
+}
+.bm-row.is-due { border-color: var(--accent); }
+.bm-status {
+  flex: none;
+  min-width: 46px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: var(--field-bg);
+  color: var(--muted);
+}
+.bm-row.is-due .bm-status { background: var(--accent-solid); color: var(--on-accent); }
+.bm-row.is-paid .bm-status { background: var(--pos-tint); color: var(--pos-tint-ink); }
+.bm-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.bm-tally {
+  flex: none;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.bm-move { flex: none; }
+.bm-check { flex: none; display: flex; align-items: center; cursor: pointer; }
+.bm-check input { width: 20px; height: 20px; accent-color: var(--accent-solid); cursor: pointer; }
+.bm-drop { flex: none; }
+
 /* ===== BUDGETS ===== */
 .budget-item { margin-bottom: 16px; }
 .budget-header {

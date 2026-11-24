@@ -617,7 +617,7 @@
        // challenges) ride the same synced prefs document the notes and timers
        // already use — no new server table, no migration. budgetRollover +
        // budgetRolloverPeriod make the rollover fire once per new month.
-       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], goals: [], templates: [], challenges: [], qaza: blankQaza() },       closedPeriods: []
+       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], goals: [], templates: [], challenges: [], qaza: blankQaza(), badminton: { players: [], weeks: {} } },       closedPeriods: []
      };
    }
    
@@ -1057,7 +1057,46 @@
          : Date.now();
        timers.push({ id, label, startedAt });
      }
-   
+
+     // ── badminton payments (Notes tab) ─────────────────────────
+     // A roster kept in turn order plus one paid mark per player per
+     // week. Lives in settings like notes: rides the already-synced
+     // prefs document — no new server table, no migration. A week key
+     // is that week's Monday (YYYY-MM-DD); a paid mark is the stamp of
+     // when it was ticked. Marks belonging to players who were later
+     // removed stay: taking someone off the roster must not erase what
+     // was already recorded.
+     const badminton = { players: [], weeks: Object.create(null) };
+     const rawBm = isObject(rawSettings.badminton) ? rawSettings.badminton : null;
+     if (rawBm) {
+       const bmIds = new Set();
+       const bmNames = new Set();
+       const rawBmPlayers = Array.isArray(rawBm.players) ? rawBm.players : [];
+       for (const p of rawBmPlayers) {
+         if (!isObject(p)) { note('skipped a malformed badminton player'); continue; }
+         const name = cleanText(p.name, NAME_LIMIT);
+         if (!name) { note('dropped a badminton player with no name'); continue; }
+         if (bmNames.has(name.toLowerCase())) { note('merged the duplicate badminton player "' + name + '"'); continue; }
+         let id = typeof p.id === 'string' && p.id.trim() ? p.id.trim() : newId();
+         if (bmIds.has(id)) id = newId();
+         bmIds.add(id);
+         bmNames.add(name.toLowerCase());
+         badminton.players.push({ id, name, addedAt: toLocalStamp(parseDate(p.addedAt) || new Date()) });
+       }
+       const rawBmWeeks = isObject(rawBm.weeks) ? rawBm.weeks : {};
+       for (const wk of Object.keys(rawBmWeeks)) {
+         if (!/^\d{4}-\d{2}-\d{2}$/.test(wk)) { note('ignored a badminton week with an unreadable date'); continue; }
+         const rawPaid = isObject(rawBmWeeks[wk]) && isObject(rawBmWeeks[wk].paid) ? rawBmWeeks[wk].paid : {};
+         const paid = Object.create(null);
+         for (const pid of Object.keys(rawPaid)) {
+           const stamp = typeof rawPaid[pid] === 'string' && !Number.isNaN(Date.parse(rawPaid[pid]))
+             ? toLocalStamp(new Date(rawPaid[pid])) : null;
+           if (stamp) paid[pid] = stamp;
+         }
+         badminton.weeks[wk] = { paid };
+       }
+     }
+
      // Category memory for Pending approvals: bank + first telling word -> the
      // category last picked for it ("nayapay|coffee" -> Groceries). Bounded and
      // validated like everything else: keys are short lowercase strings, values
@@ -1272,7 +1311,7 @@
        state: {
          version: SCHEMA_VERSION,
          transactions, debts, budgets, categories, shopping, custody,
-         accounts,         settings: { budgetOffset, lastAccountId, shoppingPeriod, budgetRollover, budgetRolloverPeriod, notes, timers, catMemory, budgetMoves, goals, templates, challenges, qaza },         closedPeriods
+         accounts,         settings: { budgetOffset, lastAccountId, shoppingPeriod, budgetRollover, budgetRolloverPeriod, notes, timers, catMemory, budgetMoves, goals, templates, challenges, qaza, badminton },         closedPeriods
        },
        problems
      };
@@ -3605,6 +3644,167 @@
      )));
    }
 
+    /* ---------- badminton payments (Notes tab) ----------
+       A roster in turn order plus one paid mark per player per week,
+       folded into the Notes tab under one field that notes names in the
+       order they should be collected. The queue rule the user asked for:
+       the FIRST unpaid player in roster order is the one whose turn it
+       is — players behind him may pay out of turn and that never moves
+       him, and when he turns up he is collected from before anyone
+       behind him. A week key is that week's Monday (YYYY-MM-DD); which
+       week is on screen is view state only, never persisted — the fold
+       opens on this week. */
+
+    let badmintonWeek = null;
+
+    function badmintonData() {
+      if (!state.settings) state.settings = {};
+      if (!state.settings.badminton || !Array.isArray(state.settings.badminton.players)) {
+        state.settings.badminton = { players: [], weeks: Object.create(null) };
+      }
+      if (!state.settings.badminton.weeks) state.settings.badminton.weeks = Object.create(null);
+      return state.settings.badminton;
+    }
+
+    /** Monday of the week containing d, as 'YYYY-MM-DD' — local time. */
+    function weekStartKey(d) {
+      const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+      return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate());
+    }
+
+    /** The week being viewed: this week until an arrow moves it. */
+    function badmintonWeekKey() {
+      if (!badmintonWeek) badmintonWeek = weekStartKey(new Date());
+      return badmintonWeek;
+    }
+
+    /** Week key -> Date. Parsed by hand: new Date('YYYY-MM-DD') reads as UTC
+        midnight, which is the PREVIOUS day west of Greenwich. */
+    function badmintonWeekDate(k) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(k));
+      return m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date();
+    }
+
+    /** The turn: the first player in roster order with no paid mark this
+        week. null when the roster is empty or everyone has paid. */
+    function badmintonDueId(bm, wk) {
+      const week = bm.weeks[wk];
+      for (const p of bm.players) {
+        if (!(week && week.paid && week.paid[p.id])) return p.id;
+      }
+      return null;
+    }
+
+    /** 'n/m' — paid weeks over every week tracked so far. */
+    function badmintonTally(bm, pid) {
+      const weeks = Object.keys(bm.weeks);
+      let n = 0;
+      for (const k of weeks) if (bm.weeks[k].paid && bm.weeks[k].paid[pid]) n++;
+      return n + '/' + weeks.length;
+    }
+
+    function addBadmintonPlayer() {
+      const bm = badmintonData();
+      const name = cleanText($('badmintonName').value, NAME_LIMIT);
+      if (!name) { toast('Type the player’s name'); return; }
+      if (bm.players.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
+        toast(name + ' is already on the list');
+        return;
+      }
+      bm.players.push({ id: newId(), name, addedAt: nowStamp() });
+      $('badmintonName').value = '';
+      // No focus() here on purpose — see addTransaction.
+      if (save()) toast(name + ' added — the order is the turn order');
+    }
+
+    function removeBadmintonPlayer(id) {
+      const bm = badmintonData();
+      const p = bm.players.find((x) => x.id === id);
+      if (!p) { toast('That player is already off the list'); return; }
+      if (!confirm('Remove ' + p.name + ' from the badminton list?\n\nHis past payment marks stay in the records.')) return;
+      bm.players = bm.players.filter((x) => x.id !== id);
+      if (save()) toast(p.name + ' removed');
+    }
+
+    function moveBadmintonPlayer(id, dir) {
+      const bm = badmintonData();
+      const i = bm.players.findIndex((x) => x.id === id);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= bm.players.length) return;
+      const t = bm.players[i];
+      bm.players[i] = bm.players[j];
+      bm.players[j] = t;
+      save(); // pure reorder — the list itself shows the result, no toast
+    }
+
+    function toggleBadmintonPaid(id, on) {
+      const bm = badmintonData();
+      const wk = badmintonWeekKey();
+      const p = bm.players.find((x) => x.id === id);
+      if (!p) return;
+      if (!bm.weeks[wk]) bm.weeks[wk] = { paid: Object.create(null) };
+      if (on) bm.weeks[wk].paid[id] = nowStamp();
+      else delete bm.weeks[wk].paid[id];
+      save();
+    }
+
+    function shiftBadmintonWeek(dir) {
+      const d = badmintonWeekDate(badmintonWeekKey());
+      d.setDate(d.getDate() + dir * 7);
+      badmintonWeek = weekStartKey(d);
+      renderBadminton();
+    }
+
+    function renderBadminton() {
+      const box = $('badmintonBox');
+      if (!box) return;
+      const bm = badmintonData();
+      const wk = badmintonWeekKey();
+      const isThisWeek = wk === weekStartKey(new Date());
+      const start = badmintonWeekDate(wk);
+      const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
+      const label = MONTH_ABBR[start.getMonth()] + ' ' + start.getDate() + ' – '
+        + (end.getMonth() !== start.getMonth() ? MONTH_ABBR[end.getMonth()] + ' ' : '') + end.getDate();
+
+      const dueId = badmintonDueId(bm, wk);
+      const dueP = dueId ? bm.players.find((p) => p.id === dueId) : null;
+      const week = bm.weeks[wk];
+      const paidCount = bm.players.filter((p) => week && week.paid && week.paid[p.id]).length;
+
+      const head = h('div', { class: 'bm-head' },
+        h('button', { type: 'button', class: 'bm-week-nav', dataset: { act: 'badminton-week-prev' }, 'aria-label': 'Previous week' }, '‹'),
+        h('span', { class: 'bm-week-label' }, (isThisWeek ? 'This week · ' : '') + label),
+        h('button', { type: 'button', class: 'bm-week-nav', dataset: { act: 'badminton-week-next' }, 'aria-label': 'Next week' }, '›'),
+        isThisWeek ? null : button('This week', 'badminton-week-today')
+      );
+
+      const summary = !bm.players.length
+        ? h('div', { class: 'bm-summary' }, 'No players yet — add names in turn order (jo pehle aaye, uska naam pehle).')
+        : h('div', { class: 'bm-summary' },
+            h('span', { class: 'bm-count' }, paidCount + ' of ' + bm.players.length + ' paid'),
+            dueP
+              ? h('span', { class: 'bm-due-note' }, 'Turn: ' + dueP.name + ' — pehle in se hi liya jayega')
+              : h('span', { class: 'bm-due-note is-clear' }, 'Sab ne pay kar diya ✓'));
+
+      const rows = bm.players.map((p) => {
+        const paid = !!(week && week.paid && week.paid[p.id]);
+        const status = paid ? 'paid' : (p.id === dueId ? 'due' : 'pending');
+        return h('div', { class: 'bm-row is-' + status },
+          h('span', { class: 'bm-status' }, paid ? '✓' : (status === 'due' ? 'TURN' : '…')),
+          h('span', { class: 'bm-name' }, p.name),
+          h('span', { class: 'bm-tally', title: 'Weeks paid' }, badmintonTally(bm, p.id)),
+          iconButton('↑', 'badminton-up', { id: p.id, title: 'Move ' + p.name + ' up', class: 'btn-icon bm-move' }),
+          iconButton('↓', 'badminton-down', { id: p.id, title: 'Move ' + p.name + ' down', class: 'btn-icon bm-move' }),
+          h('label', { class: 'bm-check', title: 'Paid this week' },
+            h('input', { type: 'checkbox', checked: paid, dataset: { act: 'badminton-toggle', arg: p.id }, 'aria-label': 'Paid: ' + p.name })),
+          iconButton('×', 'badminton-remove', { id: p.id, title: 'Remove ' + p.name, class: 'btn-icon bm-drop' })
+        );
+      });
+
+      mount(box, head, summary, rows.length ? h('div', { class: 'bm-rows' }, rows) : null);
+    }
+
    /* ============================================================
       Qaza namaz tracker
       ------------------------------------------------------------
@@ -3631,7 +3831,8 @@
      if (!state.settings) state.settings = {};
      if (!state.settings.qaza) state.settings.qaza = blankQaza();
      const q = state.settings.qaza;
-     // Defensive: a sync pull or import could land with one of these empty.     if (!q.backlog) q.backlog = Object.create(null);
+     // Defensive: a sync pull or import could land with one of these empty.
+     if (!q.backlog) q.backlog = Object.create(null);
      if (!q.recent) q.recent = Object.create(null);
      if (!q.daily) q.daily = Object.create(null);
      if (!q.recentDays) q.recentDays = Object.create(null);
@@ -5057,13 +5258,34 @@
      const notes = unionById(curS.notes, incS.notes);
      const timers = unionById(curS.timers, incS.timers);
      // Feature lists merge like every other by-id collection: current rows win
-     // each id, the rest is appended. Both sides are already validated shapes.     const goalRows = unionById(curS.goals, incS.goals);
+     // each id, the rest is appended. Both sides are already validated shapes.
+     const goalRows = unionById(curS.goals, incS.goals);
      const tpl = unionById(curS.templates, incS.templates);
      const chal = unionById(curS.challenges, incS.challenges);
      const rolloverOn = curS.budgetRollover === true || incS.budgetRollover === true;
      // Moves merge like everything else: current rows win each id, the rest is
      // appended. sanitizeState already validated both sides' shapes.
      const moves = unionById(curS.budgetMoves, incS.budgetMoves);
+     // Badminton merges by the same rule: players union by id (current
+     // wins each id), weeks merge per player with the current device's
+     // mark winning — what is here is never overwritten.
+     const bmCur = isObject(curS.badminton) ? curS.badminton : { players: [], weeks: {} };
+     const bmInc = isObject(incS.badminton) ? incS.badminton : { players: [], weeks: {} };
+     const bmPlayers = unionById(bmCur.players, bmInc.players);
+     const bmWeeks = Object.create(null);
+     for (const wk of Object.keys(bmCur.weeks || {})) {
+       const w = bmCur.weeks[wk];
+       if (isObject(w) && isObject(w.paid)) bmWeeks[wk] = { paid: Object.assign(Object.create(null), w.paid) };
+     }
+     for (const wk of Object.keys(bmInc.weeks || {})) {
+       const w = bmInc.weeks[wk];
+       if (!isObject(w) || !isObject(w.paid)) continue;
+       if (!bmWeeks[wk]) bmWeeks[wk] = { paid: Object.create(null) };
+       for (const pid of Object.keys(w.paid)) {
+         if (!Object.prototype.hasOwnProperty.call(bmWeeks[wk].paid, pid)) bmWeeks[wk].paid[pid] = w.paid[pid];
+       }
+     }
+     const badminton = { players: bmPlayers.rows, weeks: bmWeeks };
      // Memories merge with the current device winning each key, then capped —
      // same rule as everything else: what is here is never overwritten.
      const mem = Object.assign(Object.create(null), incS.catMemory || {}, curS.catMemory || {});
@@ -5099,7 +5321,8 @@
            catMemory: mem,
            budgetMoves: moves.rows,           goals: goalRows.rows,
            templates: tpl.rows,
-           challenges: chal.rows
+           challenges: chal.rows,
+           badminton
          },
          closedPeriods: Array.from(cp).sort()
        },
@@ -6076,6 +6299,7 @@
      if (owner && owner.email && String(owner.email).toLowerCase() !== target) {
        const holdsData = !!(state.transactions.length || state.debts.length || state.custody.length
          || state.shopping.length || (state.settings.notes && state.settings.notes.length)
+          || (state.settings.badminton && state.settings.badminton.players.length)
          || state.accounts.length > 3);
        if (holdsData) {
          const go = confirm('This browser still holds records that belong to ' + owner.email
@@ -6284,6 +6508,7 @@
      renderChallenges();     renderTransactions();
      renderDebts();     renderTimers();
      renderNotes();
+     renderBadminton();
      renderQaza();
      renderCategories();
      renderShopping();
@@ -6331,6 +6556,13 @@
      },     'debt-multi-add': () => addPeopleRow('debtMultiRows'),
      'debt-multi-even': () => fillPeopleRowsEvenly('debtMultiRows', $('debtAmount'), false),
      'people-row-drop': (el) => { const row = el.closest('.people-row'); if (row) row.remove(); },
+     // Badminton payments (Notes tab): roster order + week navigation.
+     'badminton-remove': (el) => removeBadmintonPlayer(el.dataset.id),
+     'badminton-up': (el) => moveBadmintonPlayer(el.dataset.id, -1),
+     'badminton-down': (el) => moveBadmintonPlayer(el.dataset.id, 1),
+     'badminton-week-prev': () => shiftBadmintonWeek(-1),
+     'badminton-week-next': () => shiftBadmintonWeek(1),
+     'badminton-week-today': () => { badmintonWeek = null; renderBadminton(); },
      'qaza-daily-toggle': (el) => toggleDailyPrayer(el.dataset.arg),
      'qaza-pay-one': (el) => payQazaOne(el.dataset.arg),
      'qaza-pay-many': (el) => payQazaManyAsk(el.dataset.arg),
@@ -6468,6 +6700,9 @@
          setOffset(el.dataset.arg, el.checked);
          save();
        }
+       if (el.dataset.act === 'badminton-toggle') {
+         toggleBadmintonPaid(el.dataset.arg, el.checked);
+       }
      });
    
      // The sign-in and reset forms are built by renderSyncPanel(), which runs on
@@ -6500,6 +6735,7 @@
        ['buyForm', saveListPurchase],
        ['accountForm', (e) => addAccount($('accountName'), $('accountKind'))],
        ['notesForm', addNote],
+       ['badmintonForm', addBadmintonPlayer],
        ['timersForm', addTimer],
        ['editForm', saveEdit],
        ['editDebtForm', saveDebtEdit],

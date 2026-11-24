@@ -470,6 +470,22 @@
       </div>
       <div id="notesList"></div>
     </section>
+
+    <!-- Badminton payments: roster + weekly tick-off, folded like the timer form -->
+    <section class="card" aria-label="Badminton payments">
+      <details class="form-collapse">
+        <summary>🏸 Badminton payments</summary>
+        <p class="field-hint">Names in turn order — jo pehle aaye uska naam pehle. Har hafte har player par tick karein jis ne pay kiya; jo pehla unpaid hai uska turn hai.</p>
+        <form id="badmintonForm" novalidate>
+          <div class="form-group">
+            <label class="sr-only" for="badmintonName">Player name</label>
+            <input id="badmintonName" type="text" placeholder="Player name (order = turn)" maxlength="40" autocomplete="off">
+          </div>
+          <button class="btn btn-dark" type="submit">Add player</button>
+        </form>
+        <div id="badmintonBox"></div>
+      </details>
+    </section>
   </div>
 
   <!-- ══════════════ QAZA PRAYERS ══════════════ -->
