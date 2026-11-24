@@ -3698,7 +3698,7 @@
 
     /** 'n/m' — paid weeks over every week tracked so far. */
     function badmintonTally(bm, pid) {
-      const weeks = Object.keys(bm.weeks);
+      const weeks = Object.keys(bm.weeks); if (!weeks.length) return '\u2014';
       let n = 0;
       for (const k of weeks) if (bm.weeks[k].paid && bm.weeks[k].paid[pid]) n++;
       return n + '/' + weeks.length;
@@ -3780,12 +3780,12 @@
       );
 
       const summary = !bm.players.length
-        ? h('div', { class: 'bm-summary' }, 'No players yet — add names in turn order (jo pehle aaye, uska naam pehle).')
+        ? h('div', { class: 'bm-summary' }, 'No players yet — add names in turn order.')
         : h('div', { class: 'bm-summary' },
-            h('span', { class: 'bm-count' }, paidCount + ' of ' + bm.players.length + ' paid'),
+            h('span', { class: 'bm-count' }, paidCount === 0 ? 'No one paid yet' : (paidCount === bm.players.length ? 'All paid this week' : paidCount + ' of ' + bm.players.length + ' paid this week')),
             dueP
-              ? h('span', { class: 'bm-due-note' }, 'Turn: ' + dueP.name + ' — pehle in se hi liya jayega')
-              : h('span', { class: 'bm-due-note is-clear' }, 'Sab ne pay kar diya ✓'));
+              ? h('span', { class: 'bm-due-note' }, 'Turn: ' + dueP.name + ' — collect from them first')
+              : h('span', { class: 'bm-due-note is-clear' }, 'All paid ✓'));
 
       const rows = bm.players.map((p) => {
         const paid = !!(week && week.paid && week.paid[p.id]);
@@ -3793,7 +3793,7 @@
         return h('div', { class: 'bm-row is-' + status },
           h('span', { class: 'bm-status' }, paid ? '✓' : (status === 'due' ? 'TURN' : '…')),
           h('span', { class: 'bm-name' }, p.name),
-          h('span', { class: 'bm-tally', title: 'Weeks paid' }, badmintonTally(bm, p.id)),
+          h('span', { class: 'bm-tally', title: 'Paid / tracked weeks' }, badmintonTally(bm, p.id)),
           iconButton('↑', 'badminton-up', { id: p.id, title: 'Move ' + p.name + ' up', class: 'btn-icon bm-move' }),
           iconButton('↓', 'badminton-down', { id: p.id, title: 'Move ' + p.name + ' down', class: 'btn-icon bm-move' }),
           h('label', { class: 'bm-check', title: 'Paid this week' },

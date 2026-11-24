@@ -563,7 +563,7 @@ body.modal-open { overflow: hidden; }
   margin-bottom: 4px;
 }
 .field-opt { font-weight: 400; }
-.field-hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
+.field-hint { font-size: 12px; color: var(--muted); margin-top: 5px; margin-bottom: 10px; }
 
 input, select, textarea {
   width: 100%;
