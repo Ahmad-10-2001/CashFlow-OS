@@ -617,7 +617,7 @@
        // challenges) ride the same synced prefs document the notes and timers
        // already use — no new server table, no migration. budgetRollover +
        // budgetRolloverPeriod make the rollover fire once per new month.
-       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], goals: [], templates: [], challenges: [], qaza: blankQaza(), badminton: { players: [], weeks: {} } },       closedPeriods: []
+       settings: { budgetOffset: Object.create(null), lastAccountId: CASH_ACCOUNT_ID, shoppingPeriod: null, budgetRollover: false, budgetRolloverPeriod: null, notes: [], timers: [], catMemory: Object.create(null), budgetMoves: [], goals: [], templates: [], challenges: [], qaza: blankQaza(), badminton: { players: [], paid: {}, lastPaidPid: null, lastPaidAt: null } },       closedPeriods: []
      };
    }
    
@@ -1066,36 +1066,56 @@
      // when it was ticked. Marks belonging to players who were later
      // removed stay: taking someone off the roster must not erase what
      // was already recorded.
-     const badminton = { players: [], weeks: Object.create(null) };
-     const rawBm = isObject(rawSettings.badminton) ? rawSettings.badminton : null;
-     if (rawBm) {
-       const bmIds = new Set();
-       const bmNames = new Set();
-       const rawBmPlayers = Array.isArray(rawBm.players) ? rawBm.players : [];
-       for (const p of rawBmPlayers) {
-         if (!isObject(p)) { note('skipped a malformed badminton player'); continue; }
-         const name = cleanText(p.name, NAME_LIMIT);
-         if (!name) { note('dropped a badminton player with no name'); continue; }
-         if (bmNames.has(name.toLowerCase())) { note('merged the duplicate badminton player "' + name + '"'); continue; }
-         let id = typeof p.id === 'string' && p.id.trim() ? p.id.trim() : newId();
-         if (bmIds.has(id)) id = newId();
-         bmIds.add(id);
-         bmNames.add(name.toLowerCase());
-         badminton.players.push({ id, name, addedAt: toLocalStamp(parseDate(p.addedAt) || new Date()) });
-       }
-       const rawBmWeeks = isObject(rawBm.weeks) ? rawBm.weeks : {};
-       for (const wk of Object.keys(rawBmWeeks)) {
-         if (!/^\d{4}-\d{2}-\d{2}$/.test(wk)) { note('ignored a badminton week with an unreadable date'); continue; }
-         const rawPaid = isObject(rawBmWeeks[wk]) && isObject(rawBmWeeks[wk].paid) ? rawBmWeeks[wk].paid : {};
-         const paid = Object.create(null);
-         for (const pid of Object.keys(rawPaid)) {
-           const stamp = typeof rawPaid[pid] === 'string' && !Number.isNaN(Date.parse(rawPaid[pid]))
-             ? toLocalStamp(new Date(rawPaid[pid])) : null;
-           if (stamp) paid[pid] = stamp;
-         }
-         badminton.weeks[wk] = { paid };
-       }
-     }
+      // badminton payments (Notes tab): single cycle, no per-week buckets.
+      const badminton = { players: [], paid: {}, lastPaidPid: null, lastPaidAt: null };
+      const rawBm = isObject(rawSettings.badminton) ? rawSettings.badminton : null;
+      if (rawBm) {
+        const bmIds = new Set();
+        const bmNames = new Set();
+        const rawBmPlayers = Array.isArray(rawBm.players) ? rawBm.players : [];
+        for (const p of rawBmPlayers) {
+          if (!isObject(p)) { note('skipped a malformed badminton player'); continue; }
+          const name = cleanText(p.name, NAME_LIMIT);
+          if (!name) { note('dropped a badminton player with no name'); continue; }
+          if (bmNames.has(name.toLowerCase())) { note('merged the duplicate badminton player "' + name + '"'); continue; }
+          let id = typeof p.id === 'string' && p.id.trim() ? p.id.trim() : newId();
+          if (bmIds.has(id)) id = newId();
+          bmIds.add(id); bmNames.add(name.toLowerCase());
+          badminton.players.push({ id, name, addedAt: toLocalStamp(parseDate(p.addedAt) || new Date()) });
+        }
+        // new shape
+        if (rawBm.paid && typeof rawBm.paid === 'object') {
+          const paid = Object.create(null);
+          for (const pid of Object.keys(rawBm.paid)) {
+            const stamp = typeof rawBm.paid[pid] === 'string' && !Number.isNaN(Date.parse(rawBm.paid[pid]))
+              ? toLocalStamp(new Date(rawBm.paid[pid])) : null;
+            if (stamp) paid[pid] = stamp;
+          }
+          badminton.paid = paid;
+        }
+        // migrate legacy per-week buckets
+        if (rawBm.weeks && typeof rawBm.weeks === 'object') {
+          const paid = badminton.paid || {};
+          let latestPid = rawBm.lastPaidPid || null, latestAt = rawBm.lastPaidAt || null;
+          for (const wk of Object.keys(rawBm.weeks)) {
+            const w = rawBm.weeks[wk];
+            if (!w || !w.paid) continue;
+            for (const pid of Object.keys(w.paid)) {
+              const ts = w.paid[pid];
+              if (ts && (!paid[pid] || String(ts) > String(paid[pid]))) paid[pid] = (typeof ts === 'string' && !Number.isNaN(Date.parse(ts))) ? toLocalStamp(new Date(ts)) : ts;
+              if (ts && (!latestAt || String(ts) > String(latestAt))) { latestAt = ts; latestPid = pid; }
+            }
+          }
+          badminton.paid = paid;
+          badminton.lastPaidPid = latestPid;
+          badminton.lastPaidAt = latestAt && typeof latestAt === 'string' && !Number.isNaN(Date.parse(latestAt)) ? toLocalStamp(new Date(latestAt)) : latestAt;
+        }
+        if (typeof rawBm.lastPaidPid === 'string') badminton.lastPaidPid = rawBm.lastPaidPid;
+        if (rawBm.lastPaidAt) {
+          const ts = typeof rawBm.lastPaidAt === 'string' && !Number.isNaN(Date.parse(rawBm.lastPaidAt)) ? toLocalStamp(new Date(rawBm.lastPaidAt)) : rawBm.lastPaidAt;
+          if (ts) badminton.lastPaidAt = ts;
+        }
+      }
 
      // Category memory for Pending approvals: bank + first telling word -> the
      // category last picked for it ("nayapay|coffee" -> Groceries). Bounded and
@@ -3644,86 +3664,96 @@
      )));
    }
 
-    /* ---------- badminton payments (Notes tab) ----------
-       A roster in turn order plus one paid mark per player per week,
-       folded into the Notes tab under one field that notes names in the
-       order they should be collected. The queue rule the user asked for:
-       the FIRST unpaid player in roster order is the one whose turn it
-       is — players behind him may pay out of turn and that never moves
-       him, and when he turns up he is collected from before anyone
-       behind him. A week key is that week's Monday (YYYY-MM-DD); which
-       week is on screen is view state only, never persisted — the fold
-       opens on this week. */
 
-    let badmintonWeek = null;
+    /* ---------- badminton payments (Notes tab) ----------
+       A roster in turn order. Only ONE person pays per booking. Whoever pays
+       is done and the turn passes to the next unpaid person. The turn is NOT
+       per-week: it persists across weeks (same week, next week, or after a
+       gap). Anyone may pay out of turn. When everyone has paid, the cycle
+       resets (all unchecked) and starts again. A person who hasn't paid
+       stays marked as pending, so it is clear they remain \u2014 no separate
+       handling needed for them. No count is shown; only the name of whoever
+       paid most recently (this week / last week). */
 
     function badmintonData() {
       if (!state.settings) state.settings = {};
-      if (!state.settings.badminton || !Array.isArray(state.settings.badminton.players)) {
-        state.settings.badminton = { players: [], weeks: Object.create(null) };
+      const bm = state.settings.badminton;
+      // new shape
+      if (!bm || !Array.isArray(bm.players)) {
+        state.settings.badminton = { players: [], paid: {}, lastPaidPid: null, lastPaidAt: null };
+        return state.settings.badminton;
       }
-      if (!state.settings.badminton.weeks) state.settings.badminton.weeks = Object.create(null);
-      return state.settings.badminton;
+      if (!bm.paid || typeof bm.paid !== 'object') bm.paid = {};
+      if (bm.lastPaidPid === undefined) bm.lastPaidPid = null;
+      if (bm.lastPaidAt === undefined) bm.lastPaidAt = null;
+      // migrate legacy per-week buckets -> single cycle
+      if (bm.weeks && typeof bm.weeks === 'object') {
+        const paid = bm.paid || {};
+        let latestPid = bm.lastPaidPid, latestAt = bm.lastPaidAt;
+        for (const wk of Object.keys(bm.weeks)) {
+          const w = bm.weeks[wk];
+          if (!w || !w.paid) continue;
+          for (const pid of Object.keys(w.paid)) {
+            const ts = w.paid[pid];
+            if (!paid[pid] || (ts && String(ts) > String(paid[pid]))) paid[pid] = ts;
+            if (ts && (!latestAt || String(ts) > String(latestAt))) { latestAt = ts; latestPid = pid; }
+          }
+        }
+        bm.paid = paid;
+        bm.lastPaidPid = latestPid;
+        bm.lastPaidAt = latestAt;
+        delete bm.weeks;
+      }
+      state.settings.badminton = bm;
+      return bm;
     }
 
-    /** Monday of the week containing d, as 'YYYY-MM-DD' — local time. */
+    function badmintonDueId(bm) {
+      for (const p of bm.players) {
+        if (!bm.paid || !bm.paid[p.id]) return p.id;
+      }
+      return null;   // everyone paid -> cycle complete
+    }
+
     function weekStartKey(d) {
       const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
       x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
       return x.getFullYear() + '-' + pad2(x.getMonth() + 1) + '-' + pad2(x.getDate());
     }
 
-    /** The week being viewed: this week until an arrow moves it. */
-    function badmintonWeekKey() {
-      if (!badmintonWeek) badmintonWeek = weekStartKey(new Date());
-      return badmintonWeek;
-    }
-
-    /** Week key -> Date. Parsed by hand: new Date('YYYY-MM-DD') reads as UTC
-        midnight, which is the PREVIOUS day west of Greenwich. */
-    function badmintonWeekDate(k) {
-      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(k));
-      return m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date();
-    }
-
-    /** The turn: the first player in roster order with no paid mark this
-        week. null when the roster is empty or everyone has paid. */
-    function badmintonDueId(bm, wk) {
-      const week = bm.weeks[wk];
-      for (const p of bm.players) {
-        if (!(week && week.paid && week.paid[p.id])) return p.id;
-      }
-      return null;
-    }
-
-    /** 'n/m' — paid weeks over every week tracked so far. */
-    function badmintonTally(bm, pid) {
-      const weeks = Object.keys(bm.weeks); if (!weeks.length) return '\u2014';
-      let n = 0;
-      for (const k of weeks) if (bm.weeks[k].paid && bm.weeks[k].paid[pid]) n++;
-      return n + '/' + weeks.length;
+    function relativeWeekLabel(ts) {
+      if (!ts) return '';
+      const paidWeek = weekStartKey(new Date(ts));
+      const thisWeek = weekStartKey(new Date());
+      if (paidWeek === thisWeek) return 'this week';
+      const a = new Date(thisWeek + 'T00:00:00').getTime();
+      const b = new Date(paidWeek + 'T00:00:00').getTime();
+      const weeks = Math.round((a - b) / (7 * 24 * 60 * 60 * 1000));
+      if (weeks === 1) return 'last week';
+      if (weeks > 1) return weeks + ' weeks ago';
+      return 'recently';
     }
 
     function addBadmintonPlayer() {
       const bm = badmintonData();
       const name = cleanText($('badmintonName').value, NAME_LIMIT);
-      if (!name) { toast('Type the player’s name'); return; }
+      if (!name) { toast('Type the player\u2019s name'); return; }
       if (bm.players.some((p) => p.name.toLowerCase() === name.toLowerCase())) {
-        toast(name + ' is already on the list');
-        return;
+        toast(name + ' is already on the list'); return;
       }
       bm.players.push({ id: newId(), name, addedAt: nowStamp() });
       $('badmintonName').value = '';
-      // No focus() here on purpose — see addTransaction.
-      if (save()) toast(name + ' added — the order is the turn order');
+      if (save()) toast(name + ' added');
     }
 
     function removeBadmintonPlayer(id) {
       const bm = badmintonData();
       const p = bm.players.find((x) => x.id === id);
       if (!p) { toast('That player is already off the list'); return; }
-      if (!confirm('Remove ' + p.name + ' from the badminton list?\n\nHis past payment marks stay in the records.')) return;
+      if (!confirm('Remove ' + p.name + ' from the badminton list?')) return;
       bm.players = bm.players.filter((x) => x.id !== id);
+      if (bm.paid) delete bm.paid[id];
+      if (bm.lastPaidPid === id) { bm.lastPaidPid = null; bm.lastPaidAt = null; }
       if (save()) toast(p.name + ' removed');
     }
 
@@ -3732,78 +3762,66 @@
       const i = bm.players.findIndex((x) => x.id === id);
       const j = i + dir;
       if (i < 0 || j < 0 || j >= bm.players.length) return;
-      const t = bm.players[i];
-      bm.players[i] = bm.players[j];
-      bm.players[j] = t;
-      save(); // pure reorder — the list itself shows the result, no toast
+      const t = bm.players[i]; bm.players[i] = bm.players[j]; bm.players[j] = t;
+      save();
     }
 
     function toggleBadmintonPaid(id, on) {
       const bm = badmintonData();
-      const wk = badmintonWeekKey();
       const p = bm.players.find((x) => x.id === id);
       if (!p) return;
-      if (!bm.weeks[wk]) bm.weeks[wk] = { paid: Object.create(null) };
-      if (on) bm.weeks[wk].paid[id] = nowStamp();
-      else delete bm.weeks[wk].paid[id];
+      if (!bm.paid) bm.paid = {};
+      if (on) {
+        bm.paid[id] = nowStamp();
+        bm.lastPaidPid = id;
+        bm.lastPaidAt = bm.paid[id];
+        // when everyone has paid, reset the cycle (uncheck all)
+        if (bm.players.length > 0 && bm.players.every((pl) => bm.paid[pl.id])) {
+          bm.paid = {};
+        }
+      } else {
+        delete bm.paid[id];
+      }
       save();
-    }
-
-    function shiftBadmintonWeek(dir) {
-      const d = badmintonWeekDate(badmintonWeekKey());
-      d.setDate(d.getDate() + dir * 7);
-      badmintonWeek = weekStartKey(d);
-      renderBadminton();
     }
 
     function renderBadminton() {
       const box = $('badmintonBox');
       if (!box) return;
       const bm = badmintonData();
-      const wk = badmintonWeekKey();
-      const isThisWeek = wk === weekStartKey(new Date());
-      const start = badmintonWeekDate(wk);
-      const end = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 6);
-      const label = MONTH_ABBR[start.getMonth()] + ' ' + start.getDate() + ' – '
-        + (end.getMonth() !== start.getMonth() ? MONTH_ABBR[end.getMonth()] + ' ' : '') + end.getDate();
-
-      const dueId = badmintonDueId(bm, wk);
+      const dueId = badmintonDueId(bm);
       const dueP = dueId ? bm.players.find((p) => p.id === dueId) : null;
-      const week = bm.weeks[wk];
-      const paidCount = bm.players.filter((p) => week && week.paid && week.paid[p.id]).length;
+      const allPaid = bm.players.length > 0 && bm.players.every((p) => bm.paid && bm.paid[p.id]);
 
       const head = h('div', { class: 'bm-head' },
-        h('button', { type: 'button', class: 'bm-week-nav', dataset: { act: 'badminton-week-prev' }, 'aria-label': 'Previous week' }, '‹'),
-        h('span', { class: 'bm-week-label' }, (isThisWeek ? 'This week · ' : '') + label),
-        h('button', { type: 'button', class: 'bm-week-nav', dataset: { act: 'badminton-week-next' }, 'aria-label': 'Next week' }, '›'),
-        isThisWeek ? null : button('This week', 'badminton-week-today')
-      );
+        h('span', { class: 'bm-week-label' }, 'Badminton payments'));
 
       const summary = !bm.players.length
-        ? h('div', { class: 'bm-summary' }, 'No players yet — add names in turn order.')
+        ? h('div', { class: 'bm-summary' }, 'No players yet \u2014 add names in turn order.')
         : h('div', { class: 'bm-summary' },
-            h('span', { class: 'bm-count' }, paidCount === 0 ? 'No one paid yet' : (paidCount === bm.players.length ? 'All paid this week' : paidCount + ' of ' + bm.players.length + ' paid this week')),
             dueP
-              ? h('span', { class: 'bm-due-note' }, 'Turn: ' + dueP.name + ' — collect from them first')
-              : h('span', { class: 'bm-due-note is-clear' }, 'All paid ✓'));
+              ? h('span', { class: 'bm-due-note' }, 'Turn: ' + dueP.name + ' \u2014 collect from them first')
+              : h('span', { class: 'bm-due-note is-clear' }, 'All paid this cycle \u2713'),
+            bm.lastPaidPid ? h('span', { class: 'bm-lastpaid' },
+                'Last paid: ' + (bm.players.find((p) => p.id === bm.lastPaidPid) || { name: 'someone' }).name +
+                ' (' + relativeWeekLabel(bm.lastPaidAt) + ')') : null);
 
       const rows = bm.players.map((p) => {
-        const paid = !!(week && week.paid && week.paid[p.id]);
+        const paid = !!(bm.paid && bm.paid[p.id]);
         const status = paid ? 'paid' : (p.id === dueId ? 'due' : 'pending');
         return h('div', { class: 'bm-row is-' + status },
-          h('span', { class: 'bm-status' }, paid ? '✓' : (status === 'due' ? 'TURN' : '…')),
+          h('span', { class: 'bm-status' }, paid ? '\u2713' : (status === 'due' ? 'TURN' : '\u2026')),
           h('span', { class: 'bm-name' }, p.name),
-          h('span', { class: 'bm-tally', title: 'Paid / tracked weeks' }, badmintonTally(bm, p.id)),
-          iconButton('↑', 'badminton-up', { id: p.id, title: 'Move ' + p.name + ' up', class: 'btn-icon bm-move' }),
-          iconButton('↓', 'badminton-down', { id: p.id, title: 'Move ' + p.name + ' down', class: 'btn-icon bm-move' }),
-          h('button', { type: 'button', class: 'bm-toggle' + (paid ? ' is-paid' : ''), dataset: { act: 'badminton-toggle', id: p.id }, title: 'Paid this week', 'aria-pressed': paid ? 'true' : 'false', 'aria-label': 'Paid: ' + p.name }, paid ? '\u2713' : '\u25CB'),
-
-          iconButton('×', 'badminton-remove', { id: p.id, title: 'Remove ' + p.name, class: 'btn-icon bm-drop' })
+          h('button', { type: 'button', class: 'bm-toggle' + (paid ? ' is-paid' : ''), dataset: { act: 'badminton-toggle', id: p.id }, title: 'Paid', 'aria-pressed': paid ? 'true' : 'false', 'aria-label': 'Paid: ' + p.name }, paid ? '\u2713' : '\u25CB'),
+          iconButton('\u2191', 'badminton-up', { id: p.id, title: 'Move ' + p.name + ' up', class: 'btn-icon bm-move' }),
+          iconButton('\u2193', 'badminton-down', { id: p.id, title: 'Move ' + p.name + ' down', class: 'btn-icon bm-move' }),
+          iconButton('\u00d7', 'badminton-remove', { id: p.id, title: 'Remove ' + p.name, class: 'btn-icon bm-drop' })
         );
       });
 
       mount(box, head, summary, rows.length ? h('div', { class: 'bm-rows' }, rows) : null);
     }
+
 
    /* ============================================================
       Qaza namaz tracker
@@ -5266,26 +5284,18 @@
      // Moves merge like everything else: current rows win each id, the rest is
      // appended. sanitizeState already validated both sides' shapes.
      const moves = unionById(curS.budgetMoves, incS.budgetMoves);
-     // Badminton merges by the same rule: players union by id (current
-     // wins each id), weeks merge per player with the current device's
-     // mark winning — what is here is never overwritten.
-     const bmCur = isObject(curS.badminton) ? curS.badminton : { players: [], weeks: {} };
-     const bmInc = isObject(incS.badminton) ? incS.badminton : { players: [], weeks: {} };
-     const bmPlayers = unionById(bmCur.players, bmInc.players);
-     const bmWeeks = Object.create(null);
-     for (const wk of Object.keys(bmCur.weeks || {})) {
-       const w = bmCur.weeks[wk];
-       if (isObject(w) && isObject(w.paid)) bmWeeks[wk] = { paid: Object.assign(Object.create(null), w.paid) };
-     }
-     for (const wk of Object.keys(bmInc.weeks || {})) {
-       const w = bmInc.weeks[wk];
-       if (!isObject(w) || !isObject(w.paid)) continue;
-       if (!bmWeeks[wk]) bmWeeks[wk] = { paid: Object.create(null) };
-       for (const pid of Object.keys(w.paid)) {
-         if (!Object.prototype.hasOwnProperty.call(bmWeeks[wk].paid, pid)) bmWeeks[wk].paid[pid] = w.paid[pid];
-       }
-     }
-     const badminton = { players: bmPlayers.rows, weeks: bmWeeks };
+      // Badminton merges by the same rule: players union by id (current
+      // wins each id). paid marks union (current wins each pid); lastPaid
+      // keeps the more recent of the two.
+      const bmCur = isObject(curS.badminton) ? curS.badminton : { players: [], paid: {}, lastPaidPid: null, lastPaidAt: null };
+      const bmInc = isObject(incS.badminton) ? incS.badminton : { players: [], paid: {}, lastPaidPid: null, lastPaidAt: null };
+      const bmPlayers = unionById(bmCur.players, bmInc.players);
+      const bmPaid = Object.create(null);
+      for (const pid of Object.keys(bmCur.paid || {})) bmPaid[pid] = bmCur.paid[pid];
+      for (const pid of Object.keys(bmInc.paid || {})) { if (!Object.prototype.hasOwnProperty.call(bmPaid, pid)) bmPaid[pid] = bmInc.paid[pid]; }
+      let lastPaidPid = bmCur.lastPaidPid, lastPaidAt = bmCur.lastPaidAt;
+      if (bmInc.lastPaidAt && (!lastPaidAt || String(bmInc.lastPaidAt) > String(lastPaidAt))) { lastPaidPid = bmInc.lastPaidPid; lastPaidAt = bmInc.lastPaidAt; }
+      const badminton = { players: bmPlayers.rows, paid: bmPaid, lastPaidPid, lastPaidAt };
      // Memories merge with the current device winning each key, then capped —
      // same rule as everything else: what is here is never overwritten.
      const mem = Object.assign(Object.create(null), incS.catMemory || {}, curS.catMemory || {});
@@ -6560,14 +6570,9 @@
      'badminton-remove': (el) => removeBadmintonPlayer(el.dataset.id),
      'badminton-up': (el) => moveBadmintonPlayer(el.dataset.id, -1),
      'badminton-down': (el) => moveBadmintonPlayer(el.dataset.id, 1),
-     'badminton-week-prev': () => shiftBadmintonWeek(-1),
-     'badminton-week-next': () => shiftBadmintonWeek(1),
-     'badminton-week-today': () => { badmintonWeek = null; renderBadminton(); },
      'badminton-toggle': (el) => {
        const bm = badmintonData();
-       const wk = badmintonWeekKey();
-       const week = bm.weeks[wk];
-       const paid = !!(week && week.paid && week.paid[el.dataset.id]);
+       const paid = !!(bm.paid && bm.paid[el.dataset.id]);
        toggleBadmintonPaid(el.dataset.id, !paid);
      },
      'qaza-daily-toggle': (el) => toggleDailyPrayer(el.dataset.arg),
